@@ -3939,6 +3939,7 @@ export default function Page() {
   }, [currentUser, selectedStudentId, supabase, addNotification]);
 
   const handleSendStudentMessages = useCallback(async () => {
+    alert('ボタンが押されました');
     const text = messageDraft.trim();
     if (!text) {
       alert('送信するコメントを入力してください。');
@@ -3959,10 +3960,7 @@ export default function Page() {
         created_at: createdAt,
       }));
       const result = await supabase.from('comments').insert(rows);
-      if (result.error) {
-        console.error('comments insert failed', result.error);
-        return;
-      }
+      if (result.error) throw result.error;
       const created: StudentMessage[] = selectedStudentIds.map((studentId, index) => ({
         id: `msg_${Date.now()}_${index}_${studentId}`,
         user_id: studentId,
@@ -3972,12 +3970,13 @@ export default function Page() {
         sent_at: sentAt,
         read_at: null,
       }));
-      alert('送信完了しました');
+      alert('送信成功');
       setMessageDraft('');
       setMessages((prev) => [...created, ...prev]);
       writeLocalMessages([...created, ...readLocalMessages()]);
-    } catch (error) {
+    } catch (error: any) {
       console.error('comments insert failed', error);
+      alert('送信失敗: ' + error.message);
     }
   }, [currentUser, messageDraft, selectedStudentIds, supabase]);
 
@@ -6517,6 +6516,7 @@ export default function Page() {
                       <p className="text-[11px] font-bold text-amber-800">選択中 {selectedStudentIds.length} 名。送信日時は自動で記録されます。</p>
                       <button
                         type="button"
+                        disabled={false}
                         onClick={handleSendStudentMessages}
                         className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer"
                       >
