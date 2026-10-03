@@ -377,6 +377,51 @@ async function updateMaterialOrder(supabase: any, id: string, order: number): Pr
   return lastMessage || '表示順の保存に失敗しました';
 }
 
+const LEGACY_MATERIAL_CACHE_KEY = 'juku_materials_cache';
+let legacyMaterialMigration: Promise<void> | null = null;
+
+async function migrateLegacyMaterialCache(supabase: any): Promise<void> {
+  if (typeof window === 'undefined') return;
+  if (!legacyMaterialMigration) {
+    legacyMaterialMigration = (async () => {
+      const raw = window.localStorage.getItem(LEGACY_MATERIAL_CACHE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const records = Array.isArray(parsed) ? parsed : Object.values(parsed || {});
+      for (const item of records) {
+        const row = item as Record<string, unknown>;
+        const id = String(row?.id ?? '').trim();
+        const title = String(row?.title ?? '').trim();
+        if (!id || !title) continue;
+        const subject = subjectFromInput(row?.subject);
+        const order = readDisplayOrder(row?.display_order ?? row?.order_index ?? row?.sort_order);
+        const payload: Record<string, unknown> = { title };
+        if (subject) {
+          payload.subject = subject;
+          payload.category = subject;
+        }
+        if (row?.description) payload.description = String(row.description);
+        if (row?.image_url) payload.image_url = String(row.image_url);
+        if (row?.difficulty) payload.difficulty = row.difficulty;
+        if (row?.color) payload.color = row.color;
+        if (row?.created_by) payload.created_by = String(row.created_by);
+        if (order != null && order < 1000000000) {
+          payload.display_order = order;
+          payload.order_index = order;
+          payload.sort_order = order;
+        }
+        const failure = await writeMaterialRow(supabase, id, payload);
+        if (failure) throw new Error(failure);
+      }
+      window.localStorage.removeItem(LEGACY_MATERIAL_CACHE_KEY);
+    })().catch((error) => {
+      legacyMaterialMigration = null;
+      throw error;
+    });
+  }
+  await legacyMaterialMigration;
+}
+
 function materialOrderFromRow(row: any): number | null {
   for (const key of ['order_index', 'sort_order', 'display_order']) {
     const order = readDisplayOrder(row?.[key]);
@@ -3604,6 +3649,11 @@ export default function Page() {
     const viewer = materialViewerRef.current || readAppSession();
     const studentView = Boolean(viewer && resolveAppRole(viewer.role, viewer.id, viewer.email) === 'student');
     try {
+      try {
+        await migrateLegacyMaterialCache(supabase);
+      } catch (error) {
+        reportMaterialError(error, 'ローカル教材の移行に失敗しました');
+      }
       const loaded = await selectMaterialsOrdered(supabase, studentView);
       if (loaded.error) {
         reportMaterialError(loaded.error, '教材の取得に失敗しました');
