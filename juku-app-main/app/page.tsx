@@ -3938,8 +3938,7 @@ export default function Page() {
     addNotification('success', `「${student.name}」を削除いたしました。`);
   }, [currentUser, selectedStudentId, supabase, addNotification]);
 
-  const handleSendStudentMessages = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSendStudentMessages = useCallback(async () => {
     const text = messageDraft.trim();
     if (!text) {
       alert('送信するコメントを入力してください。');
@@ -3950,51 +3949,18 @@ export default function Page() {
       return;
     }
 
-    const teacherId = String(currentUser?.id || '').trim();
-    const sentAt = formatMessageTimestamp();
     const createdAt = new Date().toISOString();
+    const sentAt = formatMessageTimestamp();
+    const teacherId = String(currentUser?.id || '').trim();
     try {
-      const rows = selectedStudentIds.map((studentId) => {
-        const student = users.find((user) => user.id === studentId);
-        return {
-          teacher_id: teacherId,
-          student_id: studentId,
-          branch_id: student?.classroom || currentUser?.classroom || '',
-          comment: text,
-          body: text,
-          message: text,
-          sender_name: currentUser?.name || '',
-          created_at: createdAt,
-        };
-      });
-      let inserted = false;
-      let lastError: unknown = null;
-      for (let attempt = 0; attempt < 16 && rows.some((row) => Object.keys(row).length > 0); attempt += 1) {
-        const result = await supabase.from('comments').insert(rows);
-        if (!result.error) {
-          inserted = true;
-          break;
-        }
-        lastError = result.error;
-        const message = String(result.error.message || '');
-        const missing = missingMaterialsColumn(message);
-        if (missing && rows.some((row) => Object.prototype.hasOwnProperty.call(row, missing))) {
-          rows.forEach((row) => {
-            delete row[missing];
-          });
-          continue;
-        }
-        if (/invalid input syntax for type uuid/i.test(message) && rows.some((row) => 'branch_id' in row)) {
-          rows.forEach((row) => {
-            delete row.branch_id;
-          });
-          continue;
-        }
+      const rows = selectedStudentIds.map((studentId) => ({
+        student_id: studentId,
+        message: text,
+        created_at: createdAt,
+      }));
+      const result = await supabase.from('comments').insert(rows);
+      if (result.error) {
         console.error('comments insert failed', result.error);
-        break;
-      }
-      if (!inserted) {
-        console.error('comments insert failed', lastError);
         return;
       }
       const created: StudentMessage[] = selectedStudentIds.map((studentId, index) => ({
@@ -4006,14 +3972,14 @@ export default function Page() {
         sent_at: sentAt,
         read_at: null,
       }));
+      alert('送信完了しました');
+      setMessageDraft('');
       setMessages((prev) => [...created, ...prev]);
       writeLocalMessages([...created, ...readLocalMessages()]);
-      setMessageDraft('');
-      setSelectedStudentIds([]);
     } catch (error) {
       console.error('comments insert failed', error);
     }
-  }, [currentUser, messageDraft, selectedStudentIds, supabase, users]);
+  }, [currentUser, messageDraft, selectedStudentIds, supabase]);
 
   const markMessageAsRead = useCallback(async (message: StudentMessage) => {
     if (message.read_at) return;
@@ -6538,7 +6504,7 @@ export default function Page() {
                   </button>
                 </div>
 
-                <form onSubmit={handleSendStudentMessages} className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 space-y-3 shadow-md">
+                <form className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 space-y-3 shadow-md" onSubmit={(e) => e.preventDefault()}>
                     <div className="text-sm font-extrabold text-amber-950">📢 チェックした生徒へお知らせ・コメント送信</div>
                     <textarea
                       value={messageDraft}
@@ -6550,9 +6516,9 @@ export default function Page() {
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-[11px] font-bold text-amber-800">選択中 {selectedStudentIds.length} 名。送信日時は自動で記録されます。</p>
                       <button
-                        type="submit"
-                        disabled={selectedStudentIds.length === 0}
-                        className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer"
+                        type="button"
+                        onClick={handleSendStudentMessages}
+                        className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer"
                       >
                         選択中の生徒へ送信
                       </button>
