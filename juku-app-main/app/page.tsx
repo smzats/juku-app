@@ -366,6 +366,74 @@ async function writeMaterialRow(
   return lastMessage || '教材の保存に失敗しました';
 }
 
+async function selectAllRows(
+  supabase: { from: (table: string) => any },
+  table: string,
+): Promise<{ data: any[]; error: { message?: string } | null }> {
+  const pageSize = 1000;
+  const rows: any[] = [];
+  for (let from = 0; from < 20000; from += pageSize) {
+    const result = await supabase.from(table).select('*').range(from, from + pageSize - 1);
+    if (result.error) {
+      if (rows.length > 0) return { data: rows, error: null };
+      return { data: [], error: result.error };
+    }
+    const chunk = result.data || [];
+    rows.push(...chunk);
+    if (chunk.length < pageSize) break;
+  }
+  return { data: rows, error: null };
+}
+
+function messageFromStoredRow(row: any): StudentMessage | null {
+  const id = String(row?.id ?? '').trim();
+  const userId = String(row?.user_id ?? row?.student_id ?? '').trim();
+  const body = String(row?.body ?? row?.comment ?? row?.message ?? row?.content ?? '').trim();
+  if (!id || !userId || !body) return null;
+  return {
+    id,
+    user_id: userId,
+    sender_id: String(row?.sender_id ?? ''),
+    sender_name: String(row?.sender_name ?? row?.sender ?? '講師'),
+    body,
+    sent_at: String(row?.sent_at ?? row?.created_at ?? new Date().toISOString()),
+    read_at: row?.read_at ? String(row.read_at) : null,
+  };
+}
+
+async function insertCommentBatch(
+  supabase: { from: (table: string) => any },
+  rows: Record<string, unknown>[],
+): Promise<any[] | null> {
+  const body = rows.map((row) => ({ ...row }));
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const result = await supabase.from('comments').insert(body).select('*');
+    if (!result.error) return result.data || [];
+    const message = String(result.error.message || '');
+    const missing = missingMaterialsColumn(message);
+    if (missing && body.some((item) => Object.prototype.hasOwnProperty.call(item, missing))) {
+      body.forEach((item) => {
+        delete item[missing];
+      });
+      continue;
+    }
+    if (/invalid input syntax for type uuid/i.test(message) && body.some((item) => 'id' in item)) {
+      body.forEach((item) => {
+        delete item.id;
+      });
+      continue;
+    }
+    if (/invalid input syntax for type (timestamp|date)/i.test(message) && body.some((item) => 'sent_at' in item)) {
+      body.forEach((item) => {
+        delete item.sent_at;
+      });
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
 const STUDENT_PROFILE_FIELDS = [
   { key: 'grade', label: '学年', column: 'grade' },
   { key: 'highSchool', label: '高校', column: 'high_school' },
@@ -623,6 +691,16 @@ function resolveAppRole(value: unknown, userId?: string, email?: string): UserRo
   return cached || 'student';
 }
 
+function roleFromDatabaseRow(value: unknown, userId?: string, email?: string): UserRole {
+  if (isKnownAdminIdentity(userId, email)) return 'admin';
+  const raw = String(value ?? '').replace(/[\s\u3000]/g, '').toLowerCase();
+  if (!raw) return 'student';
+  if (raw === 'admin' || raw === 'administrator' || raw.includes('admin') || raw === '管理者' || raw === '管理') return 'admin';
+  if (raw === 'teacher' || raw === 'staff' || raw.includes('teacher') || raw === '講師' || raw === '教師' || raw === '先生') return 'teacher';
+  if (raw === 'student' || raw === '生徒') return 'student';
+  return 'student';
+}
+
 function isStaffRole(role: unknown, userId?: string, email?: string): boolean {
   const resolved = resolveAppRole(role, userId, email);
   return resolved === 'admin' || resolved === 'teacher';
@@ -654,12 +732,6 @@ function profileFromRow(row: any): StudentProfile {
       profile[field.key] = String(columnValue).trim();
     }
   });
-  const local = readLocalProfiles()[row?.id];
-  if (local) {
-    STUDENT_PROFILE_FIELDS.forEach((field) => {
-      if (!profile[field.key] && local[field.key]) profile[field.key] = local[field.key];
-    });
-  }
   return profile;
 }
 
@@ -3374,79 +3446,94 @@ export default function Page() {
   // ---------------------------------------------------------------------------
 
   const fetchUsers = useCallback(async (): Promise<User[]> => {
-    const { data, error } = await supabase.from('users').select('*');
-    if (error) throw new Error(`ユーザーデータの取得失敗: ${error.message}`);
-    return (data || []).map((row: any) => {
-      const id = String(row.id || '');
+    const loaded = await selectAllRows(supabase, 'users');
+    if (loaded.error) throw new Error(`ユーザーデータの取得失敗: ${loaded.error.message || '取得に失敗しました'}`);
+    return loaded.data.flatMap((row: any, index: number) => {
+      const id = String(row.id ?? row.user_id ?? '').trim();
+      const name = String(row.name ?? row.full_name ?? row.user_name ?? '').trim();
+      if (!id && !name) return [];
       const email = String(row.email ?? row.mail ?? row.login_id ?? '').trim();
       const rawRole = row.role ?? row.user_role ?? row.type ?? row.user_type ?? row.authority ?? row.account_type;
-      const role = resolveAppRole(rawRole, id, email);
-      if (String(rawRole ?? '').trim() || isKnownAdminIdentity(id, email)) rememberUserRole(id, role);
-      return {
-        id,
-        name: row.name || '名前未設定',
+      const role = roleFromDatabaseRow(rawRole, id, email);
+      return [{
+        id: id || `user_row_${index}`,
+        name: name || '名前未設定',
         role,
-        classroom: row.classroom || '本川越校',
+        classroom: String(row.classroom ?? '').trim(),
         password: passwordFromRow(row),
         email: email || undefined,
         ...profileFromRow(row),
-      };
+      }];
     }) as User[];
   }, [supabase]);
 
   const fetchMaterials = useCallback(async (): Promise<Material[]> => {
-    const cache = readMaterialCache();
-    const materialFrom = (id: string, title: string, subject: SubjectType, row?: any, cached?: Material): Material => {
-      const storedOrder = readDisplayOrder(row?.display_order) ?? readDisplayOrder(cached?.display_order);
+    const materialFrom = (id: string, title: string, subject: SubjectType, row?: any): Material => {
+      const storedOrder = readDisplayOrder(row?.display_order);
       return {
         id,
         title,
         subject,
-        difficulty: row?.difficulty || cached?.difficulty || 'standard',
-        created_by: String(row?.created_by || cached?.created_by || ''),
-        image_url: row?.image_url || cached?.image_url || null,
-        description: row?.description || cached?.description || undefined,
+        difficulty: row?.difficulty || 'standard',
+        created_by: String(row?.created_by || ''),
+        image_url: row?.image_url || null,
+        description: row?.description || undefined,
         color: SUBJECT_COLOR_MAP[subject].hexCode,
         display_order: storedOrder ?? Number.MAX_SAFE_INTEGER,
       };
     };
 
-    const { data, error } = await supabase.from('materials').select('*').order('id', { ascending: true });
-    if (error) {
+    const loaded = await selectAllRows(supabase, 'materials');
+    if (loaded.error) {
+      const cache = readMaterialCache();
       return Object.values(cache).flatMap((item) => {
         if (!item?.id || !item.title) return [];
-        const subject = subjectForMasterRow(item as unknown as Record<string, unknown>, item.title, item);
-        return [materialFrom(item.id, item.title, subject, undefined, item)];
+        const subject = subjectForMasterRow(item as unknown as Record<string, unknown>, item.title, null);
+        return [materialFrom(item.id, item.title, subject, item)];
       });
     }
 
     const list: Material[] = [];
-    (data || []).forEach((row: any) => {
-      const id = String(row.id || '');
-      const title = String(row.title || row.name || '').trim();
-      if (!id || !title) return;
-      const cached = cache[id];
-      const subject = subjectForMasterRow(row, title, cached);
-      list.push(materialFrom(id, title, subject, row, cached));
+    loaded.data.forEach((row: any, index: number) => {
+      const id = String(row.id ?? row.material_id ?? '').trim();
+      const title = String(row.title ?? row.name ?? row.material_name ?? row.material_title ?? '').trim();
+      if (!id && !title) return;
+      const subject = subjectForMasterRow(row, title, null);
+      list.push(materialFrom(id || `material_row_${index}`, title || '（無題）', subject, row));
     });
     return list;
   }, [supabase]);
 
   const fetchStudentMessages = useCallback(async (): Promise<StudentMessage[]> => {
     const local = readLocalMessages();
-    const { data, error } = await supabase.from('student_messages').select('*');
-    if (error) return local;
-    const remote = (data || []).map((row: any) => ({
-      id: String(row.id),
-      user_id: String(row.user_id || ''),
-      sender_id: String(row.sender_id || ''),
-      sender_name: String(row.sender_name || '講師'),
-      body: String(row.body || row.message || ''),
-      sent_at: String(row.sent_at || row.created_at || new Date().toISOString()),
-      read_at: row.read_at ? String(row.read_at) : null,
-    })) as StudentMessage[];
+    const [comments, legacy] = await Promise.all([
+      selectAllRows(supabase, 'comments'),
+      supabase.from('student_messages').select('*'),
+    ]);
+    const remote: StudentMessage[] = [];
+    if (!comments.error) {
+      comments.data.forEach((row: any) => {
+        const message = messageFromStoredRow(row);
+        if (message) remote.push(message);
+      });
+    }
+    if (!legacy.error) {
+      (legacy.data || []).forEach((row: any) => {
+        const message = messageFromStoredRow(row);
+        if (message) remote.push(message);
+      });
+    }
+    if (comments.error && legacy.error) return local;
+    const sameNotice = (left: StudentMessage, right: StudentMessage) => (
+      left.user_id.trim().toLowerCase() === right.user_id.trim().toLowerCase()
+      && left.body === right.body
+      && left.sender_id === right.sender_id
+    );
     const merged = new Map<string, StudentMessage>();
-    local.forEach((message) => merged.set(message.id, message));
+    local.forEach((message) => {
+      const replaced = remote.some((item) => item.id === message.id || (message.id.startsWith('msg_') && sameNotice(message, item)));
+      if (!replaced) merged.set(message.id, message);
+    });
     remote.forEach((message) => {
       const existing = merged.get(message.id);
       if (existing?.read_at && !message.read_at) {
@@ -3516,6 +3603,21 @@ export default function Page() {
   useEffect(() => {
     void fetchAllData({ silent: true });
   }, [fetchAllData]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('comments-feed')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, () => {
+        void fetchStudentMessages().then((next) => {
+          setMessages(next);
+          writeLocalMessages(next);
+        });
+      })
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [supabase, fetchStudentMessages]);
 
   useEffect(() => {
     const saved = readAppSession();
@@ -3858,6 +3960,7 @@ export default function Page() {
     }
 
     const sentAt = formatMessageTimestamp();
+    const createdAt = new Date().toISOString();
     const senderId = currentUser?.id || 'system';
     const senderName = currentUser?.name || 'お知らせ';
     const created: StudentMessage[] = selectedStudentIds.map((userId, index) => ({
@@ -3875,13 +3978,39 @@ export default function Page() {
     setMessageDraft('');
     setSelectedStudentIds([]);
 
-    const { error } = await supabase.from('student_messages').insert(created);
-    if (error) {
-      addNotification('warning', `${created.length} 名へ ${sentAt} のお知らせを保存しました。データベースへは未反映のため、画面上の状態でも保持しています。`);
-      return;
+    const saved = await insertCommentBatch(supabase, selectedStudentIds.map((userId) => ({
+      user_id: userId,
+      student_id: userId,
+      sender_id: senderId,
+      sender_name: senderName,
+      body,
+      comment: body,
+      message: body,
+      content: body,
+      sent_at: sentAt,
+      created_at: createdAt,
+      read_at: null,
+    })));
+    if (!saved) return;
+    const mapped = saved.flatMap((row) => {
+      const message = messageFromStoredRow(row);
+      return message ? [message] : [];
+    });
+    if (mapped.length > 0) {
+      setMessages((prev) => {
+        const optimisticIds = new Set(created.map((item) => item.id));
+        const kept = prev.filter((item) => !optimisticIds.has(item.id));
+        const seen = new Set(kept.map((item) => item.id));
+        const next = [...mapped.filter((item) => !seen.has(item.id)), ...kept];
+        writeLocalMessages(next);
+        return next;
+      });
     }
-    addNotification('success', `${created.length} 名へお知らせ・コメントを送信いたしました（${sentAt}）。`);
-  }, [currentUser, messageDraft, selectedStudentIds, supabase, addNotification]);
+    void fetchStudentMessages().then((next) => {
+      setMessages(next);
+      writeLocalMessages(next);
+    });
+  }, [currentUser, messageDraft, selectedStudentIds, supabase, fetchStudentMessages]);
 
   const markMessageAsRead = useCallback(async (message: StudentMessage) => {
     if (message.read_at) return;
@@ -3892,6 +4021,7 @@ export default function Page() {
     if (!local.some((item) => item.id === message.id)) {
       writeLocalMessages([{ ...message, read_at: readAt }, ...local]);
     }
+    await supabase.from('comments').update({ read_at: readAt }).eq('id', message.id);
     await supabase.from('student_messages').update({ read_at: readAt }).eq('id', message.id);
   }, [supabase]);
 
@@ -4497,7 +4627,7 @@ export default function Page() {
   const myMessages = useMemo(() => {
     if (!currentUser || currentUser.role !== 'student') return [];
     return messages
-      .filter((message) => message.user_id === currentUser.id)
+      .filter((message) => message.user_id.trim().toLowerCase() === currentUser.id.trim().toLowerCase())
       .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
   }, [messages, currentUser]);
 
@@ -5287,6 +5417,7 @@ export default function Page() {
   }, [supabase]);
 
   const handleDisplayOrderCommit = useCallback((material: Material, raw: string) => {
+    if (raw.trim() === '') return;
     const order = Number(raw);
     if (!Number.isFinite(order) || order === material.display_order) return;
     const saved = { ...material, display_order: order };
@@ -6685,7 +6816,7 @@ export default function Page() {
                                 <input
                                   type="number"
                                   key={`${m.id}-${m.display_order}`}
-                                  defaultValue={m.display_order}
+                                  defaultValue={m.display_order >= Number.MAX_SAFE_INTEGER ? '' : m.display_order}
                                   onBlur={(e) => handleDisplayOrderCommit(m, e.target.value)}
                                   className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-center font-bold"
                                 />
