@@ -404,11 +404,11 @@ function messageFromStoredRow(row: any): StudentMessage | null {
 async function insertCommentBatch(
   supabase: { from: (table: string) => any },
   rows: Record<string, unknown>[],
-): Promise<any[] | null> {
+): Promise<boolean> {
   const body = rows.map((row) => ({ ...row }));
   for (let attempt = 0; attempt < 24; attempt += 1) {
-    const result = await supabase.from('comments').insert(body).select('*');
-    if (!result.error) return result.data || [];
+    const result = await supabase.from('comments').insert(body);
+    if (!result.error) return true;
     const message = String(result.error.message || '');
     const missing = missingMaterialsColumn(message);
     if (missing && body.some((item) => Object.prototype.hasOwnProperty.call(item, missing))) {
@@ -417,9 +417,14 @@ async function insertCommentBatch(
       });
       continue;
     }
-    if (/invalid input syntax for type uuid/i.test(message) && body.some((item) => 'id' in item)) {
+    const required = message.match(/null value in column "([^"]+)"/i);
+    if (required?.[1] && body.some((item) => item[required[1]] == null)) {
       body.forEach((item) => {
-        delete item.id;
+        const column = required[1];
+        if (item[column] != null) return;
+        if (/user|student|sender/i.test(column)) item[column] = item.user_id || item.sender_id || '';
+        else if (/time|date|at$/i.test(column)) item[column] = item.created_at || new Date().toISOString();
+        else item[column] = item.body || item.comment || '';
       });
       continue;
     }
@@ -429,9 +434,9 @@ async function insertCommentBatch(
       });
       continue;
     }
-    return null;
+    return false;
   }
-  return null;
+  return false;
 }
 
 const STUDENT_PROFILE_FIELDS = [
@@ -691,16 +696,6 @@ function resolveAppRole(value: unknown, userId?: string, email?: string): UserRo
   return cached || 'student';
 }
 
-function roleFromDatabaseRow(value: unknown, userId?: string, email?: string): UserRole {
-  if (isKnownAdminIdentity(userId, email)) return 'admin';
-  const raw = String(value ?? '').replace(/[\s\u3000]/g, '').toLowerCase();
-  if (!raw) return 'student';
-  if (raw === 'admin' || raw === 'administrator' || raw.includes('admin') || raw === '管理者' || raw === '管理') return 'admin';
-  if (raw === 'teacher' || raw === 'staff' || raw.includes('teacher') || raw === '講師' || raw === '教師' || raw === '先生') return 'teacher';
-  if (raw === 'student' || raw === '生徒') return 'student';
-  return 'student';
-}
-
 function isStaffRole(role: unknown, userId?: string, email?: string): boolean {
   const resolved = resolveAppRole(role, userId, email);
   return resolved === 'admin' || resolved === 'teacher';
@@ -732,6 +727,12 @@ function profileFromRow(row: any): StudentProfile {
       profile[field.key] = String(columnValue).trim();
     }
   });
+  const local = readLocalProfiles()[row?.id];
+  if (local) {
+    STUDENT_PROFILE_FIELDS.forEach((field) => {
+      if (!profile[field.key] && local[field.key]) profile[field.key] = local[field.key];
+    });
+  }
   return profile;
 }
 
@@ -3448,18 +3449,18 @@ export default function Page() {
   const fetchUsers = useCallback(async (): Promise<User[]> => {
     const loaded = await selectAllRows(supabase, 'users');
     if (loaded.error) throw new Error(`ユーザーデータの取得失敗: ${loaded.error.message || '取得に失敗しました'}`);
-    return loaded.data.flatMap((row: any, index: number) => {
+    return loaded.data.flatMap((row: any) => {
       const id = String(row.id ?? row.user_id ?? '').trim();
-      const name = String(row.name ?? row.full_name ?? row.user_name ?? '').trim();
-      if (!id && !name) return [];
+      if (!id) return [];
       const email = String(row.email ?? row.mail ?? row.login_id ?? '').trim();
       const rawRole = row.role ?? row.user_role ?? row.type ?? row.user_type ?? row.authority ?? row.account_type;
-      const role = roleFromDatabaseRow(rawRole, id, email);
+      const role = resolveAppRole(rawRole, id, email);
+      if (String(rawRole ?? '').trim() || isKnownAdminIdentity(id, email)) rememberUserRole(id, role);
       return [{
-        id: id || `user_row_${index}`,
-        name: name || '名前未設定',
+        id,
+        name: row.name || '名前未設定',
         role,
-        classroom: String(row.classroom ?? '').trim(),
+        classroom: row.classroom || '本川越校',
         password: passwordFromRow(row),
         email: email || undefined,
         ...profileFromRow(row),
@@ -3494,12 +3495,17 @@ export default function Page() {
     }
 
     const list: Material[] = [];
-    loaded.data.forEach((row: any, index: number) => {
+    loaded.data.forEach((row: any) => {
       const id = String(row.id ?? row.material_id ?? '').trim();
       const title = String(row.title ?? row.name ?? row.material_name ?? row.material_title ?? '').trim();
-      if (!id && !title) return;
-      const subject = subjectForMasterRow(row, title, null);
-      list.push(materialFrom(id || `material_row_${index}`, title || '（無題）', subject, row));
+      if (!id || !title) return;
+      const storedSubject = exactSubjectFromRecord(row);
+      const hasSubjectValue = ['subject', 'category', '教科', 'subject_name', 'kamoku'].some((key) => {
+        const value = row?.[key];
+        return value != null && String(value).trim() !== '';
+      });
+      const subject = storedSubject || (hasSubjectValue ? 'その他' : (subjectFromMaterialTitle(title) || 'その他'));
+      list.push(materialFrom(id, title, subject, row));
     });
     return list;
   }, [supabase]);
@@ -3603,21 +3609,6 @@ export default function Page() {
   useEffect(() => {
     void fetchAllData({ silent: true });
   }, [fetchAllData]);
-
-  useEffect(() => {
-    const channel = supabase
-      .channel('comments-feed')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, () => {
-        void fetchStudentMessages().then((next) => {
-          setMessages(next);
-          writeLocalMessages(next);
-        });
-      })
-      .subscribe();
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [supabase, fetchStudentMessages]);
 
   useEffect(() => {
     const saved = readAppSession();
@@ -3992,24 +3983,9 @@ export default function Page() {
       read_at: null,
     })));
     if (!saved) return;
-    const mapped = saved.flatMap((row) => {
-      const message = messageFromStoredRow(row);
-      return message ? [message] : [];
-    });
-    if (mapped.length > 0) {
-      setMessages((prev) => {
-        const optimisticIds = new Set(created.map((item) => item.id));
-        const kept = prev.filter((item) => !optimisticIds.has(item.id));
-        const seen = new Set(kept.map((item) => item.id));
-        const next = [...mapped.filter((item) => !seen.has(item.id)), ...kept];
-        writeLocalMessages(next);
-        return next;
-      });
-    }
-    void fetchStudentMessages().then((next) => {
-      setMessages(next);
-      writeLocalMessages(next);
-    });
+    const remote = await fetchStudentMessages();
+    setMessages(remote);
+    writeLocalMessages(remote);
   }, [currentUser, messageDraft, selectedStudentIds, supabase, fetchStudentMessages]);
 
   const markMessageAsRead = useCallback(async (message: StudentMessage) => {
@@ -5417,7 +5393,6 @@ export default function Page() {
   }, [supabase]);
 
   const handleDisplayOrderCommit = useCallback((material: Material, raw: string) => {
-    if (raw.trim() === '') return;
     const order = Number(raw);
     if (!Number.isFinite(order) || order === material.display_order) return;
     const saved = { ...material, display_order: order };
@@ -6816,7 +6791,7 @@ export default function Page() {
                                 <input
                                   type="number"
                                   key={`${m.id}-${m.display_order}`}
-                                  defaultValue={m.display_order >= Number.MAX_SAFE_INTEGER ? '' : m.display_order}
+                                  defaultValue={m.display_order}
                                   onBlur={(e) => handleDisplayOrderCommit(m, e.target.value)}
                                   className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-center font-bold"
                                 />
