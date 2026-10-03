@@ -1,0 +1,8253 @@
+'use client';
+
+import React, { useEffect, useState, useCallback, useMemo, useRef, createContext, useContext } from 'react';
+import { createPortal } from 'react-dom';
+import Papa from 'papaparse';
+import { createClient } from '@supabase/supabase-js';
+
+function supabaseEnvConfigured(): boolean {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  return Boolean(url && key && !url.includes('your_supabase') && !key.includes('your_supabase'));
+}
+
+function createSafeSupabaseClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  if (!supabaseEnvConfigured()) {
+    return createClient(
+      'https://placeholder.supabase.co',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder',
+      { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
+    );
+  }
+  return createClient(url, key, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+  });
+}
+
+// =============================================================================
+// プロの仕事とは「簡単で、簡潔で、丁寧で、見やすくて、チェックのしやすい、
+// 一切のミスのない、絶対に誤解を生じないコードで、誰もが感動して涙するような実装を実現すること」
+// =============================================================================
+
+// =============================================================================
+// SECTION 1. TypeScript 型定義 ＆ システム定数定義
+//  - メールアドレス(email)属性を1文字たりとも含まず独自ID(id)のみで全データ管理
+//  - DB欠損カラム(time_spent_minutes, created_at, max_score等)でエラーを出さない安全設計
+//  - 科目一覧とカラーマッピング(HEX/Tailwind)を定義
+// =============================================================================
+
+export type UserRole = 'admin' | 'teacher' | 'student';
+
+// 科目ボタンは24項目・この順序で固定。追加・削除・並べ替えをしない。
+const SUBJECT_NAMES = Object.freeze([
+  '英語',
+  '英単語',
+  '数学',
+  '数学(学校用)',
+  '現代文',
+  '古典',
+  '漢文',
+  '物理',
+  '化学',
+  '生物',
+  '地学',
+  '物理基礎',
+  '化学基礎',
+  '生物基礎',
+  '地学基礎',
+  '日本史',
+  '世界史',
+  '地理',
+  '政治経済',
+  '倫理',
+  '公共',
+  '情報',
+  '高校の予習',
+  'その他',
+] as const);
+
+export type SubjectType = (typeof SUBJECT_NAMES)[number];
+
+export interface SubjectColorConfig {
+  subject: SubjectType;
+  colorName: string;
+  bgClass: string;
+  textClass: string;
+  borderClass: string;
+  badgeClass: string;
+  hexCode: string;
+}
+
+function subjectColor(
+  subject: SubjectType,
+  colorName: string,
+  bgClass: string,
+  textClass: string,
+  borderClass: string,
+  badgeClass: string,
+  hexCode: string,
+): SubjectColorConfig {
+  return { subject, colorName, bgClass, textClass, borderClass, badgeClass, hexCode };
+}
+
+const SUBJECT_COLOR_MAP: Record<SubjectType, SubjectColorConfig> = {
+  英語: subjectColor('英語', '赤 (ローズ)', 'bg-rose-50', 'text-rose-800', 'border-rose-200', 'bg-rose-100 text-rose-900 border-rose-300 font-bold', '#e11d48'),
+  英単語: subjectColor('英単語', 'ピンク', 'bg-pink-50', 'text-pink-800', 'border-pink-200', 'bg-pink-100 text-pink-900 border-pink-300 font-bold', '#db2777'),
+  数学: subjectColor('数学', '青 (ブルー)', 'bg-blue-50', 'text-blue-800', 'border-blue-200', 'bg-blue-100 text-blue-900 border-blue-300 font-bold', '#2563eb'),
+  '数学(学校用)': subjectColor('数学(学校用)', '水色 (スカイ)', 'bg-sky-50', 'text-sky-800', 'border-sky-200', 'bg-sky-100 text-sky-900 border-sky-300 font-bold', '#0284c7'),
+  現代文: subjectColor('現代文', '緑 (エメラルド)', 'bg-emerald-50', 'text-emerald-800', 'border-emerald-200', 'bg-emerald-100 text-emerald-900 border-emerald-300 font-bold', '#059669'),
+  古典: subjectColor('古典', '緑', 'bg-green-50', 'text-green-800', 'border-green-200', 'bg-green-100 text-green-900 border-green-300 font-bold', '#16a34a'),
+  漢文: subjectColor('漢文', '青緑 (ティール)', 'bg-teal-50', 'text-teal-800', 'border-teal-200', 'bg-teal-100 text-teal-900 border-teal-300 font-bold', '#0f766e'),
+  物理: subjectColor('物理', '紫 (パープル)', 'bg-purple-50', 'text-purple-800', 'border-purple-200', 'bg-purple-100 text-purple-900 border-purple-300 font-bold', '#9333ea'),
+  化学: subjectColor('化学', 'バイオレット', 'bg-violet-50', 'text-violet-800', 'border-violet-200', 'bg-violet-100 text-violet-900 border-violet-300 font-bold', '#7c3aed'),
+  生物: subjectColor('生物', 'フクシア', 'bg-fuchsia-50', 'text-fuchsia-800', 'border-fuchsia-200', 'bg-fuchsia-100 text-fuchsia-900 border-fuchsia-300 font-bold', '#c026d3'),
+  地学: subjectColor('地学', '藍 (インディゴ)', 'bg-indigo-50', 'text-indigo-800', 'border-indigo-200', 'bg-indigo-100 text-indigo-900 border-indigo-300 font-bold', '#4f46e5'),
+  物理基礎: subjectColor('物理基礎', '薄紫', 'bg-purple-50', 'text-purple-700', 'border-purple-200', 'bg-purple-100 text-purple-800 border-purple-300 font-bold', '#c084fc'),
+  化学基礎: subjectColor('化学基礎', '薄バイオレット', 'bg-violet-50', 'text-violet-700', 'border-violet-200', 'bg-violet-100 text-violet-800 border-violet-300 font-bold', '#a78bfa'),
+  生物基礎: subjectColor('生物基礎', '薄フクシア', 'bg-fuchsia-50', 'text-fuchsia-700', 'border-fuchsia-200', 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-300 font-bold', '#e879f9'),
+  地学基礎: subjectColor('地学基礎', '薄インディゴ', 'bg-indigo-50', 'text-indigo-700', 'border-indigo-200', 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold', '#818cf8'),
+  日本史: subjectColor('日本史', 'オレンジ', 'bg-orange-50', 'text-orange-800', 'border-orange-200', 'bg-orange-100 text-orange-900 border-orange-300 font-bold', '#ea580c'),
+  世界史: subjectColor('世界史', '深オレンジ', 'bg-orange-50', 'text-orange-900', 'border-orange-300', 'bg-orange-200 text-orange-950 border-orange-400 font-bold', '#c2410c'),
+  地理: subjectColor('地理', 'アンバー', 'bg-amber-50', 'text-amber-800', 'border-amber-200', 'bg-amber-100 text-amber-900 border-amber-300 font-bold', '#d97706'),
+  政治経済: subjectColor('政治経済', '黄 (イエロー)', 'bg-yellow-50', 'text-yellow-800', 'border-yellow-200', 'bg-yellow-100 text-yellow-900 border-yellow-300 font-bold', '#ca8a04'),
+  倫理: subjectColor('倫理', 'ライム', 'bg-lime-50', 'text-lime-800', 'border-lime-200', 'bg-lime-100 text-lime-900 border-lime-300 font-bold', '#65a30d'),
+  公共: subjectColor('公共', '黄緑', 'bg-lime-50', 'text-lime-900', 'border-lime-300', 'bg-lime-200 text-lime-950 border-lime-400 font-bold', '#4d7c0f'),
+  情報: subjectColor('情報', 'グレー', 'bg-slate-100', 'text-slate-800', 'border-slate-300', 'bg-slate-200 text-slate-900 border-slate-400 font-bold', '#64748b'),
+  '高校の予習': subjectColor('高校の予習', 'ストーン', 'bg-stone-100', 'text-stone-800', 'border-stone-300', 'bg-stone-200 text-stone-900 border-stone-400 font-bold', '#78716c'),
+  その他: subjectColor('その他', 'スレート', 'bg-slate-50', 'text-slate-700', 'border-slate-200', 'bg-slate-100 text-slate-800 border-slate-300 font-bold', '#94a3b8'),
+};
+
+Object.freeze(SUBJECT_COLOR_MAP);
+
+const LEGACY_SUBJECT_MAP: Record<string, SubjectType> = Object.freeze({
+  古文: '古典',
+  '古文・漢文': '古典',
+  '学校のプリント': '高校の予習',
+  '高校のプリント': '高校の予習',
+  '公共など': '公共',
+  現代社会: '公共',
+  英熟語: '英語',
+  他: 'その他',
+  '物理・化学・生物': '物理',
+  '物理基礎・化学基礎・生物基礎・地学基礎': '物理基礎',
+  '日本史・世界史・地理': '日本史',
+  '公民・政治経済・倫理': '政治経済',
+  '情報・その他': '情報',
+});
+
+const SUBJECT_MATCH_ORDER = Object.freeze(
+  [...SUBJECT_NAMES].filter((name) => name !== 'その他').sort((a, b) => b.length - a.length),
+);
+
+function isSubjectType(value: string): value is SubjectType {
+  return Object.prototype.hasOwnProperty.call(SUBJECT_COLOR_MAP, value);
+}
+
+function canonicalizeSubjectLabel(value: unknown): string {
+  return typeof value === 'string' ? value.trim().replace(/（/g, '(').replace(/）/g, ')') : '';
+}
+
+function subjectFromInput(value: unknown): SubjectType | null {
+  const raw = canonicalizeSubjectLabel(value);
+  if (isSubjectType(raw)) return raw;
+  return LEGACY_SUBJECT_MAP[raw] || null;
+}
+
+function exactSubjectFromRecord(record: Record<string, unknown> | null | undefined): SubjectType | null {
+  if (!record) return null;
+  const preferred = ['subject', 'category', '教科', 'subject_name', 'kamoku'];
+  for (const key of preferred) {
+    const subject = subjectFromInput(record[key]);
+    if (subject) return subject;
+  }
+  return null;
+}
+
+function subjectFromMaterialTitle(title: string): SubjectType | null {
+  const text = canonicalizeSubjectLabel(title);
+  if (!text) return null;
+  if (text.includes('数学(学校用)')) return '数学(学校用)';
+  if (text.includes('古文')) return '古典';
+  if (text.includes('現代社会')) return '公共';
+  if (text.includes('英熟語')) return '英語';
+  const named = SUBJECT_MATCH_ORDER.find((name) => text.includes(name));
+  if (named) return named;
+  if (/英単語|パス単|\bDUO\b/i.test(text)) return '英単語';
+  if (/英語|英文|英作文|英検|イングリッシュ/i.test(text)) return '英語';
+  return null;
+}
+
+function subjectForMasterRow(
+  row: Record<string, unknown> | null | undefined,
+  title: string,
+  cached?: { subject?: unknown } | null,
+): SubjectType {
+  const stored = exactSubjectFromRecord(row) || subjectFromInput(cached?.subject);
+  if (stored) return stored;
+  return subjectFromMaterialTitle(title) || 'その他';
+}
+
+function subjectBadgeClass(subject: string): string {
+  return isSubjectType(subject)
+    ? SUBJECT_COLOR_MAP[subject].badgeClass
+    : 'bg-slate-100 text-slate-800 border border-slate-300 font-bold';
+}
+
+const MATERIAL_CACHE_KEY = 'juku_materials_cache';
+
+function readMaterialCache(): Record<string, Material> {
+  return readLocalJson<Record<string, Material>>(MATERIAL_CACHE_KEY, {});
+}
+
+function cacheMaterial(material: Material) {
+  const all = readMaterialCache();
+  all[material.id] = material;
+  writeLocalJson(MATERIAL_CACHE_KEY, all);
+}
+
+function uncacheMaterial(id: string) {
+  const all = readMaterialCache();
+  delete all[id];
+  writeLocalJson(MATERIAL_CACHE_KEY, all);
+}
+
+function materialTitleKey(title: string): string {
+  return title.trim();
+}
+
+function findMaterialByTitle(list: Material[], title: string): Material | undefined {
+  const key = materialTitleKey(title);
+  return list.find((item) => materialTitleKey(item.title) === key);
+}
+
+function upsertMaterialList(list: Material[], saved: Material): Material[] {
+  const key = materialTitleKey(saved.title);
+  const rest = list.filter((item) => item.id !== saved.id && materialTitleKey(item.title) !== key);
+  return [saved, ...rest];
+}
+
+function readDisplayOrder(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const order = Number(value);
+  return Number.isFinite(order) ? order : null;
+}
+
+function maxDisplayOrder(list: Material[], subject: SubjectType): number {
+  let max = 0;
+  for (const item of list) {
+    if (item.subject !== subject) continue;
+    const order = readDisplayOrder(item.display_order);
+    if (order != null && order > max) max = order;
+  }
+  return max;
+}
+
+function createDisplayOrderAllocator(existingList: Material[]) {
+  const cursor = new Map<SubjectType, number>();
+  return (subject: SubjectType, existing: Material | undefined): number => {
+    if (existing && existing.subject === subject) return existing.display_order;
+    if (!cursor.has(subject)) cursor.set(subject, maxDisplayOrder(existingList, subject));
+    const next = (cursor.get(subject) ?? 0) + 1;
+    cursor.set(subject, next);
+    return next;
+  };
+}
+
+function byDisplayOrder(list: readonly Material[]): Material[] {
+  return list
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const orderDiff = a.item.display_order - b.item.display_order;
+      if (orderDiff !== 0) return orderDiff;
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
+}
+
+function materialsForSubject(list: Material[], subject: SubjectType): Material[] {
+  return byDisplayOrder(list.filter((item) => item.subject === subject));
+}
+
+function mergeMaterialRecord(
+  existing: Material | undefined,
+  incoming: {
+    id?: string;
+    title: string;
+    subject: SubjectType;
+    description?: string;
+    image_url?: string | null;
+    difficulty?: Material['difficulty'];
+    created_by?: string;
+    display_order?: number;
+    overwriteBlanks: boolean;
+  },
+): Material {
+  const description = incoming.description?.trim()
+    ? incoming.description.trim()
+    : incoming.overwriteBlanks
+      ? undefined
+      : existing?.description;
+  const imageUrl = incoming.image_url
+    ? incoming.image_url
+    : incoming.overwriteBlanks
+      ? null
+      : existing?.image_url || null;
+  return {
+    id: existing?.id || incoming.id || `mat_${Date.now()}`,
+    title: incoming.title.trim(),
+    subject: incoming.subject,
+    difficulty: incoming.difficulty || existing?.difficulty || 'standard',
+    image_url: imageUrl,
+    description,
+    color: SUBJECT_COLOR_MAP[incoming.subject].hexCode,
+    created_by: existing?.created_by || incoming.created_by || '',
+    display_order: incoming.display_order ?? existing?.display_order ?? 1,
+  };
+}
+
+function materialWritePayload(
+  saved: Material,
+  options: { includeImage: boolean; includeDescription: boolean },
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    title: saved.title,
+    subject: saved.subject,
+    category: saved.subject,
+    created_by: saved.created_by,
+    color: saved.color || SUBJECT_COLOR_MAP[saved.subject].hexCode,
+    difficulty: saved.difficulty || 'standard',
+    display_order: saved.display_order,
+  };
+  if (options.includeImage) payload.image_url = saved.image_url || null;
+  if (options.includeDescription) payload.description = saved.description ?? null;
+  return payload;
+}
+
+function missingMaterialsColumn(message: string): string | null {
+  const patterns = [
+    /Could not find the '([^']+)' column/i,
+    /column ["']([^"']+)["'] of relation/i,
+    /column ["']([^"']+)["'] does not exist/i,
+  ];
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+async function writeMaterialRow(
+  supabase: any,
+  id: string,
+  payload: Record<string, unknown>,
+): Promise<string | null> {
+  const body: Record<string, unknown> = { ...payload };
+  const modes: Array<'upsert' | 'insert' | 'update'> = ['upsert', 'insert', 'update'];
+  let modeIndex = 0;
+  let lastMessage = '';
+  for (let attempt = 0; attempt < 24 && modeIndex < modes.length; attempt += 1) {
+    const mode = modes[modeIndex];
+    const result = mode === 'update'
+      ? await supabase.from('materials').update(body).eq('id', id)
+      : mode === 'insert'
+        ? await supabase.from('materials').insert([{ id, ...body }])
+        : await supabase.from('materials').upsert([{ id, ...body }], { onConflict: 'id' });
+    if (!result.error) return null;
+    lastMessage = result.error.message || lastMessage;
+    const missing = missingMaterialsColumn(lastMessage);
+    if (missing && Object.prototype.hasOwnProperty.call(body, missing)) {
+      delete body[missing];
+      continue;
+    }
+    modeIndex += 1;
+  }
+  return lastMessage || '教材の保存に失敗しました';
+}
+
+const STUDENT_PROFILE_FIELDS = [
+  { key: 'grade', label: '学年', column: 'grade' },
+  { key: 'highSchool', label: '高校', column: 'high_school' },
+  { key: 'english', label: '英語', column: 'subject_english' },
+  { key: 'math', label: '数学', column: 'subject_math' },
+  { key: 'japanese', label: '国語', column: 'subject_japanese' },
+  { key: 'physics', label: '物理', column: 'subject_physics' },
+  { key: 'chemistry', label: '化学', column: 'subject_chemistry' },
+  { key: 'biology', label: '生物', column: 'subject_biology' },
+  { key: 'japaneseHistory', label: '日本史', column: 'subject_japanese_history' },
+  { key: 'worldHistory', label: '世界史', column: 'subject_world_history' },
+  { key: 'individual', label: '個別', column: 'individual' },
+] as const;
+
+const STUDENT_LIST_COLUMNS = [
+  { key: 'name', label: '氏名' },
+  { key: 'grade', label: '学年' },
+  { key: 'highSchool', label: '高校' },
+  { key: 'classroom', label: '所属校舎' },
+  { key: 'role', label: '区分' },
+  { key: 'id', label: '独自ID' },
+  { key: 'password', label: 'パスワード' },
+  { key: 'english', label: '英語' },
+  { key: 'math', label: '数学' },
+  { key: 'japanese', label: '国語' },
+  { key: 'physics', label: '物理' },
+  { key: 'chemistry', label: '化学' },
+  { key: 'biology', label: '生物' },
+  { key: 'japaneseHistory', label: '日本史' },
+  { key: 'worldHistory', label: '世界史' },
+  { key: 'individual', label: '個別' },
+] as const;
+
+type StudentProfileKey = (typeof STUDENT_PROFILE_FIELDS)[number]['key'];
+type StudentProfile = Record<StudentProfileKey, string>;
+type StudentListFilterKey = (typeof STUDENT_LIST_COLUMNS)[number]['key'];
+
+function toHalfWidthAscii(value: string): string {
+  return value
+    .replace(/\u3000/g, ' ')
+    .replace(/[\uFF01-\uFF5E]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xFEE0));
+}
+
+function readAppSession(): User | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(APP_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<User>;
+    if (!parsed?.id || !parsed.name || (parsed.role !== 'admin' && parsed.role !== 'teacher' && parsed.role !== 'student')) return null;
+    return {
+      ...emptyStudentProfile(),
+      ...parsed,
+      id: String(parsed.id),
+      name: String(parsed.name),
+      role: parsed.role,
+      classroom: parsed.classroom || '本川越校',
+      password: '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeAppSession(user: User) {
+  if (typeof window === 'undefined') return;
+  const stored: User = { ...user, password: '' };
+  window.localStorage.setItem(APP_SESSION_KEY, JSON.stringify(stored));
+}
+
+function clearAppSession() {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(APP_SESSION_KEY);
+}
+
+function emptyStudentProfile(): StudentProfile {
+  return {
+    grade: '',
+    highSchool: '',
+    english: '',
+    math: '',
+    japanese: '',
+    physics: '',
+    chemistry: '',
+    biology: '',
+    japaneseHistory: '',
+    worldHistory: '',
+    individual: '',
+  };
+}
+
+export interface User {
+  id: string; // 独自文字列ID (例: ext001, ext002, teacher01 等)
+  name: string;
+  role: UserRole;
+  classroom: string;
+  grade: string;
+  highSchool: string;
+  english: string;
+  math: string;
+  japanese: string;
+  physics: string;
+  chemistry: string;
+  biology: string;
+  japaneseHistory: string;
+  worldHistory: string;
+  individual: string;
+  password: string;
+  email?: string;
+}
+
+export interface StudentMessage {
+  id: string;
+  user_id: string;
+  sender_id: string;
+  sender_name: string;
+  body: string;
+  sent_at: string;
+  read_at: string | null;
+}
+
+const APP_SESSION_KEY = 'juku_app_session';
+const STUDENT_PROFILE_STORAGE_KEY = 'juku_student_profiles';
+const STUDENT_MESSAGE_STORAGE_KEY = 'juku_student_messages';
+const USER_PASSWORD_STORAGE_KEY = 'juku_user_passwords';
+const DEFAULT_LOGIN_PASSWORD = '1234';
+
+function readLocalJson<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredJson<T>(key: string, fallback: T, accept: (value: unknown) => value is T): T {
+  if (typeof window === 'undefined') return fallback;
+  const raw = window.localStorage.getItem(key);
+  if (!raw) return fallback;
+  const backupKey = `${key}__backup`;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!accept(parsed)) throw new Error('invalid stored json');
+    return parsed;
+  } catch {
+    try {
+      if (!window.localStorage.getItem(backupKey)) window.localStorage.setItem(backupKey, raw);
+    } catch {
+      // バックアップを書けなくても、元のキーは消さない
+    }
+    const backupRaw = window.localStorage.getItem(backupKey);
+    if (backupRaw && backupRaw !== raw) {
+      try {
+        const backup: unknown = JSON.parse(backupRaw);
+        if (accept(backup)) return backup;
+      } catch {
+        // 壊れた値では上書きしない
+      }
+    }
+    return fallback;
+  }
+}
+
+function writeLocalJson(key: string, value: unknown) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+function readLocalProfiles(): Record<string, StudentProfile> {
+  return readLocalJson<Record<string, StudentProfile>>(STUDENT_PROFILE_STORAGE_KEY, {});
+}
+
+function saveLocalProfile(userId: string, profile: StudentProfile) {
+  const all = readLocalProfiles();
+  all[userId] = profile;
+  writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, all);
+}
+
+function readLocalMessages(): StudentMessage[] {
+  return readLocalJson<StudentMessage[]>(STUDENT_MESSAGE_STORAGE_KEY, []);
+}
+
+function writeLocalMessages(messages: StudentMessage[]) {
+  writeLocalJson(STUDENT_MESSAGE_STORAGE_KEY, messages);
+}
+
+function readLocalPasswords(): Record<string, string> {
+  return readLocalJson<Record<string, string>>(USER_PASSWORD_STORAGE_KEY, {});
+}
+
+function saveLocalPassword(userId: string, password: string) {
+  const all = readLocalPasswords();
+  const next = password.trim();
+  if (next) all[userId] = next;
+  else delete all[userId];
+  writeLocalJson(USER_PASSWORD_STORAGE_KEY, all);
+}
+
+function passwordFromRow(row: any): string {
+  const local = readLocalPasswords()[String(row?.id || '')] || '';
+  const remote = row?.password == null ? '' : String(row.password).trim();
+  return remote || local;
+}
+
+function acceptsLoginPassword(userId: string, storedPassword: string, inputPassword: string): boolean {
+  const stored = storedPassword.trim();
+  if (stored) return stored === inputPassword;
+  return inputPassword === userId || inputPassword === DEFAULT_LOGIN_PASSWORD;
+}
+
+const USER_ROLE_CACHE_KEY = 'juku_user_roles';
+
+function readCachedUserRole(userId: string): UserRole | null {
+  const cached = readLocalJson<Record<string, string>>(USER_ROLE_CACHE_KEY, {})[userId];
+  if (cached === 'admin' || cached === 'teacher' || cached === 'student') return cached;
+  return null;
+}
+
+const KNOWN_ADMIN_LOGIN_IDS = ['admin@y.stlog'];
+const BUILTIN_ADMIN_ID = 'admin@y.stlog';
+const BUILTIN_ADMIN_PASSWORD = 'ylog-admin';
+
+function isBuiltinAdminLogin(id: string, password: string): boolean {
+  return normalizeLoginIdentity(id) === normalizeLoginIdentity(BUILTIN_ADMIN_ID) && password === BUILTIN_ADMIN_PASSWORD;
+}
+
+function normalizeLoginIdentity(value: unknown): string {
+  return String(value ?? '').replace(/[\s\u3000]/g, '').toLowerCase();
+}
+
+function isKnownAdminIdentity(...values: unknown[]): boolean {
+  return values.some((value) => KNOWN_ADMIN_LOGIN_IDS.includes(normalizeLoginIdentity(value)));
+}
+
+function rememberUserRole(userId: string, role: UserRole) {
+  const id = userId.trim();
+  if (!id) return;
+  const stored: UserRole = isKnownAdminIdentity(id) ? 'admin' : role;
+  const all = readLocalJson<Record<string, string>>(USER_ROLE_CACHE_KEY, {});
+  if (all[id] === stored) return;
+  all[id] = stored;
+  writeLocalJson(USER_ROLE_CACHE_KEY, all);
+}
+
+function resolveAppRole(value: unknown, userId?: string, email?: string): UserRole {
+  if (isKnownAdminIdentity(userId, email)) return 'admin';
+  const raw = String(value ?? '').replace(/[\s\u3000]/g, '').toLowerCase();
+  if (raw === 'admin' || raw === 'administrator' || raw.includes('admin') || raw === '管理者' || raw === '管理') return 'admin';
+  if (raw === 'teacher' || raw === 'staff' || raw.includes('teacher') || raw === '講師' || raw === '教師' || raw === '先生') return 'teacher';
+  if (raw === 'student' || raw === '生徒') return 'student';
+  const cached = userId ? readCachedUserRole(userId) : null;
+  if (cached === 'student' && isKnownAdminIdentity(userId, email)) return 'admin';
+  return cached || 'student';
+}
+
+function isStaffRole(role: unknown, userId?: string, email?: string): boolean {
+  const resolved = resolveAppRole(role, userId, email);
+  return resolved === 'admin' || resolved === 'teacher';
+}
+
+function pickStudentProfile(source: Partial<StudentProfile> | null | undefined): StudentProfile {
+  const profile = emptyStudentProfile();
+  if (!source) return profile;
+  STUDENT_PROFILE_FIELDS.forEach((field) => {
+    const value = source[field.key];
+    if (value != null && String(value).trim() !== '') profile[field.key] = String(value).trim();
+  });
+  return profile;
+}
+
+function profileFromRow(row: any): StudentProfile {
+  const profile = emptyStudentProfile();
+  if (row?.student_profile) {
+    try {
+      const parsed = typeof row.student_profile === 'string' ? JSON.parse(row.student_profile) : row.student_profile;
+      Object.assign(profile, pickStudentProfile(parsed));
+    } catch {
+      // 壊れたJSONは無視してカラム値を優先する
+    }
+  }
+  STUDENT_PROFILE_FIELDS.forEach((field) => {
+    const columnValue = row?.[field.column];
+    if (columnValue != null && String(columnValue).trim() !== '') {
+      profile[field.key] = String(columnValue).trim();
+    }
+  });
+  const local = readLocalProfiles()[row?.id];
+  if (local) {
+    STUDENT_PROFILE_FIELDS.forEach((field) => {
+      if (!profile[field.key] && local[field.key]) profile[field.key] = local[field.key];
+    });
+  }
+  return profile;
+}
+
+function profileToDbColumns(profile: StudentProfile): Record<string, string> {
+  const columns: Record<string, string> = { student_profile: JSON.stringify(profile) };
+  STUDENT_PROFILE_FIELDS.forEach((field) => {
+    columns[field.column] = profile[field.key] || '';
+  });
+  return columns;
+}
+
+function blankUserForm(role: UserRole = 'student'): User {
+  return {
+    id: '',
+    name: '',
+    role,
+    classroom: '本川越校',
+    password: '',
+    ...emptyStudentProfile(),
+  };
+}
+
+function formatMessageTimestamp(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatSentAt(iso: string): string {
+  if (/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/.test(iso)) return iso;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return formatMessageTimestamp(date);
+}
+
+function StudentProfileFields({
+  value,
+  onChange,
+}: {
+  value: StudentProfile;
+  onChange: (key: StudentProfileKey, next: string) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {STUDENT_PROFILE_FIELDS.map((field) => (
+        <div key={field.key}>
+          <label className="block text-slate-600 mb-1">{field.label}</label>
+          <input
+            type="text"
+            value={value[field.key]}
+            onChange={(e) => onChange(field.key, e.target.value)}
+            className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export interface Material {
+  id: string;
+  title: string;
+  subject: SubjectType;
+  difficulty?: 'basic' | 'standard' | 'advanced';
+  image_url?: string | null;
+  description?: string;
+  color?: string | null;
+  created_by: string;
+  display_order: number;
+}
+
+export interface StudyLog {
+  id: string;
+  user_id: string;
+  material_id: string;
+  score: number;
+  max_score?: number;
+  time_spent_minutes: number;
+  is_mission_completed: boolean;
+  comment?: string;
+  created_at?: string;
+}
+
+export type WeekdayId = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+export type ScheduleCategoryId = 'high_school' | 'club' | 'activity' | 'juku' | 'other';
+export type StaffScheduleTemplateId = 'plain' | 'high_school' | 'high_school_club';
+
+export interface ScheduleSlot {
+  id: string;
+  day: WeekdayId;
+  startHour: number;
+  endHour: number;
+  startMinute?: number;
+  endMinute?: number;
+  category: ScheduleCategoryId;
+  title: string;
+}
+
+export interface MyScheduleFolderItem {
+  id: string;
+  name: string;
+  hinaSlot?: number;
+  slots: ScheduleSlot[];
+}
+
+export interface ScheduleSlotDraft {
+  id: string | null;
+  day: WeekdayId;
+  startHour: number;
+  endHour: number;
+  startMinute: number;
+  endMinute: number;
+  category: ScheduleCategoryId;
+  title: string;
+}
+
+export type ActiveTab = 
+  | 'dashboard'
+  | 'teachers'
+  | 'students'
+  | 'student_detail'
+  | 'schedule_planner'
+  | 'materials'
+  | 'logs'
+  | 'progress';
+
+export interface CsvRowError {
+  rowNumber: number;
+  field: string;
+  message: string;
+  rawValue?: string;
+}
+
+export interface NotificationState {
+  id: string;
+  type: 'success' | 'error' | 'info' | 'warning';
+  message: string;
+  timestamp: string;
+}
+
+// =============================================================================
+// SECTION 2. スケジュール（週間タイムテーブル）
+// =============================================================================
+
+const SCHEDULE_TEMPLATE_STORAGE_KEY = 'juku_schedule_templates';
+const MY_SCHEDULE_STORAGE_KEY = 'juku_my_schedules';
+const WEEKLY_GOAL_STORAGE_KEY = 'juku_weekly_goals';
+const PENDING_STUDY_LOGS_KEY = 'juku_pending_study_logs';
+const STUDY_LOG_OVERRIDES_KEY = 'juku_study_log_overrides';
+const DELETED_STUDY_LOGS_KEY = 'juku_deleted_study_log_ids';
+const FAVORITE_MATERIALS_KEY = 'juku_favorite_materials';
+const MY_MATERIALS_KEY = 'juku_my_materials';
+const COUNTDOWN_MINUTE_CHIPS = [15, 30, 45, 60, 90] as const;
+const SCHEDULE_HOUR_HEIGHT = 36;
+const STUDY_MINUTE_CHIPS = [15, 30, 45, 60, 90, 120] as const;
+const JS_DAY_TO_WEEKDAY: WeekdayId[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+const WEEKDAYS: { id: WeekdayId; label: string }[] = [
+  { id: 'mon', label: '月' },
+  { id: 'tue', label: '火' },
+  { id: 'wed', label: '水' },
+  { id: 'thu', label: '木' },
+  { id: 'fri', label: '金' },
+  { id: 'sat', label: '土' },
+  { id: 'sun', label: '日' },
+];
+
+const SCHEDULE_HOURS = Array.from({ length: 24 }, (_, hour) => hour);
+const SCHEDULE_MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+
+const SCHEDULE_CATEGORIES: { id: ScheduleCategoryId; label: string; color: string; border: string }[] = [
+  { id: 'high_school', label: '高校', color: '#EBF8FF', border: '#90CDF4' },
+  { id: 'club', label: '部活', color: '#FFFAF0', border: '#F6AD55' },
+  { id: 'activity', label: '活動(生徒会・実行委員・習い事など)', color: '#FAF5FF', border: '#D6BCFA' },
+  { id: 'juku', label: '塾・予備校', color: '#F0FFF4', border: '#9AE6B4' },
+  { id: 'other', label: '他', color: '#F7FAFC', border: '#A0AEC0' },
+];
+
+const STAFF_SCHEDULE_TEMPLATES: { id: StaffScheduleTemplateId; name: string }[] = [
+  { id: 'plain', name: 'プレーン(何も設定されていない)' },
+  { id: 'high_school', name: '「高校」のみのパターン' },
+  { id: 'high_school_club', name: '「高校」・「部活」パターン' },
+];
+
+function formatScheduleHour(hour: number): string {
+  return `${String(hour).padStart(2, '0')}:00`;
+}
+
+function startOfThisWeek(now = new Date()): Date {
+  const startKey = weekStartKey(todayDateKey(now));
+  const [year, month, day] = startKey.split('-').map(Number);
+  return new Date(Date.UTC(year, (month || 1) - 1, day || 1, -9, 0, 0, 0));
+}
+
+function isStudyLog(value: unknown): value is StudyLog {
+  if (!value || typeof value !== 'object') return false;
+  const log = value as StudyLog;
+  return Boolean(log.id && log.user_id);
+}
+
+function readPendingStudyLogs(): StudyLog[] {
+  const stored = readStoredJson<StudyLog[]>(
+    PENDING_STUDY_LOGS_KEY,
+    [],
+    (value): value is StudyLog[] => Array.isArray(value),
+  );
+  return stored.filter(isStudyLog);
+}
+
+function writeStudyRecordJson(key: string, value: unknown) {
+  if (typeof window === 'undefined') return;
+  const serialized = JSON.stringify(value);
+  if (serialized === '[]' || serialized === '{}') {
+    const raw = window.localStorage.getItem(key);
+    if (raw && raw !== '[]' && raw !== '{}') {
+      try {
+        JSON.parse(raw);
+      } catch {
+        return;
+      }
+    }
+  }
+  writeLocalJson(key, value);
+}
+
+function writePendingStudyLogs(logs: StudyLog[]) {
+  writeStudyRecordJson(PENDING_STUDY_LOGS_KEY, logs);
+}
+
+function rememberPendingStudyLog(log: StudyLog) {
+  writePendingStudyLogs([log, ...readPendingStudyLogs().filter((item) => item.id !== log.id)]);
+}
+
+function readWeeklyGoalMinutes(userId: string): number {
+  const stored = readLocalJson<Record<string, number>>(WEEKLY_GOAL_STORAGE_KEY, {});
+  const value = stored[userId];
+  return typeof value === 'number' && value > 0 ? value : 0;
+}
+
+function writeWeeklyGoalMinutes(userId: string, minutes: number) {
+  const stored = readLocalJson<Record<string, number>>(WEEKLY_GOAL_STORAGE_KEY, {});
+  stored[userId] = minutes;
+  writeLocalJson(WEEKLY_GOAL_STORAGE_KEY, stored);
+}
+
+function readStudyLogOverrides(): Record<string, StudyLog> {
+  return readStoredJson<Record<string, StudyLog>>(
+    STUDY_LOG_OVERRIDES_KEY,
+    {},
+    (value): value is Record<string, StudyLog> => Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+  );
+}
+
+function writeStudyLogOverrides(overrides: Record<string, StudyLog>) {
+  writeStudyRecordJson(STUDY_LOG_OVERRIDES_KEY, overrides);
+}
+
+function readDeletedStudyLogIds(): string[] {
+  const stored = readStoredJson<string[]>(
+    DELETED_STUDY_LOGS_KEY,
+    [],
+    (value): value is string[] => Array.isArray(value),
+  );
+  return stored.filter((id) => typeof id === 'string' && id);
+}
+
+function writeDeletedStudyLogIds(ids: string[]) {
+  writeStudyRecordJson(DELETED_STUDY_LOGS_KEY, ids);
+}
+
+function readFavoriteMaterialIds(userId: string): string[] {
+  const stored = readLocalJson<Record<string, string[]>>(FAVORITE_MATERIALS_KEY, {});
+  const ids = stored[userId];
+  return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && id) : [];
+}
+
+function writeFavoriteMaterialIds(userId: string, ids: string[]) {
+  const stored = readLocalJson<Record<string, string[]>>(FAVORITE_MATERIALS_KEY, {});
+  stored[userId] = ids;
+  writeLocalJson(FAVORITE_MATERIALS_KEY, stored);
+}
+
+interface MyMaterialItem {
+  id: string;
+  title: string;
+  subject: SubjectType;
+  addedAt: string;
+}
+
+function readMyMaterials(userId: string): MyMaterialItem[] {
+  const stored = readLocalJson<Record<string, MyMaterialItem[]>>(MY_MATERIALS_KEY, {});
+  const items = stored[userId];
+  if (!Array.isArray(items)) return [];
+  return items.flatMap((item) => {
+    if (!item?.id || !item.title) return [];
+    const subject = subjectFromInput(item.subject);
+    if (!subject) return [];
+    return [{ ...item, subject }];
+  });
+}
+
+function writeMyMaterials(userId: string, items: MyMaterialItem[]) {
+  const stored = readLocalJson<Record<string, MyMaterialItem[]>>(MY_MATERIALS_KEY, {});
+  stored[userId] = items;
+  writeLocalJson(MY_MATERIALS_KEY, stored);
+}
+
+function parseScannedMaterial(raw: string, catalog: Material[]): { title: string; subject: SubjectType } | null {
+  const text = raw.trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as { title?: unknown; name?: unknown; subject?: unknown };
+    const title = String(parsed.title || parsed.name || '').trim();
+    const subject = subjectFromInput(parsed.subject);
+    if (title && subject) return { title, subject };
+    if (title) return { title, subject: 'その他' };
+  } catch {
+    // QRはJSON以外の文字列もある
+  }
+  const byId = catalog.find((item) => item.id === text);
+  if (byId && isSubjectType(byId.subject)) return { title: byId.title, subject: byId.subject };
+  const byTitle = findMaterialByTitle(catalog, text);
+  if (byTitle && isSubjectType(byTitle.subject)) return { title: byTitle.title, subject: byTitle.subject };
+  const parts = text.split(/[|｜,\t]/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    const subjectFirst = subjectFromInput(parts[0]);
+    if (subjectFirst) return { title: parts.slice(1).join(' '), subject: subjectFirst };
+    const subjectSecond = subjectFromInput(parts[1]);
+    if (subjectSecond) return { title: parts[0], subject: subjectSecond };
+  }
+  return { title: text, subject: 'その他' };
+}
+
+type QrCodeDetector = {
+  detect: (source: CanvasImageSource) => Promise<Array<{ rawValue?: string }>>;
+};
+
+function QrMaterialScanner({
+  onResult,
+  onClose,
+}: {
+  onResult: (value: string) => void;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [message, setMessage] = useState('カメラを起動しています。');
+  const onResultRef = useRef(onResult);
+  onResultRef.current = onResult;
+
+  useEffect(() => {
+    let stopped = false;
+    let timer = 0;
+    let stream: MediaStream | null = null;
+    const DetectorCtor = (window as Window & {
+      BarcodeDetector?: new (options: { formats: string[] }) => QrCodeDetector;
+    }).BarcodeDetector;
+
+    const start = async () => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setMessage('この端末ではカメラを起動できません。下のフォームから追加してください。');
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        });
+        if (stopped) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+        if (!DetectorCtor) {
+          setMessage('カメラは起動しました。このブラウザはQRの解析に未対応です。下のフォームから追加してください。');
+          return;
+        }
+        const detector = new DetectorCtor({ formats: ['qr_code'] });
+        setMessage('QRコードをかざしてください。');
+        const loop = async () => {
+          if (stopped) return;
+          const video = videoRef.current;
+          if (video && video.readyState >= 2) {
+            try {
+              const codes = await detector.detect(video);
+              const value = codes.find((code) => code.rawValue)?.rawValue;
+              if (value) {
+                onResultRef.current(value);
+                return;
+              }
+            } catch {
+              // 次のフレームで読み取りを続ける
+            }
+          }
+          timer = window.setTimeout(() => { void loop(); }, 280);
+        };
+        void loop();
+      } catch {
+        setMessage('カメラを起動できませんでした。許可を確認するか、下のフォームから追加してください。');
+      }
+    };
+    void start();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-[80] bg-slate-950/70 flex items-end justify-center" onClick={onClose}>
+      <div className="bg-white w-full max-w-lg rounded-t-3xl p-4 pb-8 space-y-3" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-black text-base">QRコードを読み取る</h3>
+          <button type="button" onClick={onClose} className="text-xs font-black text-slate-400 cursor-pointer">閉じる</button>
+        </div>
+        <video ref={videoRef} muted playsInline className="w-full aspect-square bg-slate-900 rounded-2xl object-cover" />
+        <p className="text-xs font-bold text-slate-500">{message}</p>
+      </div>
+    </div>
+  );
+}
+
+function formatClock(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(safe / 60);
+  const seconds = safe % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+const ACTIVE_STUDY_CLOCK_KEY = 'juku_active_study_clock';
+
+interface ActiveStudyClock {
+  userId: string;
+  mode: 'timer' | 'countdown';
+  running: boolean;
+  startedAt: number;
+  targetSec: number;
+  finished: boolean;
+  subject: string;
+  materialId: string;
+  comment: string;
+  mission: boolean;
+  date: string;
+  composer: StudyClockRange;
+}
+
+function isStudyClockRange(value: unknown): value is StudyClockRange {
+  if (!value || typeof value !== 'object') return false;
+  const range = value as StudyClockRange;
+  return [range.startHour, range.startMinute, range.endHour, range.endMinute].every((item) => Number.isFinite(item));
+}
+
+function readActiveStudyClock(): ActiveStudyClock | null {
+  const raw = readLocalJson<ActiveStudyClock | null>(ACTIVE_STUDY_CLOCK_KEY, null);
+  if (!raw || (raw.mode !== 'timer' && raw.mode !== 'countdown')) return null;
+  if (!raw.userId || !Number.isFinite(raw.startedAt) || raw.startedAt <= 0) return null;
+  if (!isStudyClockRange(raw.composer)) return null;
+  return raw;
+}
+
+function writeActiveStudyClock(clock: ActiveStudyClock) {
+  writeLocalJson(ACTIVE_STUDY_CLOCK_KEY, clock);
+}
+
+function clearActiveStudyClock() {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(ACTIVE_STUDY_CLOCK_KEY);
+}
+
+function elapsedSecondsSince(startedAt: number): number {
+  return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+}
+
+function playTimeAttackChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    [880, 1174].forEach((freq, index) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.02 + index * 0.18);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28 + index * 0.18);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + index * 0.18);
+      osc.stop(now + 0.32 + index * 0.18);
+    });
+    window.setTimeout(() => {
+      void ctx.close();
+    }, 1200);
+  } catch {
+    // 音が出せない端末では画面の通知だけを出す
+  }
+}
+
+type ScreenWakeLockSentinel = { release: () => Promise<void>; addEventListener?: (type: string, listener: () => void) => void };
+
+function requestScreenWakeLock(): Promise<ScreenWakeLockSentinel | null> {
+  try {
+    const nav = navigator as Navigator & { wakeLock?: { request: (type: 'screen') => Promise<ScreenWakeLockSentinel> } };
+    if (!nav.wakeLock) return Promise.resolve(null);
+    return nav.wakeLock.request('screen').catch(() => null);
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
+const LOG_SLOT_STORAGE_KEY = 'juku_log_schedule_slots';
+const DAY_VIEW_HOURS = Array.from({ length: 19 }, (_, index) => index + 6);
+
+interface StudySlotLink {
+  date: string;
+  startHour: number;
+  endHour: number;
+  startMinute?: number;
+  endMinute?: number;
+}
+
+interface StudyClockRange {
+  startHour: number;
+  startMinute: number;
+  endHour: number;
+  endMinute: number;
+}
+
+function clockMinutes(hour: number, minute = 0): number {
+  return hour * 60 + minute;
+}
+
+function studyRangeFromSlot(link: Pick<StudySlotLink, 'startHour' | 'endHour' | 'startMinute' | 'endMinute'>): StudyClockRange {
+  return {
+    startHour: link.startHour,
+    startMinute: link.startMinute ?? 0,
+    endHour: link.endHour,
+    endMinute: link.endMinute ?? 0,
+  };
+}
+
+function studyDurationMinutes(range: StudyClockRange): number {
+  return Math.max(0, clockMinutes(range.endHour, range.endMinute) - clockMinutes(range.startHour, range.startMinute));
+}
+
+function clampStudyRange(range: StudyClockRange): StudyClockRange {
+  const minStart = 6 * 60;
+  const maxEnd = 25 * 60;
+  let start = Math.round(clockMinutes(range.startHour, range.startMinute) / 5) * 5;
+  let end = Math.round(clockMinutes(range.endHour, range.endMinute) / 5) * 5;
+  start = Math.min(Math.max(start, minStart), maxEnd - 5);
+  if (end < start + 5) end = start + 5;
+  if (end > maxEnd) {
+    end = maxEnd;
+    if (start > end - 5) start = end - 5;
+  }
+  return {
+    startHour: Math.floor(start / 60),
+    startMinute: start % 60,
+    endHour: Math.floor(end / 60),
+    endMinute: end % 60,
+  };
+}
+
+const STUDY_CLOCK_OPTIONS: { hour: number; minute: number; label: string }[] = [];
+for (let hour = 6; hour <= 25; hour += 1) {
+  const minutes = hour === 25 ? [0] : [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+  minutes.forEach((minute) => {
+    STUDY_CLOCK_OPTIONS.push({
+      hour,
+      minute,
+      label: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+    });
+  });
+}
+
+type HourSlice = {
+  top: number;
+  height: number;
+  continuesUp: boolean;
+  continuesDown: boolean;
+  isStart: boolean;
+};
+
+function sliceInHour(hour: number, range: StudyClockRange): HourSlice | null {
+  const start = clockMinutes(range.startHour, range.startMinute);
+  const end = clockMinutes(range.endHour, range.endMinute);
+  if (end <= start) return null;
+  const hourStart = hour * 60;
+  const hourEnd = hourStart + 60;
+  const overlapStart = Math.max(start, hourStart);
+  const overlapEnd = Math.min(end, hourEnd);
+  if (overlapEnd <= overlapStart) return null;
+  return {
+    top: ((overlapStart - hourStart) / 60) * 100,
+    height: ((overlapEnd - overlapStart) / 60) * 100,
+    continuesUp: start < hourStart,
+    continuesDown: end > hourEnd,
+    isStart: overlapStart === start,
+  };
+}
+
+const JST_TIME_ZONE = 'Asia/Tokyo';
+
+function todayDateKey(date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: JST_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function jstClock(date: Date): { hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: JST_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const read = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
+  let hour = read('hour');
+  const minute = read('minute');
+  if (!Number.isFinite(hour) || hour === 24) hour = 0;
+  return { hour, minute: Number.isFinite(minute) ? minute : 0 };
+}
+
+type LogSummaryPeriod = 'today' | 'week' | 'month';
+
+const LOG_SUMMARY_PERIODS: { id: LogSummaryPeriod; label: string }[] = [
+  { id: 'today', label: '本日の集計' },
+  { id: 'week', label: '今週の集計' },
+  { id: 'month', label: '今月の集計' },
+];
+
+const MATERIAL_BAR_COLORS = ['#0284c7', '#ea580c', '#16a34a', '#9333ea', '#e11d48', '#ca8a04', '#0f766e', '#4f46e5', '#db2777', '#64748b'];
+
+function studyLogInPeriod(
+  log: StudyLog,
+  period: LogSummaryPeriod,
+  now = new Date(),
+  slots: Record<string, StudySlotLink> = {},
+): boolean {
+  const placed = studyPlacement(log, slots);
+  if (!placed?.date) return false;
+  const today = todayDateKey(now);
+  const weekStart = weekStartKey(today);
+  const weekEnd = shiftDateKey(weekStart, 6);
+  if (placed.date > weekEnd) return false;
+  if (period === 'today') return placed.date === today;
+  if (period === 'week') return placed.date >= weekStart && placed.date <= weekEnd;
+  return placed.date.slice(0, 7) === today.slice(0, 7);
+}
+
+function formatStudyDuration(minutes: number): string {
+  const safe = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(safe / 60);
+  const rest = safe % 60;
+  if (hours <= 0) return `${rest}分`;
+  if (rest === 0) return `${hours}時間`;
+  return `${hours}時間${rest}分`;
+}
+
+function formatHourAndMinute(minutes: number): string {
+  const safe = Math.max(0, Math.round(minutes));
+  return `${Math.floor(safe / 60)}時間${safe % 60}分`;
+}
+
+const STUDY_RANK_BADGES = [
+  { id: 'bronze', label: 'ブロンズ', src: '/ranks/bronze.png' },
+  { id: 'silver', label: 'シルバー', src: '/ranks/silver.png' },
+  { id: 'gold', label: 'ゴールド', src: '/ranks/gold.png' },
+  { id: 'platinum', label: 'プラチナ', src: '/ranks/platinum.png' },
+  { id: 'diamond', label: 'ダイヤモンド', src: '/ranks/diamond.png' },
+  { id: 'master', label: 'マスター', src: '/ranks/master.png' },
+  { id: 'king', label: 'キング', src: '/ranks/king.png' },
+  { id: 'god', label: 'ゴッド', src: '/ranks/god.png' },
+  { id: 'legend', label: 'レジェンド', src: '/ranks/legend.png' },
+] as const;
+
+const EMPTY_STUDY_RANK = { id: 'none', label: 'ランクなし', src: '' } as const;
+
+type StudyRank = (typeof STUDY_RANK_BADGES)[number] | typeof EMPTY_STUDY_RANK;
+
+function rankFromMinutes(minutes: number): StudyRank {
+  if (!(minutes > 0)) return EMPTY_STUDY_RANK;
+  const hours = minutes / 60;
+  if (hours < 15) return STUDY_RANK_BADGES[0];
+  if (hours < 25) return STUDY_RANK_BADGES[1];
+  if (hours <= 35) return STUDY_RANK_BADGES[2];
+  if (hours <= 45) return STUDY_RANK_BADGES[3];
+  if (hours <= 55) return STUDY_RANK_BADGES[4];
+  if (hours <= 65) return STUDY_RANK_BADGES[5];
+  if (hours <= 80) return STUDY_RANK_BADGES[6];
+  if (hours <= 90) return STUDY_RANK_BADGES[7];
+  return STUDY_RANK_BADGES[8];
+}
+
+function formatLogStamp(iso?: string): string {
+  const date = new Date(iso || 0);
+  if (Number.isNaN(date.getTime())) return '';
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${date.getMonth() + 1}/${date.getDate()} ${hour}:${minute}`;
+}
+
+function formatMeetingClock(hour: number, minute = 0): string {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function formatMeetingWhen(log: StudyLog, slot?: StudySlotLink): string {
+  const weekMarks = '日月火水木金土';
+  if (slot?.date) {
+    const [year, month, day] = slot.date.split('-').map(Number);
+    const date = new Date(year, (month || 1) - 1, day || 1);
+    const week = weekMarks[date.getDay()] || '';
+    return `${String(month || 1).padStart(2, '0')}/${String(day || 1).padStart(2, '0')}(${week}) ${formatMeetingClock(slot.startHour, slot.startMinute || 0)}〜${formatMeetingClock(slot.endHour, slot.endMinute || 0)}`;
+  }
+  const start = new Date(log.created_at || 0);
+  if (Number.isNaN(start.getTime())) return '日時未記録';
+  const end = new Date(start.getTime() + Math.max(0, log.time_spent_minutes || 0) * 60 * 1000);
+  const week = weekMarks[start.getDay()] || '';
+  return `${String(start.getMonth() + 1).padStart(2, '0')}/${String(start.getDate()).padStart(2, '0')}(${week}) ${formatMeetingClock(start.getHours(), start.getMinutes())}〜${formatMeetingClock(end.getHours(), end.getMinutes())}`;
+}
+
+function meetingMaterialInfo(materialId: string, userId: string, catalog: Material[]): { title: string; subject: SubjectType } {
+  const master = catalog.find((item) => item.id === materialId);
+  const masterSubject = subjectFromInput(master?.subject);
+  if (master?.title && masterSubject) return { title: master.title, subject: masterSubject };
+  const mine = readMyMaterials(userId).find((item) => item.id === materialId);
+  if (mine) return { title: mine.title, subject: mine.subject };
+  const cached = readMaterialCache()[materialId];
+  const cachedSubject = subjectFromInput(cached?.subject);
+  if (cached?.title && cachedSubject) return { title: cached.title, subject: cachedSubject };
+  if (master?.title) return { title: master.title, subject: 'その他' };
+  if (cached?.title) return { title: cached.title, subject: 'その他' };
+  return { title: '学習', subject: 'その他' };
+}
+
+function meetingMaterialTitle(materialId: string, userId: string, catalog: Material[]): string {
+  const info = meetingMaterialInfo(materialId, userId, catalog);
+  return info.title === '学習' ? '教材名未登録' : info.title;
+}
+
+function shiftDateKey(key: string, days: number): string {
+  const [year, month, day] = key.split('-').map(Number);
+  const date = new Date(Date.UTC(year, (month || 1) - 1, (day || 1) + days));
+  const nextYear = date.getUTCFullYear();
+  const nextMonth = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const nextDay = String(date.getUTCDate()).padStart(2, '0');
+  return `${nextYear}-${nextMonth}-${nextDay}`;
+}
+
+function civilWeekday(dateKey: string): number {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  return new Date(Date.UTC(year, (month || 1) - 1, day || 1)).getUTCDay();
+}
+
+function studyPlacement(log: StudyLog, slots: Record<string, StudySlotLink>): (StudyClockRange & { date: string }) | null {
+  const link = slots[log.id];
+  if (link?.date) return { date: link.date.slice(0, 10), ...studyRangeFromSlot(link) };
+  const stamp = new Date(log.created_at || 0);
+  if (Number.isNaN(stamp.getTime())) return null;
+  const dateKey = todayDateKey(stamp);
+  const stampHour = jstClock(stamp).hour;
+  if (stampHour === 0) return { date: shiftDateKey(dateKey, -1), startHour: 24, startMinute: 0, endHour: 25, endMinute: 0 };
+  return { date: dateKey, startHour: stampHour, startMinute: 0, endHour: stampHour + 1, endMinute: 0 };
+}
+
+function buildStudyStacks(
+  periodLogs: StudyLog[],
+  describe: (log: StudyLog) => { title: string; subject: SubjectType },
+) {
+  const subjectMap = new Map<SubjectType, Map<string, { id: string; title: string; minutes: number }>>();
+  periodLogs.forEach((log) => {
+    const info = describe(log);
+    const key = log.material_id || info.title;
+    const bucket = subjectMap.get(info.subject) || new Map();
+    const current = bucket.get(key) || { id: key, title: info.title, minutes: 0 };
+    current.minutes += log.time_spent_minutes || 0;
+    bucket.set(key, current);
+    subjectMap.set(info.subject, bucket);
+  });
+  const subjects = SUBJECT_NAMES.flatMap((subject) => {
+    const bucket = subjectMap.get(subject);
+    if (!bucket) return [];
+    const items = Array.from(bucket.values()).filter((item) => item.minutes > 0).sort((a, b) => b.minutes - a.minutes);
+    const minutes = items.reduce((sum, item) => sum + item.minutes, 0);
+    if (minutes <= 0) return [];
+    const color = SUBJECT_COLOR_MAP[subject].hexCode;
+    return [{
+      subject,
+      minutes,
+      materials: items.map((item, index) => ({
+        ...item,
+        color: index === 0 ? color : MATERIAL_BAR_COLORS[(index - 1) % MATERIAL_BAR_COLORS.length],
+      })),
+    }];
+  });
+  const totalMinutes = periodLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0);
+  return { totalMinutes, subjects };
+}
+
+function weekdayIdFromDateKey(key: string): WeekdayId {
+  return JS_DAY_TO_WEEKDAY[civilWeekday(key)] || 'mon';
+}
+
+function formatFocusDate(key: string): string {
+  const [year, month, day] = key.split('-').map(Number);
+  const date = new Date(year, (month || 1) - 1, day || 1);
+  const week = '日月火水木金土'[date.getDay()] || '';
+  const prefix = key === todayDateKey() ? '今日 ' : '';
+  return `${prefix}${month}/${day}（${week}）`;
+}
+
+function readLogSlots(): Record<string, StudySlotLink> {
+  return readStoredJson<Record<string, StudySlotLink>>(
+    LOG_SLOT_STORAGE_KEY,
+    {},
+    (value): value is Record<string, StudySlotLink> => Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+  );
+}
+
+function writeLogSlot(logId: string, link: StudySlotLink) {
+  const all = readLogSlots();
+  all[logId] = link;
+  writeStudyRecordJson(LOG_SLOT_STORAGE_KEY, all);
+}
+
+function removeLogSlot(logId: string) {
+  const all = readLogSlots();
+  delete all[logId];
+  writeStudyRecordJson(LOG_SLOT_STORAGE_KEY, all);
+}
+
+const WEEK_PLAN_KEY = 'juku_week_plans';
+const HINA_BASES: { id: StaffScheduleTemplateId; label: string }[] = [
+  { id: 'plain', label: 'プレーン' },
+  { id: 'high_school', label: '高校のみ' },
+  { id: 'high_school_club', label: '高校＋部活' },
+];
+const SHORT_CATEGORY_LABEL: Record<ScheduleCategoryId, string> = {
+  high_school: '高校',
+  club: '部活',
+  activity: '活動',
+  juku: '塾',
+  other: '他',
+};
+const CATEGORY_CYCLE: (ScheduleCategoryId | null)[] = [null, 'high_school', 'club', 'activity', 'juku', 'other'];
+
+interface WeekPlanRecord {
+  templateId?: string;
+  templateName: string;
+  slots: ScheduleSlot[];
+  dateSnapshots?: Record<string, ScheduleSlot[]>;
+  is_customized?: boolean;
+}
+
+function weekStartKey(dateKey: string): string {
+  const weekday = civilWeekday(dateKey);
+  const diff = weekday === 0 ? 6 : weekday - 1;
+  return shiftDateKey(dateKey, -diff);
+}
+
+function formatMonthDay(dateKey: string): string {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const date = new Date(year, (month || 1) - 1, day || 1);
+  const week = '日月火水木金土'[date.getDay()] || '';
+  return `${month}月${day}日(${week})`;
+}
+
+function formatWeekRange(weekStart: string): string {
+  return `${formatMonthDay(weekStart)}〜${formatMonthDay(shiftDateKey(weekStart, 6))}`;
+}
+
+function upcomingWeekStarts(months = 3): string[] {
+  const weeks: string[] = [];
+  let cursor = weekStartKey(todayDateKey());
+  const limit = new Date();
+  limit.setMonth(limit.getMonth() + months);
+  const end = todayDateKey(limit);
+  while (cursor <= end) {
+    weeks.push(cursor);
+    cursor = shiftDateKey(cursor, 7);
+  }
+  return weeks;
+}
+
+const SEEDED_JUKU_SLOT_IDS = new Set(['juku_mon', 'juku_tue', 'juku_wed', 'juku_thu', 'juku_fri', 'juku_sat', 'juku_sun']);
+
+function withoutSeededScheduleSlots(slots: ScheduleSlot[] | undefined): ScheduleSlot[] {
+  return (slots || []).filter((slot) => !SEEDED_JUKU_SLOT_IDS.has(String(slot.id)));
+}
+
+function sanitizeWeekPlan(plan: WeekPlanRecord): WeekPlanRecord | null {
+  const slots = withoutSeededScheduleSlots(plan.slots);
+  const snapshots = plan.dateSnapshots
+    ? Object.fromEntries(Object.entries(plan.dateSnapshots).map(([dateKey, list]) => [dateKey, withoutSeededScheduleSlots(list)]))
+    : undefined;
+  const snapshotSlots = snapshots ? Object.values(snapshots) : [];
+  if (slots.length === 0 && snapshotSlots.every((list) => list.length === 0)) return null;
+  return { ...plan, slots, dateSnapshots: snapshots };
+}
+
+function readWeekPlans(userId: string): Record<string, WeekPlanRecord> {
+  const stored = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {});
+  const plans = stored[userId];
+  if (!plans || typeof plans !== 'object') return {};
+  const cleaned: Record<string, WeekPlanRecord> = {};
+  Object.entries(plans).forEach(([weekStart, plan]) => {
+    const next = sanitizeWeekPlan(plan);
+    if (next) cleaned[weekStart] = next;
+  });
+  return cleaned;
+}
+
+function writeWeekPlans(userId: string, plans: Record<string, WeekPlanRecord>) {
+  const stored = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {});
+  stored[userId] = plans;
+  writeLocalJson(WEEK_PLAN_KEY, stored);
+}
+
+function findMyHina(items: MyScheduleFolderItem[], slotNumber: number): MyScheduleFolderItem | undefined {
+  return items.find((item) => item.hinaSlot === slotNumber)
+    || items.find((item) => item.name === `Myひな型${slotNumber}` || item.name === `Myスケジュール${slotNumber}`);
+}
+
+function hinaDisplayName(item: MyScheduleFolderItem | undefined, slotNumber: number): string {
+  if (!item) return `Myひな型${slotNumber}`;
+  const trimmed = item.name.trim();
+  if (!trimmed || trimmed === `Myスケジュール${slotNumber}`) return `Myひな型${slotNumber}`;
+  return trimmed;
+}
+
+function hinaMatchNames(item: MyScheduleFolderItem | undefined, slotNumber: number): string[] {
+  const names = [`Myひな型${slotNumber}`, `Myスケジュール${slotNumber}`];
+  if (item?.name.trim()) names.push(item.name.trim());
+  const display = hinaDisplayName(item, slotNumber);
+  if (!names.includes(display)) names.push(display);
+  return names;
+}
+
+function planSlotsForDate(plan: WeekPlanRecord | undefined, dateKey: string): ScheduleSlot[] {
+  if (!plan) return [];
+  const frozen = dateKey < todayDateKey() ? plan.dateSnapshots?.[dateKey] : undefined;
+  return frozen || plan.slots;
+}
+
+function slotRangeMinutes(slot: Pick<ScheduleSlot, 'startHour' | 'endHour' | 'startMinute' | 'endMinute'>): { start: number; end: number } {
+  const start = slot.startHour * 60 + (slot.startMinute || 0);
+  const end = slot.endHour * 60 + (slot.endMinute || 0);
+  return { start, end };
+}
+
+function slotWithRange(slot: ScheduleSlot, start: number, end: number, id?: string): ScheduleSlot {
+  return {
+    ...slot,
+    id: id || slot.id,
+    startHour: Math.floor(start / 60),
+    startMinute: start % 60,
+    endHour: Math.floor(end / 60),
+    endMinute: end % 60,
+  };
+}
+
+function formatScheduleRange(slot: Pick<ScheduleSlot, 'startHour' | 'endHour' | 'startMinute' | 'endMinute'>): string {
+  return `${formatMeetingClock(slot.startHour, slot.startMinute || 0)}〜${formatMeetingClock(slot.endHour, slot.endMinute || 0)}`;
+}
+
+function scheduleSlotSignature(slots: ScheduleSlot[]): string {
+  return WEEKDAYS.map((day) => (
+    slots
+      .filter((slot) => slot.day === day.id)
+      .map((slot) => {
+        const range = slotRangeMinutes(slot);
+        return `${range.start}-${range.end}:${slot.category}`;
+      })
+      .sort()
+      .join(',')
+  )).join(';');
+}
+
+function scheduleSlotsMatch(left: ScheduleSlot[], right: ScheduleSlot[]): boolean {
+  return scheduleSlotSignature(left) === scheduleSlotSignature(right);
+}
+
+function categoryMinutesOnDay(slots: ScheduleSlot[], day: WeekdayId, category: ScheduleCategoryId): number {
+  return slots
+    .filter((slot) => slot.day === day && slot.category === category)
+    .reduce((total, slot) => {
+      const range = slotRangeMinutes(slot);
+      if (range.end <= range.start) return total;
+      return total + (range.end - range.start);
+    }, 0);
+}
+
+function rankTotalMinutes(studyMinutes: number, jukuMinutes: number): number {
+  return Math.max(0, studyMinutes) + Math.max(0, jukuMinutes);
+}
+
+function weekJukuMinutes(plan: WeekPlanRecord | undefined, weekStart: string): number {
+  let total = 0;
+  for (let offset = 0; offset < 7; offset += 1) {
+    const dateKey = shiftDateKey(weekStart, offset);
+    const daySlots = planSlotsForDate(plan, dateKey);
+    total += categoryMinutesOnDay(daySlots, weekdayIdFromDateKey(dateKey), 'juku');
+  }
+  return total;
+}
+
+function writeWeekFromTemplate(
+  plan: WeekPlanRecord | undefined,
+  weekStart: string,
+  templateId: string,
+  templateName: string,
+  slots: ScheduleSlot[],
+  preservePast: boolean,
+): WeekPlanRecord {
+  const today = todayDateKey();
+  const weekEnd = shiftDateKey(weekStart, 6);
+  const incoming = cloneScheduleSlots(slots);
+  if (preservePast && plan && weekEnd < today) {
+    return { ...plan, templateId: plan.templateId || templateId };
+  }
+  if (weekStart >= today || (!preservePast && !plan)) {
+    return { templateId, templateName, slots: incoming, is_customized: false };
+  }
+  const snapshots: Record<string, ScheduleSlot[]> = { ...(plan?.dateSnapshots || {}) };
+  for (let offset = 0; offset < 7; offset += 1) {
+    const dateKey = shiftDateKey(weekStart, offset);
+    if (dateKey < today) {
+      if (!snapshots[dateKey]) snapshots[dateKey] = cloneScheduleSlots(plan?.slots || []);
+    } else {
+      delete snapshots[dateKey];
+    }
+  }
+  return { templateId, templateName, slots: incoming, dateSnapshots: snapshots, is_customized: false };
+}
+
+function writeCustomizedWeek(
+  plan: WeekPlanRecord | undefined,
+  weekStart: string,
+  templateId: string | undefined,
+  templateName: string,
+  slots: ScheduleSlot[],
+): WeekPlanRecord {
+  const today = todayDateKey();
+  const weekEnd = shiftDateKey(weekStart, 6);
+  const incoming = cloneScheduleSlots(slots);
+  if (plan && weekEnd < today) return plan;
+  const base: WeekPlanRecord = {
+    templateId,
+    templateName,
+    slots: incoming,
+    is_customized: true,
+  };
+  if (weekStart >= today || !plan) return base;
+  const snapshots: Record<string, ScheduleSlot[]> = { ...(plan.dateSnapshots || {}) };
+  for (let offset = 0; offset < 7; offset += 1) {
+    const dateKey = shiftDateKey(weekStart, offset);
+    if (dateKey < today) {
+      if (!snapshots[dateKey]) snapshots[dateKey] = cloneScheduleSlots(plan.slots || []);
+    } else {
+      delete snapshots[dateKey];
+    }
+  }
+  return { ...base, dateSnapshots: snapshots };
+}
+
+function categoryAtHour(slots: ScheduleSlot[], day: WeekdayId, hour: number): ScheduleCategoryId | null {
+  const hourStart = hour * 60;
+  const hourEnd = hourStart + 60;
+  let bestCategory: ScheduleCategoryId | null = null;
+  let bestOverlap = 0;
+  for (const slot of slots) {
+    if (slot.day !== day) continue;
+    const range = slotRangeMinutes(slot);
+    const overlap = Math.min(range.end, hourEnd) - Math.max(range.start, hourStart);
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap;
+      bestCategory = slot.category;
+    }
+  }
+  return bestCategory;
+}
+
+function mergeTouchingSlots(slots: ScheduleSlot[]): ScheduleSlot[] {
+  const grouped = new Map<WeekdayId, ScheduleSlot[]>();
+  slots.forEach((slot) => {
+    const list = grouped.get(slot.day) || [];
+    list.push(slot);
+    grouped.set(slot.day, list);
+  });
+  const merged: ScheduleSlot[] = [];
+  grouped.forEach((list) => {
+    const ordered = [...list].sort((a, b) => slotRangeMinutes(a).start - slotRangeMinutes(b).start);
+    ordered.forEach((slot) => {
+      const prev = merged[merged.length - 1];
+      const prevRange = prev ? slotRangeMinutes(prev) : null;
+      const range = slotRangeMinutes(slot);
+      if (prev && prevRange && prev.day === slot.day && prev.category === slot.category && prevRange.end === range.start) {
+        merged[merged.length - 1] = slotWithRange(prev, prevRange.start, range.end);
+      } else {
+        merged.push({ ...slot });
+      }
+    });
+  });
+  return merged;
+}
+
+function paintHourCategory(slots: ScheduleSlot[], day: WeekdayId, hour: number, category: ScheduleCategoryId | null): ScheduleSlot[] {
+  const hourStart = hour * 60;
+  const hourEnd = hourStart + 60;
+  const kept: ScheduleSlot[] = [];
+  slots.forEach((slot) => {
+    if (slot.day !== day) {
+      kept.push(slot);
+      return;
+    }
+    const range = slotRangeMinutes(slot);
+    if (range.end <= hourStart || range.start >= hourEnd) {
+      kept.push(slot);
+      return;
+    }
+    if (range.start < hourStart) kept.push(slotWithRange(slot, range.start, hourStart, `${slot.id}_a${hour}`));
+    if (range.end > hourEnd) kept.push(slotWithRange(slot, hourEnd, range.end, `${slot.id}_b${hour}`));
+  });
+  if (category) {
+    kept.push(slotWithRange({
+      id: `slot_${day}_${hour}_${Date.now()}`,
+      day,
+      startHour: hour,
+      startMinute: 0,
+      endHour: hour,
+      endMinute: 0,
+      category,
+      title: SHORT_CATEGORY_LABEL[category],
+    }, hourStart, hourEnd));
+  }
+  return mergeTouchingSlots(kept);
+}
+
+function updateSlotClock(
+  slots: ScheduleSlot[],
+  slotId: string,
+  next: { start: number; end: number; category: ScheduleCategoryId },
+): ScheduleSlot[] {
+  const target = slots.find((slot) => slot.id === slotId);
+  if (!target || next.end <= next.start) return slots;
+  const kept: ScheduleSlot[] = [];
+  slots.forEach((slot) => {
+    if (slot.id === slotId) return;
+    if (slot.day !== target.day) {
+      kept.push(slot);
+      return;
+    }
+    const range = slotRangeMinutes(slot);
+    if (range.end <= next.start || range.start >= next.end) {
+      kept.push(slot);
+      return;
+    }
+    if (range.start < next.start) kept.push(slotWithRange(slot, range.start, next.start, `${slot.id}_a`));
+    if (range.end > next.end) kept.push(slotWithRange(slot, next.end, range.end, `${slot.id}_b`));
+  });
+  kept.push(slotWithRange({
+    ...target,
+    category: next.category,
+    title: target.category === next.category ? target.title : SHORT_CATEGORY_LABEL[next.category],
+  }, next.start, next.end));
+  return mergeTouchingSlots(kept);
+}
+
+function categoryMeta(id: ScheduleCategoryId) {
+  return SCHEDULE_CATEGORIES.find((category) => category.id === id) || SCHEDULE_CATEGORIES[4];
+}
+
+function slotDisplayName(slot: ScheduleSlot): string {
+  const trimmed = slot.title.trim();
+  const meta = categoryMeta(slot.category);
+  if (!trimmed || trimmed === meta.label || trimmed === SHORT_CATEGORY_LABEL[slot.category]) {
+    return SHORT_CATEGORY_LABEL[slot.category];
+  }
+  return trimmed;
+}
+
+function slotCaptionHour(slot: ScheduleSlot): number {
+  const range = studyRangeFromSlot(slot);
+  let fallback = range.startHour;
+  for (let hour = Math.max(range.startHour, 6); hour <= Math.min(range.endHour, 24); hour += 1) {
+    const slice = sliceInHour(hour, range);
+    if (!slice) continue;
+    fallback = hour;
+    if (slice.height >= 50) return hour;
+  }
+  return fallback;
+}
+
+function planBandsForHour(slots: ScheduleSlot[], day: WeekdayId, hour: number): { key: string; slotId: string; color: string; label?: string; slice: HourSlice }[] {
+  return slots.flatMap((slot) => {
+    if (slot.day !== day) return [];
+    const slice = sliceInHour(hour, studyRangeFromSlot(slot));
+    if (!slice) return [];
+    const meta = categoryMeta(slot.category);
+    const label = hour === slotCaptionHour(slot)
+      ? `${formatScheduleRange(slot)} ${slotDisplayName(slot)}`
+      : undefined;
+    return [{ key: `${slot.id}-${hour}`, slotId: slot.id, color: meta.color, label, slice }];
+  });
+}
+
+function HourCategoryGrid({
+  slots,
+  onPaint,
+  onCommit,
+}: {
+  slots: ScheduleSlot[];
+  onPaint: (day: WeekdayId, hour: number, category: ScheduleCategoryId | null) => void;
+  onCommit: (slots: ScheduleSlot[]) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftRange, setDraftRange] = useState<StudyClockRange>({ startHour: 19, startMinute: 45, endHour: 21, endMinute: 50 });
+  const [draftCategory, setDraftCategory] = useState<ScheduleCategoryId>('juku');
+  const editing = slots.find((slot) => slot.id === editingId) || null;
+  const dayOrigin = 6 * 60;
+  const daySpan = 19 * 60;
+
+  const openEditor = (slot: ScheduleSlot) => {
+    setEditingId(slot.id);
+    setDraftCategory(slot.category);
+    setDraftRange(clampStudyRange(studyRangeFromSlot(slot)));
+  };
+
+  const saveEditor = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editing) return;
+    const range = clampStudyRange(draftRange);
+    onCommit(updateSlotClock(slots, editing.id, {
+      start: clockMinutes(range.startHour, range.startMinute),
+      end: clockMinutes(range.endHour, range.endMinute),
+      category: draftCategory,
+    }));
+    setEditingId(null);
+  };
+
+  return (
+    <>
+      <div className="grid min-h-0 w-full flex-1 grid-cols-7 overflow-y-auto rounded-xl border border-slate-300 bg-white" style={{ gridTemplateRows: 'minmax(0, 1fr)' }}>
+        {WEEKDAYS.map((day) => (
+          <div key={day.id} className={`flex h-full min-h-0 min-w-0 flex-col ${day.id === 'mon' ? '' : 'border-l border-slate-300'}`}>
+            <div className="shrink-0 border-b border-slate-300 bg-slate-50 text-center text-[10px] font-black leading-[1.125rem] text-slate-700">
+              {day.label}
+            </div>
+            <div className="relative min-h-0 flex-1 flex flex-col">
+              {DAY_VIEW_HOURS.map((hour) => {
+                const hourLabel = String(hour).padStart(2, '0');
+                const paint = () => {
+                  const current = categoryAtHour(slots, day.id, hour);
+                  const nextIndex = (CATEGORY_CYCLE.indexOf(current) + 1) % CATEGORY_CYCLE.length;
+                  onPaint(day.id, hour, CATEGORY_CYCLE[nextIndex] ?? null);
+                };
+                return (
+                  <div
+                    key={hour}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${day.label} ${hourLabel}`}
+                    onClick={paint}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return;
+                      event.preventDefault();
+                      paint();
+                    }}
+                    className="relative min-h-[0.875rem] flex-1 cursor-pointer border-b border-slate-300 bg-slate-50 active:ring-2 active:ring-inset active:ring-sky-500"
+                  >
+                    {slots.flatMap((slot) => {
+                      if (slot.day !== day.id) return [];
+                      const slice = sliceInHour(hour, studyRangeFromSlot(slot));
+                      if (!slice) return [];
+                      return [(
+                        <span
+                          key={slot.id}
+                          className="pointer-events-none absolute inset-x-0"
+                          style={{ top: `${slice.top}%`, height: `${slice.height}%`, backgroundColor: categoryMeta(slot.category).color }}
+                        />
+                      )];
+                    })}
+                    {day.id === 'mon' && (
+                      <span className="pointer-events-none absolute left-0 top-0 z-[1] w-5 pr-0.5 text-right text-[8px] font-mono font-bold leading-none text-slate-400">{hourLabel}</span>
+                    )}
+                  </div>
+                );
+              })}
+              {slots.filter((slot) => slot.day === day.id).map((slot) => {
+                const range = slotRangeMinutes(slot);
+                const top = ((range.start - dayOrigin) / daySpan) * 100;
+                const timeLabel = formatScheduleRange(slot);
+                const name = slotDisplayName(slot);
+                return (
+                  <button
+                    key={slot.id}
+                    type="button"
+                    title={`${timeLabel} ${name}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openEditor(slot);
+                    }}
+                    className="absolute z-10 overflow-hidden rounded bg-white/80 px-px py-px text-left leading-tight shadow-sm cursor-pointer"
+                    style={{
+                      top: `${Math.min(Math.max(top, 0), 96)}%`,
+                      left: day.id === 'mon' ? '1.15rem' : 1,
+                      right: 1,
+                    }}
+                  >
+                    <span className="block break-all text-[7px] font-black text-slate-800">{timeLabel}</span>
+                    <span className="block truncate text-[7px] font-black text-slate-600">{name}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex h-3 shrink-0 items-start bg-slate-50">
+              {day.id === 'mon' && <span className="w-5 pr-0.5 text-right text-[8px] font-mono font-bold leading-none text-slate-400">25</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      {editing && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/60 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center" onClick={() => setEditingId(null)}>
+          <form
+            onSubmit={saveEditor}
+            onClick={(event) => event.stopPropagation()}
+            className="flex min-h-0 max-h-[min(100%,calc(100dvh-1.5rem))] w-full max-w-sm flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+          >
+            <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-4">
+              <h4 className="text-sm font-black text-slate-900">時間を5分単位で設定</h4>
+              <button type="button" onClick={() => setEditingId(null)} className="text-xs font-black text-slate-400 cursor-pointer">閉じる</button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-3">
+              <p className="text-[11px] font-bold text-slate-400">
+                {WEEKDAYS.find((day) => day.id === editing.day)?.label}曜の予定。開始と終了は5分刻みです。
+              </p>
+              <label className="block text-[11px] font-black text-slate-600">
+                種類
+                <select
+                  value={draftCategory}
+                  onChange={(event) => setDraftCategory(event.target.value as ScheduleCategoryId)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-2 text-sm font-black"
+                >
+                  {SCHEDULE_CATEGORIES.map((category) => (
+                    <option key={category.id} value={category.id}>{SHORT_CATEGORY_LABEL[category.id]}</option>
+                  ))}
+                </select>
+              </label>
+              <StudyTimeRangeFields value={draftRange} onChange={setDraftRange} totalLabel="合計" />
+            </div>
+            <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-100 px-4 py-3">
+              <button
+                type="button"
+                onClick={() => {
+                  onCommit(slots.filter((slot) => slot.id !== editing.id));
+                  setEditingId(null);
+                }}
+                className="rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-black text-red-700 cursor-pointer"
+              >
+                この予定を消す
+              </button>
+              <button type="submit" className="rounded-xl bg-sky-600 px-4 py-2 text-xs font-black text-white cursor-pointer">
+                この時間で保存
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+function cloneScheduleSlots(slots: ScheduleSlot[]): ScheduleSlot[] {
+  return slots.map((slot) => ({ ...slot }));
+}
+
+function copyScheduleSlotsWithNewIds(slots: ScheduleSlot[]): ScheduleSlot[] {
+  return slots.map((slot) => ({
+    ...slot,
+    id: `slot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  }));
+}
+
+function buildDefaultStaffTemplates(): Record<StaffScheduleTemplateId, ScheduleSlot[]> {
+  return {
+    plain: [],
+    high_school: [],
+    high_school_club: [],
+  };
+}
+
+function isStaffScheduleTemplates(value: unknown): value is Record<StaffScheduleTemplateId, ScheduleSlot[]> {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return Array.isArray(record.plain) && Array.isArray(record.high_school) && Array.isArray(record.high_school_club);
+}
+
+function WeeklyTimetable({
+  slots,
+  onAddAt,
+  onEdit,
+}: {
+  slots: ScheduleSlot[];
+  onAddAt: (day: WeekdayId, startHour: number) => void;
+  onEdit: (slot: ScheduleSlot) => void;
+}) {
+  return (
+    <div className="overflow-auto max-h-[72vh] border border-slate-200 rounded-2xl">
+      <div className="min-w-[920px]">
+        <div className="grid sticky top-0 z-20 bg-white border-b border-slate-200" style={{ gridTemplateColumns: '72px repeat(7, minmax(110px, 1fr))' }}>
+          <div className="p-2 text-[10px] font-bold text-slate-400">時間</div>
+          {WEEKDAYS.map((day) => (
+            <div key={day.id} className="p-2 text-center text-sm font-black text-slate-800 border-l border-slate-100">
+              {day.label}
+            </div>
+          ))}
+        </div>
+        <div className="grid" style={{ gridTemplateColumns: '72px repeat(7, minmax(110px, 1fr))' }}>
+          <div>
+            {SCHEDULE_HOURS.map((hour) => (
+              <div
+                key={hour}
+                style={{ height: SCHEDULE_HOUR_HEIGHT }}
+                className="pr-2 text-right text-[10px] font-mono font-bold text-slate-400 border-b border-slate-100 leading-none pt-1"
+              >
+                {formatScheduleHour(hour)}
+              </div>
+            ))}
+          </div>
+          {WEEKDAYS.map((day) => (
+            <div key={day.id} className="relative border-l border-slate-200" style={{ height: SCHEDULE_HOURS.length * SCHEDULE_HOUR_HEIGHT }}>
+              {SCHEDULE_HOURS.map((hour) => (
+                <button
+                  key={hour}
+                  type="button"
+                  aria-label={`${day.label}曜日 ${formatScheduleHour(hour)} にコマを追加`}
+                  onClick={() => onAddAt(day.id, hour)}
+                  className="absolute left-0 right-0 border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                  style={{ top: hour * SCHEDULE_HOUR_HEIGHT, height: SCHEDULE_HOUR_HEIGHT }}
+                />
+              ))}
+              {slots.filter((slot) => slot.day === day.id).map((slot) => {
+                const meta = categoryMeta(slot.category);
+                const range = slotRangeMinutes(slot);
+                const trimmedTitle = slot.title.trim();
+                const heading = trimmedTitle && trimmedTitle !== meta.label ? trimmedTitle : meta.label;
+                const timeRange = formatScheduleRange(slot);
+                return (
+                  <button
+                    key={slot.id}
+                    type="button"
+                    onClick={() => onEdit(slot)}
+                    title={`${heading} ${timeRange}`}
+                    className="absolute left-1 right-1 z-10 rounded-md border px-1 py-0.5 text-left overflow-hidden cursor-pointer"
+                    style={{
+                      top: (range.start / 60) * SCHEDULE_HOUR_HEIGHT + 1,
+                      height: Math.max(((range.end - range.start) / 60) * SCHEDULE_HOUR_HEIGHT - 2, 16),
+                      backgroundColor: meta.color,
+                      borderColor: meta.border,
+                    }}
+                  >
+                    <div className="text-[10px] font-black text-slate-800 truncate">{timeRange} {heading}</div>
+                    <div className="text-[10px] font-mono text-slate-500 truncate">{Math.max(range.end - range.start, 0)}分</div>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DayTimetable({
+  day,
+  slots,
+  onAddAt,
+  onEdit,
+}: {
+  day: WeekdayId;
+  slots: ScheduleSlot[];
+  onAddAt: (day: WeekdayId, startHour: number) => void;
+  onEdit: (slot: ScheduleSlot) => void;
+}) {
+  const hourHeight = 64;
+  return (
+    <div className="overflow-y-auto max-h-[68vh] border border-slate-200 rounded-2xl bg-white">
+      <div className="relative" style={{ height: SCHEDULE_HOURS.length * hourHeight }}>
+        {SCHEDULE_HOURS.map((hour) => (
+          <button
+            key={hour}
+            type="button"
+            aria-label={`${formatScheduleHour(hour)} にコマを追加`}
+            onClick={() => onAddAt(day, hour)}
+            className="absolute left-0 right-0 border-b border-slate-100 text-left cursor-pointer"
+            style={{ top: hour * hourHeight, height: hourHeight }}
+          >
+            <span className="inline-block w-14 pt-1 pr-2 text-right text-[11px] font-mono font-bold text-slate-400">
+              {formatScheduleHour(hour)}
+            </span>
+          </button>
+        ))}
+        {slots.filter((slot) => slot.day === day).map((slot) => {
+          const meta = categoryMeta(slot.category);
+          const range = slotRangeMinutes(slot);
+          const trimmedTitle = slot.title.trim();
+          const heading = trimmedTitle && trimmedTitle !== meta.label ? trimmedTitle : meta.label;
+          const timeRange = formatScheduleRange(slot);
+          return (
+            <button
+              key={slot.id}
+              type="button"
+              onClick={() => onEdit(slot)}
+              title={`${timeRange} ${heading}`}
+              className="absolute left-14 right-2 z-10 rounded-xl border px-3 py-1 text-left overflow-hidden cursor-pointer"
+              style={{
+                top: (range.start / 60) * hourHeight + 2,
+                height: Math.max(((range.end - range.start) / 60) * hourHeight - 4, 28),
+                backgroundColor: meta.color,
+                borderColor: meta.border,
+              }}
+            >
+              <div className="text-sm font-black text-slate-800 truncate">{timeRange} {heading}</div>
+              <div className="text-[11px] font-mono text-slate-500 truncate">{Math.max(range.end - range.start, 0)}分</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StudyMinuteChips({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (minutes: number) => void;
+}) {
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {STUDY_MINUTE_CHIPS.map((minutes) => (
+        <button
+          key={minutes}
+          type="button"
+          onClick={() => onChange(minutes)}
+          className={`py-3 rounded-2xl text-sm font-black cursor-pointer ${
+            value === minutes
+              ? 'bg-sky-600 text-white shadow-md shadow-sky-600/30'
+              : 'bg-slate-100 text-slate-700'
+          }`}
+        >
+          {minutes}分
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MissionToggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-3 bg-amber-50 border border-amber-300 rounded-2xl px-3 py-2 cursor-pointer">
+      <span className="text-sm font-black text-amber-950">👑 ミッション達成！</span>
+      <span className="relative inline-flex h-6 w-11 shrink-0">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+          className="peer sr-only"
+          aria-label="ミッション達成"
+        />
+        <span className="absolute inset-0 rounded-full bg-slate-300 transition-colors peer-checked:bg-amber-500" />
+        <span className="absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-5" />
+      </span>
+    </label>
+  );
+}
+
+function WeekRankThumb({
+  rank,
+  onOpen,
+}: {
+  rank: StudyRank;
+  onOpen: (event: React.MouseEvent<HTMLButtonElement>) => void;
+}) {
+  const [imageReady, setImageReady] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  const showImage = Boolean(rank.src) && imageReady && !imageFailed;
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen(event);
+      }}
+      className="relative shrink-0 h-11 w-11 rounded-xl border border-slate-200 bg-white flex items-center justify-center overflow-hidden cursor-pointer"
+      aria-label={`${rank.label}ランクを拡大`}
+    >
+      {showImage ? (
+        <img src={rank.src} alt={`${rank.label}ランク`} className="h-9 w-9 object-contain" />
+      ) : (
+        <span className="px-0.5 text-[9px] font-black leading-tight text-amber-900 text-center">{rank.label}</span>
+      )}
+      {!rank.src || imageFailed ? null : (
+        <img
+          src={rank.src}
+          alt=""
+          className="absolute h-0 w-0 opacity-0"
+          onLoad={() => setImageReady(true)}
+          onError={() => setImageFailed(true)}
+        />
+      )}
+    </button>
+  );
+}
+
+function WeekRankPreviewModal({
+  weekNumber,
+  rank,
+  totalMinutes,
+  note,
+  onClose,
+}: {
+  weekNumber: number;
+  rank: StudyRank;
+  totalMinutes: number;
+  note?: string;
+  onClose: () => void;
+}) {
+  const [imageReady, setImageReady] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  const showImage = Boolean(rank.src) && imageReady && !imageFailed;
+  return (
+    <div className="fixed inset-0 z-[80] bg-slate-950/70 flex items-center justify-center p-6" onClick={onClose}>
+      <div
+        className="bg-white w-full max-w-sm rounded-3xl p-6 text-center shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="relative mx-auto flex h-48 w-48 items-center justify-center">
+          {showImage ? (
+            <img src={rank.src} alt={`${rank.label}ランク`} className="h-full w-full object-contain" />
+          ) : (
+            <div className="inline-flex items-center justify-center rounded-2xl bg-amber-50 px-6 py-5 text-xl font-black text-amber-900 border border-amber-200">
+              {rank.label}
+            </div>
+          )}
+          {!rank.src || imageFailed ? null : (
+            <img
+              src={rank.src}
+              alt=""
+              className="absolute h-0 w-0 opacity-0"
+              onLoad={() => setImageReady(true)}
+              onError={() => setImageFailed(true)}
+            />
+          )}
+        </div>
+        <p className="mt-4 text-lg font-black text-slate-900">{totalMinutes > 0 ? rank.label : 'ランクなし'}</p>
+        <p className="mt-2 text-sm font-black leading-relaxed text-slate-600">
+          {weekNumber}週目の達成ランク: {totalMinutes > 0 ? `${rank.label}（${formatHourAndMinute(totalMinutes)}）` : '0時間0分（ランクなし）'}
+          {note ? <span className="mt-1 block text-xs">{note}</span> : null}
+        </p>
+        <button type="button" onClick={onClose} className="mt-5 px-5 py-2.5 rounded-xl bg-slate-200 text-slate-700 font-black cursor-pointer">閉じる</button>
+      </div>
+    </div>
+  );
+}
+
+function PreviousWeekRankBadge({
+  rank,
+  totalMinutes,
+}: {
+  rank: StudyRank;
+  totalMinutes: number;
+}) {
+  const [imageReady, setImageReady] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  const showImage = Boolean(rank.src) && imageReady && !imageFailed;
+  return (
+    <section className="bg-white rounded-3xl border border-slate-200 shadow-sm px-4 py-5 text-center">
+      <div className="relative mx-auto flex h-36 w-36 max-w-full items-center justify-center sm:h-44 sm:w-44">
+        {showImage ? null : (
+          <div className="inline-flex items-center justify-center rounded-2xl bg-amber-50 px-5 py-4 text-base font-black text-amber-900 border border-amber-200">
+            {rank.id === 'none' ? 'ランクなし' : `${rank.label}ランク`}
+          </div>
+        )}
+        {!rank.src || imageFailed ? null : (
+          <img
+            src={rank.src}
+            alt={`${rank.label}ランク`}
+            className={showImage ? 'h-full w-full object-contain' : 'absolute h-0 w-0 opacity-0'}
+            onLoad={() => setImageReady(true)}
+            onError={() => setImageFailed(true)}
+          />
+        )}
+      </div>
+      <p className="mt-3 text-xs font-black leading-relaxed text-slate-600">
+        {totalMinutes > 0
+          ? `前週の達成ランク: ${rank.label}ランク（前週学習＋塾: ${formatHourAndMinute(totalMinutes)}）`
+          : '前週の達成ランク: 0時間0分（ランクなし）'}
+      </p>
+    </section>
+  );
+}
+
+function MissionCrown() {
+  return (
+    <span
+      className="shrink-0 leading-none"
+      style={{ filter: 'drop-shadow(0 0 2px #fde68a) drop-shadow(0 0 4px #f59e0b)' }}
+      aria-hidden
+    >
+      👑
+    </span>
+  );
+}
+
+function StudyTimeRangeFields({
+  value,
+  onChange,
+  totalLabel = '合計学習時間',
+}: {
+  value: StudyClockRange;
+  onChange: (next: StudyClockRange) => void;
+  totalLabel?: string;
+}) {
+  const range = clampStudyRange(value);
+  const total = studyDurationMinutes(range);
+  const startKey = `${range.startHour}:${range.startMinute}`;
+  const endKey = `${range.endHour}:${range.endMinute}`;
+  const startLimit = clockMinutes(24, 55);
+  const startAt = clockMinutes(range.startHour, range.startMinute);
+  const startOptions = STUDY_CLOCK_OPTIONS.filter((option) => clockMinutes(option.hour, option.minute) <= startLimit);
+  const endOptions = STUDY_CLOCK_OPTIONS.filter((option) => clockMinutes(option.hour, option.minute) > startAt);
+  return (
+    <div className="space-y-1.5">
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block text-[11px] font-black text-slate-600">
+          開始時刻
+          <select
+            value={startKey}
+            onChange={(event) => {
+              const [hour, minute] = event.target.value.split(':').map(Number);
+              onChange(clampStudyRange({ ...range, startHour: hour, startMinute: minute }));
+            }}
+            className="mt-1 w-full bg-slate-50 border border-slate-200 p-2 rounded-xl text-sm font-black"
+          >
+            {startOptions.map((option) => (
+              <option key={`start-${option.label}`} value={`${option.hour}:${option.minute}`}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-[11px] font-black text-slate-600">
+          終了時刻
+          <select
+            value={endKey}
+            onChange={(event) => {
+              const [hour, minute] = event.target.value.split(':').map(Number);
+              onChange(clampStudyRange({ ...range, endHour: hour, endMinute: minute }));
+            }}
+            className="mt-1 w-full bg-slate-50 border border-slate-200 p-2 rounded-xl text-sm font-black"
+          >
+            {endOptions.map((option) => (
+              <option key={`end-${option.label}`} value={`${option.hour}:${option.minute}`}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="rounded-xl bg-sky-50 px-3 py-2 text-sm font-black text-sky-800">
+        {totalLabel} {total}分
+      </div>
+    </div>
+  );
+}
+
+function DayHourLane({
+  hour,
+  showHourLabel,
+  planColor,
+  planLabel,
+  planBands,
+  studies,
+  onEmpty,
+  onDeleteSlot,
+}: {
+  hour: number;
+  showHourLabel: boolean;
+  planColor?: string | null;
+  planLabel?: string;
+  planBands?: { key: string; slotId: string; color: string; label?: string; slice: HourSlice }[];
+  studies: {
+    key: string;
+    color: string;
+    title: string;
+    crown: boolean;
+    slice: HourSlice;
+    onClick?: () => void;
+  }[];
+  onEmpty?: () => void;
+  onDeleteSlot?: (slotId: string) => void;
+}) {
+  return (
+    <div
+      className={`relative flex-1 min-h-0 w-full flex border-b border-white/50 overflow-visible ${onEmpty ? 'cursor-pointer' : ''}`}
+      style={{ backgroundColor: planBands?.length ? '#F8FAFC' : (planColor || '#F8FAFC') }}
+      onClick={onEmpty}
+    >
+      {showHourLabel && (
+        <span className="w-5 shrink-0 text-[8px] font-mono font-bold leading-none pt-px text-right pr-0.5 text-slate-400 pointer-events-none">
+          {hour === 24 ? '24' : String(hour).padStart(2, '0')}
+        </span>
+      )}
+      <div className="relative flex-1 min-w-0">
+        {(planBands || []).map((band) => (
+          <div
+            key={band.key}
+            className={`absolute inset-x-0 overflow-hidden ${band.label && onDeleteSlot ? '' : 'pointer-events-none'}`}
+            style={{ top: `${band.slice.top}%`, height: `${band.slice.height}%`, backgroundColor: band.color }}
+          >
+            {band.label && onDeleteSlot ? (
+              <button
+                type="button"
+                title={`${band.label} を削除`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDeleteSlot(band.slotId);
+                }}
+                className="flex w-full items-start justify-between gap-0.5 px-0.5 text-left cursor-pointer"
+              >
+                <span className="min-w-0 text-[8px] font-black leading-tight text-slate-800 break-all">{band.label}</span>
+                <span className="shrink-0 text-[8px] font-black text-red-700">削除</span>
+              </button>
+            ) : band.label ? (
+              <span className="block px-0.5 text-[8px] font-black leading-tight text-slate-800 break-all" title={band.label}>
+                {band.label}
+              </span>
+            ) : null}
+          </div>
+        ))}
+        {studies.length === 0 && !planBands?.length && planLabel ? (
+          <span className="absolute inset-0 flex items-center text-[8px] font-black truncate leading-none pl-0.5 text-slate-700 pointer-events-none">
+            {planLabel}
+          </span>
+        ) : null}
+        {studies.map((study) => {
+          const { slice } = study;
+          const style: React.CSSProperties = {
+            left: 0,
+            right: 0,
+            zIndex: 2,
+            backgroundColor: study.color,
+            top: slice.continuesUp ? -1 : `${slice.top}%`,
+            height: slice.continuesUp || slice.continuesDown
+              ? `calc(${slice.height}% + ${slice.continuesUp && slice.continuesDown ? 2 : 1}px)`
+              : `${slice.height}%`,
+            borderTopLeftRadius: slice.continuesUp ? 0 : 3,
+            borderTopRightRadius: slice.continuesUp ? 0 : 3,
+            borderBottomLeftRadius: slice.continuesDown ? 0 : 3,
+            borderBottomRightRadius: slice.continuesDown ? 0 : 3,
+          };
+          const body = (
+            <>
+              {slice.isStart && study.crown ? <span className="shrink-0 text-[10px] leading-none"><MissionCrown /></span> : null}
+              {slice.isStart ? <span className="min-w-0 text-[8px] font-black truncate leading-none text-white">{study.title}</span> : null}
+            </>
+          );
+          if (study.onClick) {
+            return (
+              <button
+                key={study.key}
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  study.onClick?.();
+                }}
+                className="absolute flex items-center gap-px overflow-hidden px-0.5 text-left cursor-pointer"
+                style={style}
+              >
+                {body}
+              </button>
+            );
+          }
+          return (
+            <div key={study.key} className="absolute flex items-center gap-px overflow-hidden px-0.5" style={style}>
+              {body}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StudyMaterialStack({
+  heading,
+  rangeLabel,
+  totalMinutes,
+  subjects,
+}: {
+  heading: string;
+  rangeLabel: string;
+  totalMinutes: number;
+  subjects: { subject: SubjectType; minutes: number; materials: { id: string; title: string; minutes: number; color: string }[] }[];
+}) {
+  const max = Math.max(...subjects.map((item) => item.minutes), 1);
+  return (
+    <section className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
+      <div>
+        <div className="text-[11px] font-bold text-slate-400">{heading}</div>
+        <div className="text-2xl font-black text-slate-900 mt-1">{formatStudyDuration(totalMinutes)}</div>
+        <div className="text-[11px] font-bold text-slate-400 mt-1">{rangeLabel}</div>
+      </div>
+      {subjects.length === 0 ? (
+        <p className="text-xs font-bold text-slate-400">この期間の記録はまだありません。</p>
+      ) : subjects.map((item) => {
+        const color = SUBJECT_COLOR_MAP[item.subject];
+        return (
+          <div key={item.subject} className="space-y-1.5">
+            <div className="flex justify-between text-xs font-black">
+              <span className={color.textClass}>{item.subject}</span>
+              <span className="text-slate-500">{formatStudyDuration(item.minutes)}</span>
+            </div>
+            <div className="h-4 rounded-full bg-slate-100 overflow-hidden flex">
+              {item.materials.map((material) => (
+                <div
+                  key={material.id}
+                  title={`${material.title} ${formatStudyDuration(material.minutes)}`}
+                  style={{ width: `${(material.minutes / max) * 100}%`, backgroundColor: material.color }}
+                />
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {item.materials.map((material) => (
+                <span key={`${item.subject}-${material.id}`} className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: material.color }} />
+                  <span className="truncate max-w-[9rem]">{material.title}</span>
+                  <span>{material.minutes}分</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function MeetingWeekBoard({
+  weekStart,
+  plans,
+  studentLogs,
+  slots,
+  catalog,
+  userId,
+  compact = false,
+}: {
+  weekStart: string;
+  plans: Record<string, WeekPlanRecord>;
+  studentLogs: StudyLog[];
+  slots: Record<string, StudySlotLink>;
+  catalog: Material[];
+  userId: string;
+  compact?: boolean;
+}) {
+  const days = Array.from({ length: 7 }, (_, index) => shiftDateKey(weekStart, index));
+  return (
+    <div className="overflow-x-auto">
+      <div className={`grid grid-cols-7 gap-1 ${compact ? 'min-w-[640px] h-[520px]' : 'min-w-[980px] h-[680px]'}`}>
+        {days.map((dateKey, columnIndex) => {
+          const planSlots = planSlotsForDate(plans[weekStartKey(dateKey)], dateKey);
+          const weekday = weekdayIdFromDateKey(dateKey);
+          const dayLabel = WEEKDAYS.find((day) => day.id === weekday)?.label || '';
+          const [, month, day] = dateKey.split('-');
+          return (
+            <div key={dateKey} className="min-h-0 flex flex-col rounded-2xl border border-slate-200 bg-white overflow-hidden">
+              <div className="shrink-0 text-center text-[10px] font-black py-1 bg-slate-50 text-slate-700 border-b border-slate-100">
+                {dayLabel} {Number(month)}/{Number(day)}
+              </div>
+              <div className="flex-1 min-h-0 flex flex-col">
+                {DAY_VIEW_HOURS.map((hour) => {
+                  const studies = studentLogs.flatMap((log) => {
+                    const placed = studyPlacement(log, slots);
+                    if (!placed || placed.date !== dateKey) return [];
+                    const slice = sliceInHour(hour, placed);
+                    if (!slice) return [];
+                    const material = meetingMaterialInfo(log.material_id, userId, catalog);
+                    return [{
+                      key: `${log.id}-${hour}`,
+                      color: isSubjectType(material.subject) ? SUBJECT_COLOR_MAP[material.subject].hexCode : '#64748b',
+                      title: material.title === '学習' ? '教材名未登録' : material.title,
+                      crown: Boolean(log.is_mission_completed),
+                      slice,
+                    }];
+                  });
+                  return (
+                    <DayHourLane
+                      key={hour}
+                      hour={hour}
+                      showHourLabel={columnIndex === 0}
+                      planBands={studies.length === 0 ? planBandsForHour(planSlots, weekday, hour) : undefined}
+                      studies={studies}
+                    />
+                  );
+                })}
+              </div>
+              <div className="shrink-0 h-3 text-[8px] font-mono font-bold text-slate-400 pl-1 leading-none">25:00</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SubjectTextPicker({
+  subject,
+  materialId,
+  materials,
+  myMaterials = [],
+  favoriteIds,
+  onSubject,
+  onMaterial,
+  onToggleFavorite,
+  compact = false,
+}: {
+  subject: SubjectType | '';
+  materialId: string;
+  materials: Material[];
+  myMaterials?: MyMaterialItem[];
+  favoriteIds: string[];
+  onSubject: (subject: SubjectType) => void;
+  onMaterial: (materialId: string) => void;
+  onToggleFavorite: (materialId: string) => void;
+  compact?: boolean;
+}) {
+  const mine = isSubjectType(subject) ? myMaterials.filter((item) => item.subject === subject && item.title.trim()) : [];
+  const catalog = isSubjectType(subject)
+    ? materialsForSubject(materials, subject).filter((item) => item.title.trim())
+    : [];
+  const pad = compact ? 'px-2 py-1.5 text-[11px]' : 'px-3 py-3 text-sm';
+  return (
+    <div className={compact ? 'space-y-1.5' : 'space-y-3'}>
+      <div className="text-[11px] font-black text-slate-500">① 科目</div>
+      <div className="flex flex-wrap gap-1">
+        {SUBJECT_NAMES.map((name) => {
+          const color = SUBJECT_COLOR_MAP[name];
+          const selected = subject === name;
+          return (
+            <button
+              key={name}
+              type="button"
+              onClick={() => onSubject(name)}
+              className={`rounded-full font-black cursor-pointer border ${compact ? 'px-2 py-1 text-[11px]' : 'px-3 py-2 text-xs'} ${
+                selected ? `${color.bgClass} ${color.textClass} ${color.borderClass}` : 'bg-white text-slate-600 border-slate-200'
+              }`}
+            >
+              {name}
+            </button>
+          );
+        })}
+      </div>
+      {isSubjectType(subject) && (
+        <div className={compact ? 'space-y-1' : 'space-y-2'}>
+          {mine.length > 0 && (
+            <div className={compact ? 'space-y-1' : 'space-y-2'}>
+              <div className="text-[11px] font-black text-orange-600">マイ教材</div>
+              {mine.map((item) => (
+                <button
+                  key={`mine-${item.id}`}
+                  type="button"
+                  onClick={() => onMaterial(item.id)}
+                  className={`w-full text-left rounded-xl font-black cursor-pointer border ${pad} ${
+                    materialId === item.id ? 'bg-orange-50 border-orange-300 text-orange-900' : 'bg-white border-slate-200 text-slate-800'
+                  }`}
+                >
+                  {item.title}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="text-[11px] font-black text-slate-500">② テキスト</div>
+          {catalog.length === 0 ? (
+            <p className="text-[11px] font-bold text-slate-400">この科目の教材はまだありません。</p>
+          ) : catalog.map((material) => {
+            const pinned = favoriteIds.includes(material.id);
+            return (
+              <div key={material.id} className="flex items-stretch gap-1">
+                <button
+                  type="button"
+                  onClick={() => onMaterial(material.id)}
+                  className={`flex-1 text-left rounded-xl font-black cursor-pointer border ${pad} ${
+                    materialId === material.id ? 'bg-sky-50 border-sky-400 text-sky-900' : 'bg-white border-slate-200 text-slate-800'
+                  }`}
+                >
+                  {material.title}
+                </button>
+                <button
+                  type="button"
+                  aria-label={pinned ? 'お気に入りを外す' : 'お気に入りに追加'}
+                  onClick={() => onToggleFavorite(material.id)}
+                  className={`${compact ? 'w-9' : 'w-12'} rounded-xl border border-slate-200 bg-white text-base cursor-pointer`}
+                >
+                  {pinned ? '⭐' : '☆'}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// SECTION 3. 共通サブコンポーネント群 (ダイアログ ＆ ポップアップ)
+// =============================================================================
+
+function MaterialImagePreviewModal({
+  imageUrl,
+  title,
+  onClose
+}: {
+  imageUrl: string;
+  title: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+      <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-3xl w-full border border-slate-200 space-y-4">
+        <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+          <h4 className="font-extrabold text-sm text-slate-900">🖼️ 教材写真プレビュー: {title}</h4>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold flex items-center justify-center">
+            ✕
+          </button>
+        </div>
+        <div className="w-full h-[420px] bg-slate-950 rounded-2xl overflow-hidden flex items-center justify-center p-2 border border-slate-800 shadow-inner">
+          <img src={imageUrl} alt={title} className="max-w-full max-h-full object-contain rounded-lg" />
+        </div>
+        <div className="text-right">
+          <button onClick={onClose} className="px-5 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs rounded-xl">
+            閉じる
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// SECTION 4. メインアプリケーションコンポーネント (Y Log - 生徒第一統合システム)
+// =============================================================================
+
+const RoleScreenContext = createContext<{
+  admin: (currentUser: User) => React.ReactElement;
+  student: (currentUser: User) => React.ReactElement;
+} | null>(null);
+
+function AdminView({ currentUser }: { currentUser: User }) {
+  const screens = useContext(RoleScreenContext);
+  if (!screens) return null;
+  return screens.admin(currentUser);
+}
+
+function StudentView({ currentUser }: { currentUser: User }) {
+  const screens = useContext(RoleScreenContext);
+  if (!screens) return null;
+  return screens.student(currentUser);
+}
+
+export default function Page() {
+  const supabase = useMemo(() => createSafeSupabaseClient(), []);
+
+  // ---------------------------------------------------------------------------
+  // ログイン / セッション 状態管理 (メール不使用・独自ID認証)
+  // ---------------------------------------------------------------------------
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [loginInputId, setLoginInputId] = useState<string>('');
+  const [loginPassword, setLoginPassword] = useState<string>('');
+  const [loginPasswordVisible, setLoginPasswordVisible] = useState<boolean>(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  // 画面ナビゲーション状態
+  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  const [selectedClassroom, setSelectedClassroom] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [subjectFilter, setSubjectFilter] = useState<string>('ALL');
+
+  // メインデータ
+  const [users, setUsers] = useState<User[]>([]);
+  const [usersReady, setUsersReady] = useState(false);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [logs, setLogs] = useState<StudyLog[]>([]);
+  const [messages, setMessages] = useState<StudentMessage[]>([]);
+
+  // スケジュール（週間タイムテーブル）
+  const [staffTemplates, setStaffTemplates] = useState<Record<StaffScheduleTemplateId, ScheduleSlot[]>>(buildDefaultStaffTemplates);
+  const [selectedStaffTemplateId, setSelectedStaffTemplateId] = useState<StaffScheduleTemplateId>('plain');
+  const [mySchedules, setMySchedules] = useState<MyScheduleFolderItem[]>([]);
+  const [selectedMyScheduleId, setSelectedMyScheduleId] = useState<string | null>(null);
+  const [scheduleSlots, setScheduleSlots] = useState<ScheduleSlot[]>([]);
+  const [slotDraft, setSlotDraft] = useState<ScheduleSlotDraft | null>(null);
+  const [scheduleFocusDay, setScheduleFocusDay] = useState<WeekdayId>('mon');
+  const [weeklyGoalMinutes, setWeeklyGoalMinutes] = useState<number>(0);
+  const [noticesExpanded, setNoticesExpanded] = useState<boolean>(false);
+  const [crownBurst, setCrownBurst] = useState<string | null>(null);
+  const [favoriteMaterialIds, setFavoriteMaterialIds] = useState<string[]>([]);
+  const [myMaterials, setMyMaterials] = useState<MyMaterialItem[]>([]);
+  const [myMaterialTitle, setMyMaterialTitle] = useState('');
+  const [myMaterialSubject, setMyMaterialSubject] = useState<SubjectType>('英語');
+  const [qrScanOpen, setQrScanOpen] = useState(false);
+  const [logSummaryPeriod, setLogSummaryPeriod] = useState<LogSummaryPeriod>('today');
+  const [pastWeekStart, setPastWeekStart] = useState<string | null>(null);
+  const [weekRankPreview, setWeekRankPreview] = useState<{
+    weekNumber: number;
+    totalMinutes: number;
+    rank: StudyRank;
+    note?: string;
+  } | null>(null);
+  const [recordMode, setRecordMode] = useState<'timer' | 'countdown' | 'manual'>('timer');
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerStartedAt, setTimerStartedAt] = useState(0);
+  const [timerElapsedSec, setTimerElapsedSec] = useState(0);
+  const [countdownTargetMin, setCountdownTargetMin] = useState(30);
+  const [countdownRemainingSec, setCountdownRemainingSec] = useState(30 * 60);
+  const [countdownRunning, setCountdownRunning] = useState(false);
+  const [countdownStartedAt, setCountdownStartedAt] = useState(0);
+  const [countdownFinished, setCountdownFinished] = useState(false);
+  const wakeLockRef = useRef<ScreenWakeLockSentinel | null>(null);
+  const timeAttackFinishedRef = useRef(0);
+  const clockRestoreUserRef = useRef('');
+  const [editingLog, setEditingLog] = useState<StudyLog | null>(null);
+  const [editSubject, setEditSubject] = useState<SubjectType | ''>('');
+  const [editMaterialId, setEditMaterialId] = useState('');
+  const [editRange, setEditRange] = useState<StudyClockRange>({ startHour: 19, startMinute: 0, endHour: 20, endMinute: 0 });
+  const [editComment, setEditComment] = useState('');
+  const [editMission, setEditMission] = useState(false);
+  const countdownSaveLock = useRef(false);
+  const [focusDateKey, setFocusDateKey] = useState<string>(() => todayDateKey());
+  const [composerDateKey, setComposerDateKey] = useState<string>(() => todayDateKey());
+  const [weekPlans, setWeekPlans] = useState<Record<string, WeekPlanRecord>>({});
+  const [openHinaSlot, setOpenHinaSlot] = useState<number | null>(null);
+  const [hinaDraftSlots, setHinaDraftSlots] = useState<ScheduleSlot[]>([]);
+  const [hinaDraftTitle, setHinaDraftTitle] = useState('');
+  const [weekPickerStart, setWeekPickerStart] = useState<string | null>(null);
+  const [weekDraftSlots, setWeekDraftSlots] = useState<ScheduleSlot[]>([]);
+  const [weekDraftTemplateId, setWeekDraftTemplateId] = useState<string | undefined>(undefined);
+  const [weekDraftTemplateName, setWeekDraftTemplateName] = useState('');
+  const [logSlots, setLogSlots] = useState<Record<string, StudySlotLink>>({});
+  const [studyComposer, setStudyComposer] = useState<StudyClockRange | null>(null);
+  const [composerMission, setComposerMission] = useState(false);
+  const composerContext = useRef<(StudyClockRange & { date: string; mission: boolean }) | null>(null);
+
+  // 非同期通信 ＆ 通知
+  const [loading, setLoading] = useState<boolean>(true);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<NotificationState[]>([]);
+
+  // 選択中詳細データ
+  const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
+  const [previewImageUrl, setPreviewImageUrl] = useState<{ url: string; title: string } | null>(null);
+
+  // モーダル開閉ステート
+  const [isUserModalOpen, setIsUserModalOpen] = useState<boolean>(false); // 新規ユーザー(教師/生徒)個別登録モーダル
+  const [isMaterialModalOpen, setIsMaterialModalOpen] = useState<boolean>(false);
+  const [isLogModalOpen, setIsLogModalOpen] = useState<boolean>(false);
+  const [meetingStudentId, setMeetingStudentId] = useState('');
+  const [meetingStudentQuery, setMeetingStudentQuery] = useState('');
+  const [meetingWeekStart, setMeetingWeekStart] = useState(() => weekStartKey(todayDateKey()));
+  const [progressClassroom, setProgressClassroom] = useState('ALL');
+  const [progressSortKey, setProgressSortKey] = useState<'week' | 'month'>('week');
+  const [progressSortDir, setProgressSortDir] = useState<'desc' | 'asc'>('desc');
+  const [isStudentCsvModalOpen, setIsStudentCsvModalOpen] = useState<boolean>(false);
+  const [isTeacherCsvModalOpen, setIsTeacherCsvModalOpen] = useState<boolean>(false);
+  const [isMaterialCsvModalOpen, setIsMaterialCsvModalOpen] = useState<boolean>(false);
+  const [isStudentEditModalOpen, setIsStudentEditModalOpen] = useState<boolean>(false);
+  const [isTeacherEditModalOpen, setIsTeacherEditModalOpen] = useState<boolean>(false);
+  const [studentPasswordsVisible, setStudentPasswordsVisible] = useState<boolean>(false);
+  const [teacherPasswordsVisible, setTeacherPasswordsVisible] = useState<boolean>(false);
+  const [isNoticeListOpen, setIsNoticeListOpen] = useState<boolean>(false);
+  const [activeNotice, setActiveNotice] = useState<StudentMessage | null>(null);
+  const [editingMaterialId, setEditingMaterialId] = useState<string | null>(null);
+  const [isMaterialImageDragOver, setIsMaterialImageDragOver] = useState<boolean>(false);
+
+  // 新規ユーザー(教師・生徒・管理者)個別追加フォーム
+  const [newUserForm, setNewUserForm] = useState<User>(blankUserForm());
+  const [studentEditForm, setStudentEditForm] = useState<User>(blankUserForm());
+  const [editingStudentOriginalId, setEditingStudentOriginalId] = useState<string>('');
+  const [studentFieldFilters, setStudentFieldFilters] = useState<Record<StudentListFilterKey, string>>({
+    name: 'ALL',
+    grade: 'ALL',
+    highSchool: 'ALL',
+    classroom: 'ALL',
+    role: 'ALL',
+    id: 'ALL',
+    password: 'ALL',
+    english: 'ALL',
+    math: 'ALL',
+    japanese: 'ALL',
+    physics: 'ALL',
+    chemistry: 'ALL',
+    biology: 'ALL',
+    japaneseHistory: 'ALL',
+    worldHistory: 'ALL',
+    individual: 'ALL',
+  });
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [messageDraft, setMessageDraft] = useState<string>('');
+
+  // CSVインポート用ステート
+  const [csvImportKind, setCsvImportKind] = useState<'student' | 'teacher'>('student');
+  const [csvUploading, setCsvUploading] = useState<boolean>(false);
+  const [csvParsedPreview, setCsvParsedPreview] = useState<User[]>([]);
+  const [csvValidationErrors, setCsvValidationErrors] = useState<CsvRowError[]>([]);
+  const [csvStatusMessage, setCsvStatusMessage] = useState<{ type: 'success' | 'error' | null; text: string }>({
+    type: null,
+    text: '',
+  });
+
+  const [materialCsvUploading, setMaterialCsvUploading] = useState<boolean>(false);
+  const [materialCsvParsedPreview, setMaterialCsvParsedPreview] = useState<Material[]>([]);
+  const [materialCsvStatusMessage, setMaterialCsvStatusMessage] = useState<{ type: 'success' | 'error' | null; text: string }>({
+    type: null,
+    text: '',
+  });
+
+  // 新規教材登録フォーム (教科指定・写真対応)
+  const [newMaterialForm, setNewMaterialForm] = useState<{
+    id: string;
+    title: string;
+    subject: SubjectType | '';
+    difficulty: 'basic' | 'standard' | 'advanced';
+    image_url: string;
+    description: string;
+    created_by: string;
+  }>({
+    id: '',
+    title: '',
+    subject: '',
+    difficulty: 'standard',
+    image_url: '',
+    description: '',
+    created_by: '',
+  });
+
+  // サクサク学習記録フォーム (ミッション完了トグル付)
+  const [newLogForm, setNewLogForm] = useState<{
+    user_id: string;
+    subject: SubjectType | '';
+    material_id: string;
+    score: number;
+    max_score: number;
+    time_spent_minutes: number;
+    is_mission_completed: boolean;
+    comment: string;
+  }>({
+    user_id: '',
+    subject: '',
+    material_id: '',
+    score: 0,
+    max_score: 100,
+    time_spent_minutes: 0,
+    is_mission_completed: false,
+    comment: '',
+  });
+
+  // ---------------------------------------------------------------------------
+  // 通知ヘルパー
+  // ---------------------------------------------------------------------------
+
+  const addNotification = useCallback((type: 'success' | 'error' | 'info' | 'warning', message: string) => {
+    const id = `notif_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+    setNotifications((prev) => [{ id, type, message, timestamp: new Date().toLocaleTimeString('ja-JP') }, ...prev.slice(0, 4)]);
+  }, []);
+
+  const removeNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Supabase 完全安全データ取得 (全個別カラム直接要求を排出しフォールバック補完)
+  // ---------------------------------------------------------------------------
+
+  const fetchUsers = useCallback(async (): Promise<User[]> => {
+    const { data, error } = await supabase.from('users').select('*');
+    if (error) throw new Error(`ユーザーデータの取得失敗: ${error.message}`);
+    return (data || []).map((row: any) => {
+      const id = String(row.id || '');
+      const email = String(row.email ?? row.mail ?? row.login_id ?? '').trim();
+      const rawRole = row.role ?? row.user_role ?? row.type ?? row.user_type ?? row.authority ?? row.account_type;
+      const role = resolveAppRole(rawRole, id, email);
+      if (String(rawRole ?? '').trim() || isKnownAdminIdentity(id, email)) rememberUserRole(id, role);
+      return {
+        id,
+        name: row.name || '名前未設定',
+        role,
+        classroom: row.classroom || '本川越校',
+        password: passwordFromRow(row),
+        email: email || undefined,
+        ...profileFromRow(row),
+      };
+    }) as User[];
+  }, [supabase]);
+
+  const fetchMaterials = useCallback(async (): Promise<Material[]> => {
+    const cache = readMaterialCache();
+    const materialFrom = (id: string, title: string, subject: SubjectType, row?: any, cached?: Material): Material => {
+      const storedOrder = readDisplayOrder(row?.display_order) ?? readDisplayOrder(cached?.display_order);
+      return {
+        id,
+        title,
+        subject,
+        difficulty: row?.difficulty || cached?.difficulty || 'standard',
+        created_by: String(row?.created_by || cached?.created_by || ''),
+        image_url: row?.image_url || cached?.image_url || null,
+        description: row?.description || cached?.description || undefined,
+        color: SUBJECT_COLOR_MAP[subject].hexCode,
+        display_order: storedOrder ?? Number.MAX_SAFE_INTEGER,
+      };
+    };
+
+    const { data, error } = await supabase.from('materials').select('*').order('id', { ascending: true });
+    if (error) {
+      return Object.values(cache).flatMap((item) => {
+        if (!item?.id || !item.title) return [];
+        const subject = subjectForMasterRow(item as unknown as Record<string, unknown>, item.title, item);
+        return [materialFrom(item.id, item.title, subject, undefined, item)];
+      });
+    }
+
+    const list: Material[] = [];
+    (data || []).forEach((row: any) => {
+      const id = String(row.id || '');
+      const title = String(row.title || row.name || '').trim();
+      if (!id || !title) return;
+      const cached = cache[id];
+      const subject = subjectForMasterRow(row, title, cached);
+      list.push(materialFrom(id, title, subject, row, cached));
+    });
+    return list;
+  }, [supabase]);
+
+  const fetchStudentMessages = useCallback(async (): Promise<StudentMessage[]> => {
+    const local = readLocalMessages();
+    const { data, error } = await supabase.from('student_messages').select('*');
+    if (error) return local;
+    const remote = (data || []).map((row: any) => ({
+      id: String(row.id),
+      user_id: String(row.user_id || ''),
+      sender_id: String(row.sender_id || ''),
+      sender_name: String(row.sender_name || '講師'),
+      body: String(row.body || row.message || ''),
+      sent_at: String(row.sent_at || row.created_at || new Date().toISOString()),
+      read_at: row.read_at ? String(row.read_at) : null,
+    })) as StudentMessage[];
+    const merged = new Map<string, StudentMessage>();
+    local.forEach((message) => merged.set(message.id, message));
+    remote.forEach((message) => {
+      const existing = merged.get(message.id);
+      if (existing?.read_at && !message.read_at) {
+        merged.set(message.id, { ...message, read_at: existing.read_at });
+      } else {
+        merged.set(message.id, message);
+      }
+    });
+    return Array.from(merged.values());
+  }, [supabase]);
+
+  const fetchLogs = useCallback(async (): Promise<StudyLog[]> => {
+    const { data, error } = await supabase.from('study_logs').select('*');
+    if (error) throw new Error(`学習ログの取得失敗: ${error.message}`);
+    const remote = (data || []).map((row: any) => {
+      const minutes = Number(row.time_spent_minutes ?? row.time_spent);
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        material_id: row.material_id,
+        score: Number(row.score ?? 0),
+        max_score: Number(row.max_score ?? 100),
+        time_spent_minutes: Number.isFinite(minutes) ? minutes : 0,
+        is_mission_completed: row.is_mission_completed === true,
+        comment: row.comment || null,
+        created_at: row.created_at ? String(row.created_at) : undefined,
+      };
+    }) as StudyLog[];
+    const remoteIds = new Set(remote.map((log) => log.id));
+    const deletedIds = readDeletedStudyLogIds();
+    const deletedSet = new Set(deletedIds);
+    const pending = readPendingStudyLogs().filter((log) => log.id && !remoteIds.has(log.id) && !deletedSet.has(log.id));
+    const overrides = readStudyLogOverrides();
+    const seen = new Set<string>();
+    return [...pending, ...remote].filter((log) => {
+      if (!log.id || seen.has(log.id) || deletedSet.has(log.id)) return false;
+      seen.add(log.id);
+      return true;
+    }).map((log) => (overrides[log.id] ? { ...log, ...overrides[log.id] } : log));
+  }, [supabase]);
+
+  const fetchAllData = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoading(true);
+    setGlobalError(null);
+    try {
+      const uData = await fetchUsers();
+      setUsers(uData);
+      setUsersReady(true);
+      const [mData, lData] = await Promise.all([
+        fetchMaterials(),
+        fetchLogs(),
+      ]);
+      setMaterials(mData);
+      setLogs((prev) => (lData.length === 0 && prev.length > 0 ? prev : lData));
+      setMessages(await fetchStudentMessages());
+      setConnectionError(null);
+      if (!options?.silent) addNotification('success', '最新データとの同期が完了いたしました。');
+    } catch (err: any) {
+      setConnectionError('通信エラーが発生しました');
+      if (!options?.silent) {
+        setGlobalError(err.message || '通信エラーが発生しました');
+        addNotification('error', '通信エラーが発生しました');
+      }
+    } finally {
+      if (!options?.silent) setLoading(false);
+    }
+  }, [fetchUsers, fetchMaterials, fetchLogs, fetchStudentMessages, addNotification]);
+
+  useEffect(() => {
+    fetchAllData();
+  }, [fetchAllData]);
+
+  useEffect(() => {
+    const saved = readAppSession();
+    if (saved) {
+      setCurrentUser(saved);
+      setActiveTab(saved.role === 'student' ? 'schedule_planner' : 'dashboard');
+      setSessionChecked(true);
+      return;
+    }
+    if (!supabaseEnvConfigured()) {
+      setSessionChecked(true);
+      return;
+    }
+    let active = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!active || !data.session?.user?.email) return;
+      const email = data.session.user.email;
+      const restored: User = {
+        id: email,
+        name: String(data.session.user.user_metadata?.name || email),
+        role: 'student',
+        classroom: '本川越校',
+        password: '',
+        email,
+        ...emptyStudentProfile(),
+      };
+      writeAppSession(restored);
+      setCurrentUser(restored);
+      setActiveTab('schedule_planner');
+    }).catch(() => {
+      if (active) setConnectionError('通信エラーが発生しました');
+    }).finally(() => {
+      if (active) setSessionChecked(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [supabase]);
+
+  useEffect(() => {
+    if (currentUser?.role !== 'admin' && newUserForm.role === 'admin') {
+      setNewUserForm((prev) => (prev.role === 'admin' ? { ...prev, role: 'student' } : prev));
+    }
+  }, [currentUser, newUserForm.role]);
+
+  useEffect(() => {
+    const storedTemplates = readLocalJson<unknown>(SCHEDULE_TEMPLATE_STORAGE_KEY, null);
+    const templates = isStaffScheduleTemplates(storedTemplates) ? storedTemplates : buildDefaultStaffTemplates();
+    setStaffTemplates(templates);
+
+    if (!currentUser) return;
+    const role = resolveAppRole(currentUser.role, currentUser.id);
+    const staff = role === 'admin' || role === 'teacher';
+    if (staff) {
+      setMySchedules([]);
+      setSelectedMyScheduleId(null);
+      setSelectedStaffTemplateId('plain');
+      setScheduleSlots(cloneScheduleSlots(templates.plain));
+      return;
+    }
+    const all = readLocalJson<Record<string, MyScheduleFolderItem[]>>(MY_SCHEDULE_STORAGE_KEY, {});
+    setMySchedules(Array.isArray(all[currentUser.id]) ? all[currentUser.id] : []);
+    setSelectedMyScheduleId(null);
+    setScheduleSlots([]);
+    setWeeklyGoalMinutes(readWeeklyGoalMinutes(currentUser.id));
+    setNoticesExpanded(false);
+  }, [currentUser]);
+
+  const saveUserWithProfile = useCallback(async (user: User): Promise<string | null> => {
+    const profile = pickStudentProfile(user);
+    const safeRole: UserRole = resolveAppRole(user.role, user.id, user.email);
+    const normalized: User = {
+      ...blankUserForm(safeRole),
+      ...user,
+      ...profile,
+      id: String(user.id || '').trim(),
+      name: String(user.name || '').trim(),
+      role: safeRole,
+      classroom: String(user.classroom || '本川越校'),
+      password: String(user.password || '').trim(),
+    };
+    if (!normalized.id || !normalized.name) return '独自IDと氏名は必須です。';
+
+    saveLocalProfile(normalized.id, profile);
+    saveLocalPassword(normalized.id, normalized.password);
+    setUsers((prev) => {
+      const index = prev.findIndex((item) => item.id === normalized.id);
+      if (index === -1) return [...prev, normalized];
+      const next = [...prev];
+      next[index] = normalized;
+      return next;
+    });
+
+    const body: Record<string, unknown> = {
+      id: normalized.id,
+      name: normalized.name,
+      role: normalized.role,
+      classroom: normalized.classroom,
+      password: normalized.password,
+      ...profileToDbColumns(profile),
+    };
+    try {
+      let lastMessage = '';
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        const result = await supabase.from('users').upsert([body], { onConflict: 'id' });
+        if (!result.error) return null;
+        lastMessage = result.error.message || lastMessage;
+        const missing = missingMaterialsColumn(lastMessage);
+        if (missing && Object.prototype.hasOwnProperty.call(body, missing) && missing !== 'id' && missing !== 'name') {
+          delete body[missing];
+          continue;
+        }
+        break;
+      }
+      return lastMessage || 'データベース保存に失敗しました';
+    } catch (err: any) {
+      return err?.message || '保存処理でエラーが発生しました';
+    }
+  }, [supabase]);
+
+  // 教師・生徒の手動個別追加処理
+  const handleCreateUser = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUserForm.id || !newUserForm.name) {
+      alert('独自IDと氏名は必須項目です。');
+      return;
+    }
+
+    const requestedId = newUserForm.id.trim();
+    const existingUser = users.find((u) => u.id.toLowerCase() === requestedId.toLowerCase());
+    if (
+      currentUser?.role !== 'admin' &&
+      (newUserForm.role === 'admin' || existingUser?.role === 'admin')
+    ) {
+      alert('管理者以外は admin 権限のユーザーを作成・更新できません。');
+      return;
+    }
+
+    try {
+      const dbError = await saveUserWithProfile({ ...newUserForm, id: requestedId });
+      addNotification(
+        dbError ? 'warning' : 'success',
+        dbError
+          ? `「${newUserForm.name}」は一覧へ反映しました。データベース保存は未完了です。`
+          : `新規ユーザー「${newUserForm.name}（${newUserForm.role}）」を追加登録いたしました！`
+      );
+      setIsUserModalOpen(false);
+      setNewUserForm(blankUserForm());
+      if (!dbError) await fetchAllData();
+    } catch (err: any) {
+      alert(`ユーザー登録エラー: ${err.message}`);
+    }
+  }, [newUserForm, users, currentUser, saveUserWithProfile, fetchAllData, addNotification]);
+
+  const openStudentEditModal = useCallback((student: User) => {
+    setEditingStudentOriginalId(student.id);
+    setStudentEditForm({ ...blankUserForm(student.role), ...student, password: student.password || '' });
+    setIsTeacherEditModalOpen(false);
+    setIsStudentEditModalOpen(true);
+  }, []);
+
+  const openTeacherEditModal = useCallback((teacher: User) => {
+    setEditingStudentOriginalId(teacher.id);
+    setStudentEditForm({ ...blankUserForm(teacher.role), ...teacher, password: teacher.password || '' });
+    setIsStudentEditModalOpen(false);
+    setIsTeacherEditModalOpen(true);
+  }, []);
+
+  const replaceEditedUser = useCallback((originalId: string, saved: User) => {
+    setUsers((prev) => {
+      const oldIndex = prev.findIndex((user) => user.id === originalId || user.id === saved.id);
+      const rest = prev.filter((user) => user.id !== originalId && user.id !== saved.id);
+      const insertAt = oldIndex < 0 ? rest.length : Math.min(oldIndex, rest.length);
+      rest.splice(insertAt, 0, saved);
+      return rest;
+    });
+    if (currentUser && (currentUser.id === originalId || currentUser.id === saved.id)) {
+      setCurrentUser(saved);
+    }
+  }, [currentUser]);
+
+  const handleSaveTeacherEdit = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    const nextId = studentEditForm.id.trim();
+    const nextName = studentEditForm.name.trim();
+    if (!nextId || !nextName) {
+      alert('氏名と独自IDは必須項目です。');
+      return;
+    }
+    const nextRole: UserRole = studentEditForm.role === 'admin' ? 'admin' : 'teacher';
+    const original = users.find((user) => user.id === editingStudentOriginalId);
+    const idTaken = users.some((user) => user.id !== editingStudentOriginalId && user.id.toLowerCase() === nextId.toLowerCase());
+    if (idTaken) {
+      alert('その独自IDはすでに使われています。');
+      return;
+    }
+    const saved: User = {
+      ...(original || blankUserForm(nextRole)),
+      ...studentEditForm,
+      id: nextId,
+      name: nextName,
+      classroom: studentEditForm.classroom,
+      role: nextRole,
+      password: studentEditForm.password.trim(),
+    };
+    replaceEditedUser(editingStudentOriginalId, saved);
+
+    try {
+      const dbError = await saveUserWithProfile(saved);
+      if (editingStudentOriginalId && editingStudentOriginalId !== nextId) {
+        await supabase.from('users').delete().eq('id', editingStudentOriginalId);
+        const profiles = readLocalProfiles();
+        if (profiles[editingStudentOriginalId]) {
+          profiles[nextId] = profiles[editingStudentOriginalId];
+          delete profiles[editingStudentOriginalId];
+          writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, profiles);
+        }
+        const passwords = readLocalPasswords();
+        if (!passwords[nextId] && passwords[editingStudentOriginalId]) passwords[nextId] = passwords[editingStudentOriginalId];
+        delete passwords[editingStudentOriginalId];
+        writeLocalJson(USER_PASSWORD_STORAGE_KEY, passwords);
+      }
+      replaceEditedUser(editingStudentOriginalId, saved);
+      addNotification(
+        dbError ? 'warning' : 'success',
+        dbError
+          ? `「${saved.name}」の変更は一覧へ反映しました。データベース保存は未完了です。`
+          : `教師「${saved.name}」の情報を更新いたしました。`
+      );
+      setIsTeacherEditModalOpen(false);
+    } catch (err: any) {
+      replaceEditedUser(editingStudentOriginalId, saved);
+      alert(`教師情報の更新エラー: ${err.message}`);
+    }
+  }, [studentEditForm, editingStudentOriginalId, users, saveUserWithProfile, supabase, addNotification, replaceEditedUser]);
+
+  const handleDeleteTeacher = useCallback(async (teacher: User) => {
+    if (!window.confirm(`「${teacher.name}」を削除しますか？`)) return;
+    setUsers((prev) => prev.filter((user) => user.id !== teacher.id));
+    if (selectedStudentId === teacher.id) setSelectedStudentId(null);
+    const profiles = readLocalProfiles();
+    delete profiles[teacher.id];
+    writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, profiles);
+    const passwords = readLocalPasswords();
+    delete passwords[teacher.id];
+    writeLocalJson(USER_PASSWORD_STORAGE_KEY, passwords);
+    const { error } = await supabase.from('users').delete().eq('id', teacher.id);
+    if (error) {
+      addNotification('warning', `「${teacher.name}」は一覧から削除しました。データベースの削除は未完了の可能性があります。`);
+      return;
+    }
+    addNotification('success', `「${teacher.name}」を削除いたしました。`);
+  }, [selectedStudentId, supabase, addNotification]);
+
+  const handleSaveStudentEdit = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    const nextId = studentEditForm.id.trim();
+    if (!nextId || !studentEditForm.name.trim()) {
+      alert('氏名と独自IDは必須項目です。');
+      return;
+    }
+    const idTaken = users.some((user) => user.id !== editingStudentOriginalId && user.id.toLowerCase() === nextId.toLowerCase());
+    if (idTaken) {
+      alert('その独自IDはすでに使われています。');
+      return;
+    }
+
+    try {
+      const dbError = await saveUserWithProfile({ ...studentEditForm, id: nextId, role: studentEditForm.role, password: studentEditForm.password.trim() });
+      if (editingStudentOriginalId && editingStudentOriginalId !== nextId) {
+        await supabase.from('users').delete().eq('id', editingStudentOriginalId);
+        const profiles = readLocalProfiles();
+        delete profiles[editingStudentOriginalId];
+        writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, profiles);
+        const passwords = readLocalPasswords();
+        if (passwords[editingStudentOriginalId] && !passwords[nextId]) passwords[nextId] = passwords[editingStudentOriginalId];
+        delete passwords[editingStudentOriginalId];
+        writeLocalJson(USER_PASSWORD_STORAGE_KEY, passwords);
+        const movedMessages = readLocalMessages().map((message) => (
+          message.user_id === editingStudentOriginalId ? { ...message, user_id: nextId } : message
+        ));
+        writeLocalMessages(movedMessages);
+        setMessages((prev) => prev.map((message) => (
+          message.user_id === editingStudentOriginalId ? { ...message, user_id: nextId } : message
+        )));
+        await supabase.from('student_messages').update({ user_id: nextId }).eq('user_id', editingStudentOriginalId);
+        setSelectedStudentIds((prev) => prev.map((id) => (id === editingStudentOriginalId ? nextId : id)));
+        setUsers((prev) => prev.filter((user) => user.id !== editingStudentOriginalId));
+      }
+      addNotification(
+        dbError ? 'warning' : 'success',
+        dbError
+          ? `「${studentEditForm.name}」の変更は一覧へ反映しました。データベース保存は未完了です。`
+          : `生徒「${studentEditForm.name}」の情報を更新いたしました。`
+      );
+      setIsStudentEditModalOpen(false);
+      setIsTeacherEditModalOpen(false);
+      if (!dbError) await fetchAllData({ silent: true });
+    } catch (err: any) {
+      alert(`情報の更新エラー: ${err.message}`);
+    }
+  }, [studentEditForm, editingStudentOriginalId, users, saveUserWithProfile, supabase, fetchAllData, addNotification]);
+
+  const handleDeleteStudent = useCallback(async (student: User) => {
+    if (currentUser?.role !== 'admin' && currentUser?.role !== 'teacher') {
+      alert('生徒の削除は管理者・講師のみ実行できます。');
+      return;
+    }
+    const confirmed = window.confirm(`「${student.name}」（${student.id}）を削除します。この操作は取り消せません。よろしいですか？`);
+    if (!confirmed) return;
+
+    setUsers((prev) => prev.filter((user) => user.id !== student.id));
+    setSelectedStudentIds((prev) => prev.filter((id) => id !== student.id));
+    if (selectedStudentId === student.id) setSelectedStudentId(null);
+    const profiles = readLocalProfiles();
+    delete profiles[student.id];
+    writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, profiles);
+    writeLocalMessages(readLocalMessages().filter((message) => message.user_id !== student.id));
+    setMessages((prev) => prev.filter((message) => message.user_id !== student.id));
+
+    const { error } = await supabase.from('users').delete().eq('id', student.id);
+    await supabase.from('student_messages').delete().eq('user_id', student.id);
+    if (error) {
+      addNotification('warning', `「${student.name}」は一覧から削除しました。データベースの削除は未完了の可能性があります。`);
+      return;
+    }
+    addNotification('success', `「${student.name}」を削除いたしました。`);
+  }, [currentUser, selectedStudentId, supabase, addNotification]);
+
+  const handleSendStudentMessages = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    const body = messageDraft.trim();
+    if (!body) {
+      alert('送信するコメントを入力してください。');
+      return;
+    }
+    if (selectedStudentIds.length === 0) {
+      alert('送信先の生徒を選択してください。');
+      return;
+    }
+
+    const sentAt = formatMessageTimestamp();
+    const senderId = currentUser?.id || 'system';
+    const senderName = currentUser?.name || 'お知らせ';
+    const created: StudentMessage[] = selectedStudentIds.map((userId, index) => ({
+      id: `msg_${Date.now()}_${index}_${userId}`,
+      user_id: userId,
+      sender_id: senderId,
+      sender_name: senderName,
+      body,
+      sent_at: sentAt,
+      read_at: null,
+    }));
+
+    setMessages((prev) => [...created, ...prev]);
+    writeLocalMessages([...created, ...readLocalMessages()]);
+    setMessageDraft('');
+    setSelectedStudentIds([]);
+
+    const { error } = await supabase.from('student_messages').insert(created);
+    if (error) {
+      addNotification('warning', `${created.length} 名へ ${sentAt} のお知らせを保存しました。データベースへは未反映のため、画面上の状態でも保持しています。`);
+      return;
+    }
+    addNotification('success', `${created.length} 名へお知らせ・コメントを送信いたしました（${sentAt}）。`);
+  }, [currentUser, messageDraft, selectedStudentIds, supabase, addNotification]);
+
+  const markMessageAsRead = useCallback(async (message: StudentMessage) => {
+    if (message.read_at) return;
+    const readAt = new Date().toISOString();
+    setMessages((prev) => prev.map((item) => (item.id === message.id ? { ...item, read_at: readAt } : item)));
+    writeLocalMessages(readLocalMessages().map((item) => (item.id === message.id ? { ...item, read_at: readAt } : item)));
+    const local = readLocalMessages();
+    if (!local.some((item) => item.id === message.id)) {
+      writeLocalMessages([{ ...message, read_at: readAt }, ...local]);
+    }
+    await supabase.from('student_messages').update({ read_at: readAt }).eq('id', message.id);
+  }, [supabase]);
+
+  const openNoticeDetail = useCallback((message: StudentMessage) => {
+    setActiveNotice({ ...message, read_at: message.read_at || new Date().toISOString() });
+    void markMessageAsRead(message);
+  }, [markMessageAsRead]);
+
+  const rememberSignedIn = (signedIn: User) => {
+    writeAppSession(signedIn);
+    setCurrentUser(signedIn);
+  };
+
+  // 独自IDによるログイン実行処理
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(null);
+
+    const inputIdClean = toHalfWidthAscii(loginInputId).trim();
+    const inputPassword = toHalfWidthAscii(loginPassword).trim();
+    if (!inputIdClean || !inputPassword) {
+      setLoginError('独自IDとパスワードを入力してください。');
+      return;
+    }
+    if (!supabaseEnvConfigured() && !isBuiltinAdminLogin(inputIdClean, inputPassword)) {
+      setLoginError('通信エラーが発生しました');
+      return;
+    }
+
+    if (isBuiltinAdminLogin(inputIdClean, inputPassword)) {
+      const signedIn: User = {
+        id: BUILTIN_ADMIN_ID,
+        name: '管理者',
+        role: 'admin',
+        classroom: '本川越校',
+        password: BUILTIN_ADMIN_PASSWORD,
+        email: BUILTIN_ADMIN_ID,
+        ...emptyStudentProfile(),
+      };
+      rememberUserRole(BUILTIN_ADMIN_ID, 'admin');
+      rememberSignedIn(signedIn);
+      setActiveTab('dashboard');
+      setStudyComposer(null);
+      setEditingLog(null);
+      setOpenHinaSlot(null);
+      setWeekPickerStart(null);
+      setCrownBurst(null);
+      addNotification('success', '管理者としてログインいたしました。');
+      return;
+    }
+
+    if (supabaseEnvConfigured() && inputIdClean.includes('@')) {
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: inputIdClean,
+          password: inputPassword,
+        });
+        if (error) {
+          const detail = `${error.name || ''} ${error.message || ''}`.toLowerCase();
+          if (detail.includes('fetch') || detail.includes('network') || detail.includes('failed to fetch')) {
+            setLoginError('通信エラーが発生しました');
+            return;
+          }
+        } else if (data.session?.user?.email) {
+          const email = data.session.user.email;
+          const authMatch = users.find((user) => user.id.toLowerCase() === email.toLowerCase() || (user.email || '').toLowerCase() === email.toLowerCase());
+          if (authMatch) {
+            const role = resolveAppRole(authMatch.role, authMatch.id, authMatch.email || email);
+            const signedIn = { ...authMatch, role, password: '' };
+            rememberUserRole(authMatch.id, role);
+            rememberSignedIn(signedIn);
+            setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
+            setStudyComposer(null);
+            setEditingLog(null);
+            setOpenHinaSlot(null);
+            setWeekPickerStart(null);
+            setCrownBurst(null);
+            addNotification('success', `${authMatch.name} さん（${role}）としてログインいたしました。`);
+            return;
+          }
+          const signedIn: User = {
+            id: email,
+            name: String(data.session.user.user_metadata?.name || email),
+            role: 'student',
+            classroom: '本川越校',
+            password: '',
+            email,
+            ...emptyStudentProfile(),
+          };
+          rememberSignedIn(signedIn);
+          setActiveTab('schedule_planner');
+          setStudyComposer(null);
+          setEditingLog(null);
+          setOpenHinaSlot(null);
+          setWeekPickerStart(null);
+          setCrownBurst(null);
+          addNotification('success', `${signedIn.name} さん（student）としてログインいたしました。`);
+          return;
+        }
+      } catch {
+        setLoginError('通信エラーが発生しました');
+        return;
+      }
+    }
+
+    const inputKey = inputIdClean.toLowerCase();
+    const matched = users.find((u) => u.id.toLowerCase() === inputKey || (u.email || '').toLowerCase() === inputKey);
+    if (matched) {
+      if (!acceptsLoginPassword(matched.id, matched.password || '', inputPassword)) {
+        setLoginError('IDまたはパスワードが違います');
+        return;
+      }
+      const role = resolveAppRole(matched.role, matched.id, matched.email || inputIdClean);
+      const signedIn = {
+        ...matched,
+        role,
+        password: matched.password?.trim() ? matched.password : inputPassword,
+      };
+      rememberUserRole(matched.id, role);
+      if (!matched.password?.trim()) {
+        saveLocalPassword(matched.id, inputPassword);
+        setUsers((prev) => prev.map((user) => (user.id === matched.id ? signedIn : user)));
+        void saveUserWithProfile(signedIn);
+      }
+      rememberSignedIn(signedIn);
+      setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
+      setStudyComposer(null);
+      setEditingLog(null);
+      setOpenHinaSlot(null);
+      setWeekPickerStart(null);
+      setCrownBurst(null);
+      addNotification('success', `${matched.name} さん（${role}）としてログインいたしました。`);
+      return;
+    }
+
+    if (!usersReady) {
+      setLoginError(connectionError || '通信エラーが発生しました');
+      return;
+    }
+    if (inputPassword !== inputIdClean && inputPassword !== DEFAULT_LOGIN_PASSWORD) {
+      setLoginError('IDまたはパスワードが違います');
+      return;
+    }
+    const privilegedAdmin = isKnownAdminIdentity(inputIdClean);
+    const newSessionUser: User = {
+      id: inputIdClean,
+      name: privilegedAdmin ? '管理者' : `ユーザー_${inputIdClean}`,
+      role: privilegedAdmin ? 'admin' : 'student',
+      classroom: '本川越校',
+      password: inputPassword,
+      email: privilegedAdmin ? inputIdClean : undefined,
+      ...emptyStudentProfile(),
+    };
+    if (privilegedAdmin) rememberUserRole(inputIdClean, 'admin');
+    rememberSignedIn(newSessionUser);
+    setActiveTab(privilegedAdmin ? 'dashboard' : 'schedule_planner');
+    if (privilegedAdmin) {
+      setStudyComposer(null);
+      setEditingLog(null);
+      setOpenHinaSlot(null);
+      setWeekPickerStart(null);
+      setCrownBurst(null);
+    }
+    addNotification(privilegedAdmin ? 'success' : 'info', privilegedAdmin ? '管理者としてログインいたしました。' : `独自ID [${inputIdClean}] でログインいたしました。`);
+  };
+
+  const handleLogout = () => {
+    clearAppSession();
+    setCurrentUser(null);
+    setLoginInputId('');
+    setLoginPassword('');
+    setLoginPasswordVisible(false);
+    void supabase.auth.signOut();
+    addNotification('info', 'ログアウトいたしました。');
+  };
+
+  const persistMySchedules = (userId: string, items: MyScheduleFolderItem[]) => {
+    const all = readLocalJson<Record<string, MyScheduleFolderItem[]>>(MY_SCHEDULE_STORAGE_KEY, {});
+    all[userId] = items;
+    writeLocalJson(MY_SCHEDULE_STORAGE_KEY, all);
+    setMySchedules(items);
+  };
+
+  const handleSelectStaffTemplate = (templateId: StaffScheduleTemplateId) => {
+    setSelectedStaffTemplateId(templateId);
+    setScheduleSlots(cloneScheduleSlots(staffTemplates[templateId]));
+  };
+
+  const handleSaveStaffTemplate = () => {
+    const next = {
+      ...staffTemplates,
+      [selectedStaffTemplateId]: cloneScheduleSlots(scheduleSlots),
+    };
+    setStaffTemplates(next);
+    writeLocalJson(SCHEDULE_TEMPLATE_STORAGE_KEY, next);
+    const name = STAFF_SCHEDULE_TEMPLATES.find((item) => item.id === selectedStaffTemplateId)?.name || 'ひな形';
+    addNotification('success', `全体ひな形「${name}」を保存しました。`);
+  };
+
+  const handleLoadTemplateForStudent = (templateId: StaffScheduleTemplateId) => {
+    setSelectedMyScheduleId(null);
+    setScheduleSlots(copyScheduleSlotsWithNewIds(staffTemplates[templateId]));
+    const name = STAFF_SCHEDULE_TEMPLATES.find((item) => item.id === templateId)?.name || 'ひな形';
+    addNotification('info', `「${name}」を読み込みました。`);
+  };
+
+  const handleOpenMySchedule = (item: MyScheduleFolderItem) => {
+    setSelectedMyScheduleId(item.id);
+    setScheduleSlots(cloneScheduleSlots(item.slots));
+  };
+
+  const handleSaveNewMySchedule = () => {
+    if (!currentUser) return;
+    const used = mySchedules.map((item) => {
+      const matched = item.name.match(/^Myスケジュール(\d+)$/);
+      return matched ? Number(matched[1]) : 0;
+    });
+    const nextNumber = Math.max(0, ...used) + 1;
+    const created: MyScheduleFolderItem = {
+      id: `my_${Date.now()}`,
+      name: `Myスケジュール${nextNumber}`,
+      slots: cloneScheduleSlots(scheduleSlots),
+    };
+    persistMySchedules(currentUser.id, [...mySchedules, created]);
+    setSelectedMyScheduleId(created.id);
+    addNotification('success', `「${created.name}」を保存しました。`);
+  };
+
+  const handleOverwriteMySchedule = () => {
+    if (!currentUser || !selectedMyScheduleId) return;
+    const next = mySchedules.map((item) => (
+      item.id === selectedMyScheduleId ? { ...item, slots: cloneScheduleSlots(scheduleSlots) } : item
+    ));
+    persistMySchedules(currentUser.id, next);
+    const name = next.find((item) => item.id === selectedMyScheduleId)?.name || 'Myスケジュール';
+    addNotification('success', `「${name}」を上書き保存しました。`);
+  };
+
+  const handleSaveMyScheduleSlot = (slotNumber: number) => {
+    if (!currentUser) return;
+    const name = `Myスケジュール${slotNumber}`;
+    const existing = mySchedules.find((item) => item.name === name);
+    if (existing) {
+      const next = mySchedules.map((item) => (
+        item.id === existing.id ? { ...item, slots: cloneScheduleSlots(scheduleSlots) } : item
+      ));
+      persistMySchedules(currentUser.id, next);
+      setSelectedMyScheduleId(existing.id);
+      addNotification('success', `「${name}」を保存しました。`);
+      return;
+    }
+    const created: MyScheduleFolderItem = {
+      id: `my_${slotNumber}_${Date.now()}`,
+      name,
+      slots: cloneScheduleSlots(scheduleSlots),
+    };
+    persistMySchedules(currentUser.id, [...mySchedules, created]);
+    setSelectedMyScheduleId(created.id);
+    addNotification('success', `「${name}」を保存しました。`);
+  };
+
+  const saveMyHina = (slotNumber: number, slots: ScheduleSlot[], title: string) => {
+    if (!currentUser) return;
+    const existing = findMyHina(mySchedules, slotNumber);
+    const name = title.trim() || `Myひな型${slotNumber}`;
+    const savedSlots = cloneScheduleSlots(slots);
+    const id = existing?.id || `my_hina_${slotNumber}_${Date.now()}`;
+    const saved: MyScheduleFolderItem = { id, name, hinaSlot: slotNumber, slots: savedSlots };
+    const previousNames = hinaMatchNames(existing, slotNumber);
+    if (existing) {
+      persistMySchedules(currentUser.id, mySchedules.map((item) => (item.id === existing.id ? saved : item)));
+    } else {
+      persistMySchedules(currentUser.id, [...mySchedules, saved]);
+    }
+    const nextPlans: Record<string, WeekPlanRecord> = { ...weekPlans };
+    let keptCustomWeeks = 0;
+    Object.entries(weekPlans).forEach(([weekStart, plan]) => {
+      const linked = plan.templateId === id || previousNames.includes(plan.templateName);
+      if (!linked) return;
+      if (plan.is_customized) {
+        keptCustomWeeks += 1;
+        return;
+      }
+      nextPlans[weekStart] = writeWeekFromTemplate(plan, weekStart, id, name, savedSlots, true);
+    });
+    setWeekPlans(nextPlans);
+    writeWeekPlans(currentUser.id, nextPlans);
+    addNotification(
+      'success',
+      keptCustomWeeks > 0
+        ? `「${name}」を登録しました。個別設定済みの週はそのまま残し、それ以外の今日以降へ反映しました。`
+        : `「${name}」を登録し、今日以降の予定へ反映しました。`,
+    );
+    setOpenHinaSlot(null);
+  };
+
+  const applyHinaToWeek = (weekStart: string, item: MyScheduleFolderItem) => {
+    if (!currentUser) return;
+    const slotNumber = item.hinaSlot || Number(item.name.replace(/\D/g, '')) || 1;
+    const templateName = hinaDisplayName(item, slotNumber);
+    const existing = weekPlans[weekStart];
+    const weekEnd = shiftDateKey(weekStart, 6);
+    if (existing && weekEnd < todayDateKey()) {
+      setWeekPickerStart(null);
+      addNotification('success', `${formatWeekRange(weekStart)} の予定はそのまま残しています。`);
+      return;
+    }
+    const record = writeWeekFromTemplate(existing, weekStart, item.id, templateName, item.slots, Boolean(existing));
+    const next = { ...weekPlans, [weekStart]: record };
+    setWeekPlans(next);
+    writeWeekPlans(currentUser.id, next);
+    setWeekPickerStart(null);
+    addNotification('success', `${formatWeekRange(weekStart)} に「${templateName}」を登録しました。`);
+  };
+
+  const openWeekEditor = (weekStart: string) => {
+    const plan = weekPlans[weekStart];
+    setWeekPickerStart(weekStart);
+    setWeekDraftSlots(cloneScheduleSlots(plan?.slots || []));
+    setWeekDraftTemplateId(plan?.templateId);
+    setWeekDraftTemplateName(plan?.templateName || '');
+  };
+
+  const loadHinaIntoWeekDraft = (item: MyScheduleFolderItem) => {
+    const slotNumber = item.hinaSlot || Number(item.name.replace(/\D/g, '')) || 1;
+    setWeekDraftSlots(copyScheduleSlotsWithNewIds(item.slots));
+    setWeekDraftTemplateId(item.id);
+    setWeekDraftTemplateName(hinaDisplayName(item, slotNumber));
+  };
+
+  const saveWeekEditor = () => {
+    if (!currentUser || !weekPickerStart) return;
+    const weekStart = weekPickerStart;
+    const existing = weekPlans[weekStart];
+    const weekEnd = shiftDateKey(weekStart, 6);
+    if (existing && weekEnd < todayDateKey()) {
+      setWeekPickerStart(null);
+      addNotification('success', `${formatWeekRange(weekStart)} の予定はそのまま残しています。`);
+      return;
+    }
+    const baseItem = weekDraftTemplateId
+      ? mySchedules.find((item) => item.id === weekDraftTemplateId)
+      : undefined;
+    const followsTemplate = Boolean(baseItem && scheduleSlotsMatch(weekDraftSlots, baseItem.slots));
+    if (followsTemplate && baseItem) {
+      applyHinaToWeek(weekStart, baseItem);
+      return;
+    }
+    const templateName = weekDraftTemplateName || (baseItem ? hinaDisplayName(baseItem, baseItem.hinaSlot || 1) : '');
+    const record = writeCustomizedWeek(existing, weekStart, weekDraftTemplateId, templateName, weekDraftSlots);
+    const next = { ...weekPlans, [weekStart]: record };
+    setWeekPlans(next);
+    writeWeekPlans(currentUser.id, next);
+    setWeekPickerStart(null);
+    addNotification(
+      'success',
+      record.is_customized
+        ? `${formatWeekRange(weekStart)} を個別に保存しました。ひな型の一括反映では上書きしません。`
+        : `${formatWeekRange(weekStart)} に「${templateName || 'ひな型'}」を登録しました。`,
+    );
+  };
+
+  const openSlotDraft = (day: WeekdayId, startHour: number) => {
+    setSlotDraft({
+      id: null,
+      day,
+      startHour,
+      startMinute: 0,
+      endHour: Math.min(startHour + 1, 24),
+      endMinute: 0,
+      category: 'high_school',
+      title: '',
+    });
+  };
+
+  const openSlotEditor = (slot: ScheduleSlot) => {
+    setSlotDraft({
+      id: slot.id,
+      day: slot.day,
+      startHour: slot.startHour,
+      startMinute: slot.startMinute || 0,
+      endHour: slot.endHour,
+      endMinute: slot.endMinute || 0,
+      category: slot.category,
+      title: slot.title,
+    });
+  };
+
+  const handleSaveSlotDraft = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!slotDraft) return;
+    const start = slotDraft.startHour * 60 + (slotDraft.startMinute || 0);
+    const end = slotDraft.endHour * 60 + (slotDraft.endHour === 24 ? 0 : (slotDraft.endMinute || 0));
+    if (end <= start) {
+      addNotification('warning', '終了時刻は開始時刻より後にしてください。');
+      return;
+    }
+    const nextSlot = {
+      day: slotDraft.day,
+      startHour: slotDraft.startHour,
+      startMinute: slotDraft.startMinute || 0,
+      endHour: slotDraft.endHour,
+      endMinute: slotDraft.endHour === 24 ? 0 : (slotDraft.endMinute || 0),
+      category: slotDraft.category,
+      title: slotDraft.title.trim(),
+    };
+    if (slotDraft.id) {
+      const editingId = slotDraft.id;
+      setScheduleSlots((prev) => prev.map((slot) => (slot.id === editingId ? { ...slot, ...nextSlot } : slot)));
+    } else {
+      setScheduleSlots((prev) => [
+        ...prev,
+        { id: `slot_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, ...nextSlot },
+      ]);
+    }
+    setSlotDraft(null);
+  };
+
+  const handleDeleteSlotDraft = () => {
+    if (!slotDraft?.id) return;
+    const editingId = slotDraft.id;
+    setScheduleSlots((prev) => prev.filter((slot) => slot.id !== editingId));
+    setSlotDraft(null);
+  };
+
+  // ---------------------------------------------------------------------------
+  // データフィルタリング ＆ 生徒用成長分析ロジック
+  // ---------------------------------------------------------------------------
+
+  const filteredUsers = useMemo(() => {
+    return users.filter((u) => {
+      const matchesClassroom = selectedClassroom === 'ALL' || u.classroom === selectedClassroom;
+      const matchesSearch = searchQuery === '' || u.name.includes(searchQuery) || u.id.includes(searchQuery);
+      return matchesClassroom && matchesSearch;
+    });
+  }, [users, selectedClassroom, searchQuery]);
+
+  const teachersAndAdmins = useMemo(() => {
+    return filteredUsers.filter((u) => u.role === 'teacher' || u.role === 'admin');
+  }, [filteredUsers]);
+
+  const students = useMemo(() => {
+    return filteredUsers.filter((u) => u.role === 'student');
+  }, [filteredUsers]);
+
+  const meetingRoster = useMemo(() => {
+    const query = meetingStudentQuery.trim().toLowerCase();
+    return users
+      .filter((user) => user.role === 'student')
+      .filter((user) => selectedClassroom === 'ALL' || user.classroom === selectedClassroom)
+      .filter((user) => {
+        if (!query) return true;
+        return user.name.toLowerCase().includes(query) || user.id.toLowerCase().includes(query);
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  }, [users, selectedClassroom, meetingStudentQuery]);
+
+  const meetingBoard = useMemo(() => {
+    const studentLogs = meetingStudentId ? logs.filter((log) => log.user_id === meetingStudentId) : [];
+    const weekEnd = shiftDateKey(meetingWeekStart, 6);
+    const monthAnchor = shiftDateKey(meetingWeekStart, 3);
+    const [year, month] = monthAnchor.split('-').map(Number);
+    const monthStart = `${year}-${String(month || 1).padStart(2, '0')}-01`;
+    const monthLast = new Date(year || 1970, month || 1, 0).getDate();
+    const monthEnd = `${year}-${String(month || 1).padStart(2, '0')}-${String(monthLast).padStart(2, '0')}`;
+    const inRange = (log: StudyLog, start: string, end: string) => {
+      const placed = studyPlacement(log, logSlots);
+      return Boolean(placed && placed.date >= start && placed.date <= end);
+    };
+    const weekLogs = studentLogs.filter((log) => inRange(log, meetingWeekStart, weekEnd));
+    const monthLogs = studentLogs.filter((log) => inRange(log, monthStart, monthEnd));
+    const describe = (log: StudyLog) => meetingMaterialInfo(log.material_id, meetingStudentId, materials);
+    return {
+      studentLogs,
+      plans: meetingStudentId ? readWeekPlans(meetingStudentId) : {},
+      weekLogs,
+      week: buildStudyStacks(weekLogs, describe),
+      month: buildStudyStacks(monthLogs, describe),
+      monthLabel: `${year}年${month}月`,
+      weekLabel: formatWeekRange(meetingWeekStart),
+    };
+  }, [logs, meetingStudentId, meetingWeekStart, logSlots, materials]);
+
+  const progressBoard = useMemo(() => {
+    const viewerRole = currentUser ? resolveAppRole(currentUser.role, currentUser.id, currentUser.email) : 'student';
+    const lockedClassroom = viewerRole === 'teacher' ? (currentUser?.classroom || '') : null;
+    const classroom = lockedClassroom ?? progressClassroom;
+    const today = todayDateKey();
+    const weekStart = weekStartKey(today);
+    const weekEnd = shiftDateKey(weekStart, 6);
+    const [yearText, monthText] = today.split('-');
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const monthStart = `${yearText}-${monthText}-01`;
+    const monthLast = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const monthEnd = `${yearText}-${monthText}-${String(monthLast).padStart(2, '0')}`;
+    const cappedMonthEnd = monthEnd < weekEnd ? monthEnd : weekEnd;
+    const known = ['本川越校', '川越校', 'ＥＸ校'];
+    const discovered = users
+      .filter((user) => resolveAppRole(user.role, user.id, user.email) === 'student' && user.classroom)
+      .map((user) => user.classroom);
+    const classrooms = Array.from(new Set([...known, ...discovered]));
+    const rows = users
+      .filter((user) => resolveAppRole(user.role, user.id, user.email) === 'student')
+      .filter((user) => !classroom || classroom === 'ALL' || user.classroom === classroom)
+      .map((student) => {
+        const ownLogs = logs.filter((log) => log.user_id === student.id);
+        const inRange = (log: StudyLog, start: string, end: string) => {
+          const placed = studyPlacement(log, logSlots);
+          return Boolean(placed && placed.date >= start && placed.date <= end);
+        };
+        const weekLogs = ownLogs.filter((log) => inRange(log, weekStart, weekEnd));
+        const monthLogs = ownLogs.filter((log) => inRange(log, monthStart, cappedMonthEnd));
+        return {
+          student,
+          weekMinutes: weekLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0),
+          monthMinutes: monthLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0),
+          weekCrowns: weekLogs.filter((log) => log.is_mission_completed).length,
+        };
+      })
+      .sort((a, b) => {
+        const left = progressSortKey === 'week' ? a.weekMinutes : a.monthMinutes;
+        const right = progressSortKey === 'week' ? b.weekMinutes : b.monthMinutes;
+        const diff = progressSortDir === 'asc' ? left - right : right - left;
+        return diff || a.student.name.localeCompare(b.student.name, 'ja');
+      });
+    return {
+      viewerRole,
+      classroom,
+      classrooms,
+      weekLabel: formatWeekRange(weekStart),
+      monthLabel: `${year}年${month}月`,
+      rows,
+    };
+  }, [users, logs, logSlots, currentUser, progressClassroom, progressSortKey, progressSortDir]);
+
+  const visibleStudents = useMemo(() => {
+    return students.filter((student) =>
+      STUDENT_LIST_COLUMNS.every((column) => {
+        const selected = studentFieldFilters[column.key];
+        return !selected || selected === 'ALL' || String(student[column.key] || '') === selected;
+      })
+    );
+  }, [students, studentFieldFilters]);
+
+  const myMessages = useMemo(() => {
+    if (!currentUser || currentUser.role !== 'student') return [];
+    return messages
+      .filter((message) => message.user_id === currentUser.id)
+      .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
+  }, [messages, currentUser]);
+
+  const unreadNoticeCount = myMessages.filter((message) => !message.read_at).length;
+
+  const selectedStudent = useMemo(() => {
+    if (!selectedStudentId) return null;
+    return users.find((u) => u.id === selectedStudentId) || null;
+  }, [users, selectedStudentId]);
+
+  const selectedStudentLogs = useMemo(() => {
+    if (!selectedStudentId) return [];
+    return logs.filter((l) => l.user_id === selectedStudentId);
+  }, [logs, selectedStudentId]);
+
+  // 生徒一人ひとりの科目別成長集計演算
+  const selectedStudentSubjectStats = useMemo(() => {
+    if (!selectedStudentId) return [];
+    const studentLogs = logs.filter((l) => l.user_id === selectedStudentId);
+    
+    const stats = Object.fromEntries(
+      SUBJECT_NAMES.map((subj) => [subj, { totalScore: 0, totalMinutes: 0, count: 0, crownCount: 0 }])
+    ) as Record<SubjectType, { totalScore: number; totalMinutes: number; count: number; crownCount: number }>;
+
+    studentLogs.forEach((log) => {
+      const mat = materials.find((m) => m.id === log.material_id);
+      const subj = mat ? subjectFromInput(mat.subject) : null;
+      if (subj && stats[subj]) {
+        stats[subj].totalScore += log.score;
+        stats[subj].totalMinutes += log.time_spent_minutes || 0;
+        stats[subj].count += 1;
+        if (log.is_mission_completed) stats[subj].crownCount += 1;
+      }
+    });
+
+    return SUBJECT_NAMES.map((subj) => {
+      const item = stats[subj];
+      return {
+        subject: subj,
+        avgScore: item.count > 0 ? Math.round(item.totalScore / item.count) : 0,
+        totalHours: Math.round((item.totalMinutes / 60) * 10) / 10,
+        count: item.count,
+        crownCount: item.crownCount,
+      };
+    });
+  }, [logs, materials, selectedStudentId]);
+
+  const filteredMaterials = useMemo(() => {
+    const matched = materials.filter((m) => {
+      const matchesSubject = subjectFilter === 'ALL' || m.subject === subjectFilter;
+      const matchesSearch = searchQuery === '' || m.title.includes(searchQuery) || m.id.includes(searchQuery);
+      return matchesSubject && matchesSearch;
+    });
+    return byDisplayOrder(matched);
+  }, [materials, subjectFilter, searchQuery]);
+
+  const logSubjectChoices = SUBJECT_NAMES;
+
+  const logMaterialChoices = useMemo(() => {
+    if (!isSubjectType(newLogForm.subject)) return [];
+    return materialsForSubject(materials, newLogForm.subject);
+  }, [materials, newLogForm.subject]);
+
+  // 全体メトリクス演算
+  const globalSummaryStats = useMemo(() => {
+    const totalUsers = users.length;
+    const totalStudents = users.filter((u) => u.role === 'student').length;
+    const totalTeachers = users.filter((u) => u.role === 'teacher' || u.role === 'admin').length;
+    const totalMaterials = materials.length;
+    const totalLogs = logs.length;
+    
+    const overallAvgScore = logs.length > 0
+      ? Math.round(logs.reduce((acc, cur) => acc + cur.score, 0) / logs.length)
+      : 0;
+
+    return {
+      totalUsers,
+      totalStudents,
+      totalTeachers,
+      totalMaterials,
+      totalLogs,
+      overallAvgScore,
+    };
+  }, [users, materials, logs]);
+
+  const myStudyLogs = useMemo(() => {
+    if (!currentUser || currentUser.role !== 'student') return [];
+    return [...logs.filter((log) => log.user_id === currentUser.id)]
+      .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  }, [logs, currentUser]);
+
+  const periodStudy = useMemo(() => {
+    const periodLogs = myStudyLogs.filter((log) => studyLogInPeriod(log, logSummaryPeriod, new Date(), logSlots));
+    const subjectMap = new Map<SubjectType, Map<string, { id: string; title: string; minutes: number }>>();
+    periodLogs.forEach((log) => {
+      const master = materials.find((item) => item.id === log.material_id);
+      const mine = myMaterials.find((item) => item.id === log.material_id);
+      const subject = subjectFromInput(master?.subject || mine?.subject) || 'その他';
+      const title = master?.title || mine?.title || '教材';
+      const key = log.material_id || title;
+      const bucket = subjectMap.get(subject) || new Map();
+      const current = bucket.get(key) || { id: key, title, minutes: 0 };
+      current.minutes += log.time_spent_minutes || 0;
+      bucket.set(key, current);
+      subjectMap.set(subject, bucket);
+    });
+    const subjects = SUBJECT_NAMES.flatMap((subject) => {
+      const bucket = subjectMap.get(subject);
+      if (!bucket) return [];
+      const items = Array.from(bucket.values()).filter((item) => item.minutes > 0).sort((a, b) => b.minutes - a.minutes);
+      const minutes = items.reduce((sum, item) => sum + item.minutes, 0);
+      if (minutes <= 0) return [];
+      const color = SUBJECT_COLOR_MAP[subject].hexCode;
+      return [{
+        subject,
+        minutes,
+        materials: items.map((item, index) => ({
+          ...item,
+          color: index === 0 ? color : MATERIAL_BAR_COLORS[(index - 1) % MATERIAL_BAR_COLORS.length],
+        })),
+      }];
+    });
+    const totalMinutes = periodLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0);
+    return { logs: periodLogs, totalMinutes, subjects };
+  }, [myStudyLogs, materials, myMaterials, logSummaryPeriod, logSlots]);
+
+  const previousWeekRank = useMemo(() => {
+    const thisWeek = weekStartKey(todayDateKey());
+    const prevStart = shiftDateKey(thisWeek, -7);
+    const prevEnd = shiftDateKey(prevStart, 6);
+    const studyMinutes = myStudyLogs.reduce((sum, log) => {
+      const placed = studyPlacement(log, logSlots);
+      if (!placed || placed.date < prevStart || placed.date > prevEnd) return sum;
+      return sum + (log.time_spent_minutes || 0);
+    }, 0);
+    const jukuMinutes = weekJukuMinutes(weekPlans[prevStart], prevStart);
+    const totalMinutes = rankTotalMinutes(studyMinutes, jukuMinutes);
+    return { totalMinutes, rank: rankFromMinutes(totalMinutes) };
+  }, [myStudyLogs, logSlots, weekPlans]);
+
+  const pastWeekReviews = useMemo(() => {
+    const thisWeek = weekStartKey(todayDateKey());
+    const thisWeekEnd = shiftDateKey(thisWeek, 6);
+    const grouped = new Map<string, StudyLog[]>();
+    myStudyLogs.forEach((log) => {
+      const placed = studyPlacement(log, logSlots);
+      if (!placed || placed.date > thisWeekEnd) return;
+      const start = weekStartKey(placed.date);
+      if (start > thisWeek) return;
+      const bucket = grouped.get(start) || [];
+      bucket.push(log);
+      grouped.set(start, bucket);
+    });
+    Object.keys(weekPlans).forEach((rawStart) => {
+      const start = weekStartKey(rawStart);
+      if (start > thisWeek || grouped.has(start)) return;
+      if (weekJukuMinutes(weekPlans[rawStart], start) > 0) grouped.set(start, []);
+    });
+    return Array.from(grouped.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([start, rows]) => {
+        const stack = buildStudyStacks(rows, (log) => {
+          const master = materials.find((item) => item.id === log.material_id);
+          const mine = myMaterials.find((item) => item.id === log.material_id);
+          return {
+            title: master?.title || mine?.title || '教材',
+            subject: subjectFromInput(master?.subject || mine?.subject) || 'その他',
+          };
+        });
+        const jukuMinutes = weekJukuMinutes(weekPlans[start], start);
+        return {
+          start,
+          label: `${start === thisWeek ? '今週 ' : ''}${formatWeekRange(start)}`,
+          stack,
+          jukuMinutes,
+          rankMinutes: rankTotalMinutes(stack.totalMinutes, jukuMinutes),
+        };
+      });
+  }, [myStudyLogs, logSlots, materials, myMaterials, weekPlans]);
+
+  const studyStreakDays = useMemo(() => {
+    const dayKeys = new Set<string>();
+    myStudyLogs.forEach((log) => {
+      const date = new Date(log.created_at || 0);
+      if (Number.isNaN(date.getTime())) return;
+      dayKeys.add(`${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`);
+    });
+    const keyOf = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const cursor = new Date();
+    cursor.setHours(0, 0, 0, 0);
+    if (!dayKeys.has(keyOf(cursor))) cursor.setDate(cursor.getDate() - 1);
+    let streak = 0;
+    while (dayKeys.has(keyOf(cursor))) {
+      streak += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    return streak;
+  }, [myStudyLogs]);
+
+  useEffect(() => {
+    if (!crownBurst) return;
+    const timer = window.setTimeout(() => setCrownBurst(null), 2800);
+    return () => window.clearTimeout(timer);
+  }, [crownBurst]);
+
+  useEffect(() => {
+    const signedIn = currentUser;
+    if (!signedIn || isStaffRole(signedIn.role, signedIn.id, signedIn.email) || resolveAppRole(signedIn.role, signedIn.id, signedIn.email) !== 'student') return;
+    setActiveTab('schedule_planner');
+    setFavoriteMaterialIds(readFavoriteMaterialIds(signedIn.id));
+    setMyMaterials(readMyMaterials(signedIn.id));
+    setLogSlots(readLogSlots());
+    const storedPlans = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {})[signedIn.id];
+    const plans = readWeekPlans(signedIn.id);
+    setWeekPlans(plans);
+    const storedHasSeed = Boolean(storedPlans && Object.values(storedPlans).some((plan) => (
+      (plan?.slots || []).some((slot) => SEEDED_JUKU_SLOT_IDS.has(String(slot.id)))
+      || Object.values(plan?.dateSnapshots || {}).some((list) => (list || []).some((slot) => SEEDED_JUKU_SLOT_IDS.has(String(slot.id))))
+    )));
+    if (storedHasSeed) writeWeekPlans(signedIn.id, plans);
+    setNewLogForm((prev) => (prev.user_id === signedIn.id ? prev : { ...prev, user_id: signedIn.id }));
+  }, [currentUser?.id, currentUser?.role]);
+
+  useEffect(() => {
+    if (!currentUser || !isStaffRole(currentUser.role, currentUser.id, currentUser.email)) return;
+    setLogSlots(readLogSlots());
+    setStudyComposer(null);
+    setEditingLog(null);
+    setOpenHinaSlot(null);
+    setWeekPickerStart(null);
+    setCrownBurst(null);
+  }, [currentUser?.id, currentUser?.role]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const canonical = users.find((user) => {
+      const id = user.id.toLowerCase();
+      const email = (user.email || '').toLowerCase();
+      const currentId = currentUser.id.toLowerCase();
+      const currentEmail = (currentUser.email || '').toLowerCase();
+      return id === currentId || (email !== '' && email === currentId) || (currentEmail !== '' && (id === currentEmail || email === currentEmail));
+    });
+    const directoryRole = canonical ? resolveAppRole(canonical.role, canonical.id, canonical.email) : null;
+    const nextRole = directoryRole === 'admin' || directoryRole === 'teacher'
+      ? directoryRole
+      : resolveAppRole(currentUser.role, currentUser.id, currentUser.email);
+    if (nextRole !== 'admin' && nextRole !== 'teacher') return;
+    const nextId = canonical?.id || currentUser.id;
+    const nextEmail = currentUser.email || canonical?.email;
+    if (currentUser.role === nextRole && currentUser.id === nextId && (currentUser.email || '') === (nextEmail || '')) return;
+    rememberUserRole(nextId, nextRole);
+    setCurrentUser({
+      ...(canonical || currentUser),
+      id: nextId,
+      role: nextRole,
+      password: currentUser.password || canonical?.password || '',
+      email: nextEmail,
+    });
+    if (currentUser.role !== nextRole) setActiveTab('dashboard');
+  }, [users, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser || isStaffRole(currentUser.role, currentUser.id, currentUser.email) || resolveAppRole(currentUser.role, currentUser.id, currentUser.email) !== 'student') return;
+    if (activeTab === 'teachers' || activeTab === 'students' || activeTab === 'student_detail') {
+      setActiveTab('schedule_planner');
+    }
+  }, [currentUser?.id, currentUser?.role, activeTab]);
+
+  const releaseWakeLock = useCallback(async () => {
+    const current = wakeLockRef.current;
+    wakeLockRef.current = null;
+    if (!current) return;
+    try {
+      await current.release();
+    } catch {
+      // すでに解除済み、または未対応ブラウザ
+    }
+  }, []);
+
+  const acquireWakeLock = useCallback(async () => {
+    try {
+      if (wakeLockRef.current) return;
+      const sentinel = await requestScreenWakeLock();
+      if (!sentinel) return;
+      wakeLockRef.current = sentinel;
+      sentinel.addEventListener?.('release', () => {
+        if (wakeLockRef.current === sentinel) wakeLockRef.current = null;
+      });
+    } catch {
+      // 権限拒否・未対応ブラウザでは計測自体は継続する
+    }
+  }, []);
+
+  const dismissStudyClock = useCallback(() => {
+    clearActiveStudyClock();
+    setTimerRunning(false);
+    setCountdownRunning(false);
+    setCountdownFinished(false);
+    void releaseWakeLock();
+  }, [releaseWakeLock]);
+
+  useEffect(() => {
+    if (!timerRunning) return;
+    const tick = () => setTimerElapsedSec(elapsedSecondsSince(timerStartedAt));
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => window.clearInterval(timer);
+  }, [timerRunning, timerStartedAt]);
+
+  useEffect(() => {
+    if (!countdownRunning || !countdownStartedAt) return;
+    const tick = () => {
+      const remaining = Math.max(0, countdownTargetMin * 60 - elapsedSecondsSince(countdownStartedAt));
+      setCountdownRemainingSec(remaining);
+    };
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => window.clearInterval(timer);
+  }, [countdownRunning, countdownStartedAt, countdownTargetMin]);
+
+  useEffect(() => {
+    if (timerRunning || countdownRunning) {
+      void acquireWakeLock();
+      return;
+    }
+    void releaseWakeLock();
+  }, [timerRunning, countdownRunning, acquireWakeLock, releaseWakeLock]);
+
+  useEffect(() => {
+    if (!currentUser || isStaffRole(currentUser.role, currentUser.id, currentUser.email)) return;
+    if (!studyComposer || (!timerRunning && !countdownRunning && !countdownFinished)) return;
+    const startedAt = timerRunning ? timerStartedAt : countdownStartedAt;
+    if (!startedAt) return;
+    writeActiveStudyClock({
+      userId: currentUser.id,
+      mode: timerRunning ? 'timer' : 'countdown',
+      running: timerRunning || countdownRunning,
+      startedAt,
+      targetSec: countdownTargetMin * 60,
+      finished: countdownFinished,
+      subject: String(newLogForm.subject || ''),
+      materialId: newLogForm.material_id,
+      comment: newLogForm.comment,
+      mission: composerMission,
+      date: composerDateKey,
+      composer: studyComposer,
+    });
+  }, [
+    currentUser,
+    studyComposer,
+    timerRunning,
+    countdownRunning,
+    countdownFinished,
+    timerStartedAt,
+    countdownStartedAt,
+    countdownTargetMin,
+    newLogForm.subject,
+    newLogForm.material_id,
+    newLogForm.comment,
+    composerMission,
+    composerDateKey,
+  ]);
+
+  useEffect(() => {
+    const syncVisibleClock = () => {
+      if (document.visibilityState === 'hidden') return;
+      const saved = readActiveStudyClock();
+      if (!saved || !currentUser || saved.userId !== currentUser.id || isStaffRole(currentUser.role, currentUser.id, currentUser.email)) return;
+      if (saved.mode === 'timer') {
+        if (!saved.running) return;
+        setTimerStartedAt(saved.startedAt);
+        setTimerElapsedSec(elapsedSecondsSince(saved.startedAt));
+        setTimerRunning(true);
+        void acquireWakeLock();
+        return;
+      }
+      const targetSec = Math.max(1, saved.targetSec || countdownTargetMin * 60);
+      const remaining = Math.max(0, targetSec - elapsedSecondsSince(saved.startedAt));
+      setCountdownStartedAt(saved.startedAt);
+      setCountdownTargetMin(Math.max(1, Math.round(targetSec / 60)));
+      setCountdownRemainingSec(remaining);
+      if (remaining <= 0) {
+        setCountdownRunning(false);
+        setCountdownFinished(true);
+        writeActiveStudyClock({ ...saved, running: false, finished: true, targetSec });
+        if (timeAttackFinishedRef.current !== saved.startedAt) {
+          timeAttackFinishedRef.current = saved.startedAt;
+          playTimeAttackChime();
+          addNotification('success', 'タイムアタック終了！');
+        }
+        void releaseWakeLock();
+        return;
+      }
+      if (saved.running) {
+        setCountdownFinished(false);
+        setCountdownRunning(true);
+        void acquireWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', syncVisibleClock);
+    window.addEventListener('focus', syncVisibleClock);
+    window.addEventListener('pageshow', syncVisibleClock);
+    return () => {
+      document.removeEventListener('visibilitychange', syncVisibleClock);
+      window.removeEventListener('focus', syncVisibleClock);
+      window.removeEventListener('pageshow', syncVisibleClock);
+    };
+  }, [currentUser, countdownTargetMin, acquireWakeLock, releaseWakeLock, addNotification]);
+
+  useEffect(() => {
+    if (!currentUser || isStaffRole(currentUser.role, currentUser.id, currentUser.email) || resolveAppRole(currentUser.role, currentUser.id, currentUser.email) !== 'student') return;
+    if (clockRestoreUserRef.current === currentUser.id) return;
+    clockRestoreUserRef.current = currentUser.id;
+    const saved = readActiveStudyClock();
+    if (!saved || saved.userId !== currentUser.id) return;
+    const subject = subjectFromInput(saved.subject) || '';
+    setRecordMode(saved.mode);
+    setComposerDateKey(saved.date);
+    setStudyComposer(saved.composer);
+    setComposerMission(Boolean(saved.mission));
+    setNewLogForm((prev) => ({
+      ...prev,
+      user_id: currentUser.id,
+      subject,
+      material_id: saved.materialId || '',
+      comment: saved.comment || '',
+    }));
+    if (saved.mode === 'timer' && saved.running) {
+      setTimerStartedAt(saved.startedAt);
+      setTimerElapsedSec(elapsedSecondsSince(saved.startedAt));
+      setTimerRunning(true);
+      setCountdownRunning(false);
+      setCountdownFinished(false);
+      return;
+    }
+    const targetSec = Math.max(1, saved.targetSec || 1);
+    const remaining = Math.max(0, targetSec - elapsedSecondsSince(saved.startedAt));
+    setCountdownTargetMin(Math.max(1, Math.round(targetSec / 60)));
+    setCountdownStartedAt(saved.startedAt);
+    setCountdownRemainingSec(remaining);
+    setTimerRunning(false);
+    if (remaining <= 0) {
+      setCountdownRunning(false);
+      setCountdownFinished(true);
+      writeActiveStudyClock({ ...saved, running: false, finished: true, targetSec });
+      if (timeAttackFinishedRef.current !== saved.startedAt) {
+        timeAttackFinishedRef.current = saved.startedAt;
+        playTimeAttackChime();
+        addNotification('success', 'タイムアタック終了！');
+      }
+      return;
+    }
+    setCountdownFinished(Boolean(saved.finished));
+    setCountdownRunning(saved.running && !saved.finished);
+  }, [currentUser, addNotification]);
+
+  // ---------------------------------------------------------------------------
+  // CSV一括取り込み ＆ 手動追加ロジック
+  // ---------------------------------------------------------------------------
+
+  const downloadStudentCsvTemplate = useCallback(() => {
+    const csvBody = [
+      'id,password,name,role,classroom,grade,high_school,english,math,japanese,physics,chemistry,biology,japanese_history,world_history,individual',
+      'ext001,ext001,川越 太郎,student,本川越校,高2,川越高校,選抜,標準,標準,基礎,標準,基礎,日本史A,,個別A',
+      'ext002,1234,山手 花子,student,本川越校,高1,山手高校,標準,選抜,標準,,,生物A,,世界史B,個別B',
+    ].join('\n');
+    const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'student_import_template.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const downloadTeacherCsvTemplate = useCallback(() => {
+    const csvBody = [
+      'id,password,name,role,classroom',
+      'teacher01,teacher01,佐藤 講師,teacher,本川越校',
+      'teacher02,1234,鈴木 講師,teacher,川越校',
+    ].join('\n');
+    const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'teacher_import_template.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const csvCell = (row: any, key: string) => (row?.[key] == null ? '' : String(row[key]).trim());
+
+  const handleCsvFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setCsvUploading(true);
+    setCsvStatusMessage({ type: null, text: '' });
+    setCsvValidationErrors([]);
+    setCsvParsedPreview([]);
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: 'greedy',
+      complete: (results) => {
+        try {
+          if (!results.data || results.data.length === 0) {
+            throw new Error('CSVファイル内に有効なデータ行が存在しません。');
+          }
+
+          const parsedRows: User[] = [];
+          const errors: CsvRowError[] = [];
+
+          results.data.forEach((row: any, index: number) => {
+            const rowNum = index + 2;
+            const rawId = csvCell(row, 'id');
+            const rawPassword = csvCell(row, 'password');
+            const rawName = csvCell(row, 'name');
+            const rawRole = csvCell(row, 'role').toLowerCase();
+            const rawClassroom = csvCell(row, 'classroom') || '本川越校';
+
+            if (!rawId) errors.push({ rowNumber: rowNum, field: 'id', message: '独自ID (id) が指定されていません。' });
+            if (!rawName) errors.push({ rowNumber: rowNum, field: 'name', message: '氏名 (name) が空欄です。' });
+
+            const existingUser = users.find((u) => u.id.toLowerCase() === rawId.toLowerCase());
+            if (csvImportKind === 'student') {
+              if (rawRole && rawRole !== 'student') {
+                errors.push({ rowNumber: rowNum, field: 'role', message: '生徒専用CSVの role は student のみです。' });
+              }
+              if (rawId && rawName && (!rawRole || rawRole === 'student')) {
+                parsedRows.push({
+                  ...blankUserForm('student'),
+                  id: rawId,
+                  name: rawName,
+                  role: 'student',
+                  classroom: rawClassroom,
+                  password: rawPassword || existingUser?.password || '',
+                  grade: csvCell(row, 'grade'),
+                  highSchool: csvCell(row, 'high_school'),
+                  english: csvCell(row, 'english'),
+                  math: csvCell(row, 'math'),
+                  japanese: csvCell(row, 'japanese'),
+                  physics: csvCell(row, 'physics'),
+                  chemistry: csvCell(row, 'chemistry'),
+                  biology: csvCell(row, 'biology'),
+                  japaneseHistory: csvCell(row, 'japanese_history'),
+                  worldHistory: csvCell(row, 'world_history'),
+                  individual: csvCell(row, 'individual'),
+                });
+              }
+              return;
+            }
+
+            const teacherRole = rawRole || 'teacher';
+            const adminWriteForbidden = currentUser?.role !== 'admin' && (teacherRole === 'admin' || existingUser?.role === 'admin');
+            if (teacherRole !== 'teacher' && !(teacherRole === 'admin' && currentUser?.role === 'admin')) {
+              errors.push({ rowNumber: rowNum, field: 'role', message: '教師専用CSVの role は teacher のみです。' });
+            }
+            if (adminWriteForbidden) {
+              errors.push({ rowNumber: rowNum, field: 'role', message: '管理者以外は admin 権限のユーザーを作成・更新できません。' });
+            }
+            if (rawId && rawName && !adminWriteForbidden && (teacherRole === 'teacher' || teacherRole === 'admin')) {
+              parsedRows.push({
+                ...blankUserForm(teacherRole as UserRole),
+                id: rawId,
+                name: rawName,
+                role: teacherRole as UserRole,
+                classroom: rawClassroom,
+                password: rawPassword || existingUser?.password || '',
+              });
+            }
+          });
+
+          if (errors.length > 0) {
+            setCsvValidationErrors(errors);
+            setCsvStatusMessage({ type: 'error', text: `${errors.length} 件のデータ不備が検出されました。` });
+          } else {
+            setCsvParsedPreview(parsedRows);
+            setCsvStatusMessage({ type: 'success', text: `${parsedRows.length} 件のデータを登録可能です。` });
+          }
+        } catch (err: any) {
+          setCsvStatusMessage({ type: 'error', text: err.message || 'CSV解析エラー' });
+        } finally {
+          setCsvUploading(false);
+          event.target.value = '';
+        }
+      },
+      error: (err) => {
+        setCsvStatusMessage({ type: 'error', text: `CSVエラー: ${err.message}` });
+        setCsvUploading(false);
+        event.target.value = '';
+      },
+    });
+  }, [currentUser, users, csvImportKind]);
+
+  const executeCsvImport = useCallback(async () => {
+    if (csvParsedPreview.length === 0) return;
+    if (csvImportKind === 'teacher' && currentUser?.role !== 'admin') {
+      const hasForbiddenAdminWrite = csvParsedPreview.some((row) => row.role === 'admin' || users.some((user) => user.id.toLowerCase() === row.id.toLowerCase() && user.role === 'admin'));
+      if (hasForbiddenAdminWrite) {
+        setCsvStatusMessage({ type: 'error', text: '管理者以外は admin 権限のユーザーを作成・更新できません。' });
+        return;
+      }
+    }
+
+    setCsvUploading(true);
+    try {
+      let dbError: string | null = null;
+      for (const row of csvParsedPreview) {
+        const result = await saveUserWithProfile(row);
+        if (result) dbError = result;
+      }
+      setCsvStatusMessage({
+        type: dbError ? 'error' : 'success',
+        text: dbError ? `一覧へ反映しました。データベース保存は未完了です: ${dbError}` : '登録が完了いたしました！',
+      });
+      addNotification(dbError ? 'warning' : 'success', `${csvParsedPreview.length} 名の${csvImportKind === 'student' ? '生徒' : '教師'}データを登録いたしました。`);
+      if (!dbError) await fetchAllData();
+      setTimeout(() => {
+        setIsStudentCsvModalOpen(false);
+        setIsTeacherCsvModalOpen(false);
+        setCsvParsedPreview([]);
+        setCsvStatusMessage({ type: null, text: '' });
+      }, 1200);
+    } catch (err: any) {
+      setCsvStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setCsvUploading(false);
+    }
+  }, [csvParsedPreview, csvImportKind, currentUser, users, saveUserWithProfile, fetchAllData, addNotification]);
+
+  const resetMaterialForm = useCallback(() => {
+    setEditingMaterialId(null);
+    setIsMaterialImageDragOver(false);
+    setNewMaterialForm({
+      id: '',
+      title: '',
+      subject: '',
+      difficulty: 'standard',
+      image_url: '',
+      description: '',
+      created_by: currentUser?.id || '',
+    });
+  }, [currentUser]);
+
+  const openCreateMaterialModal = useCallback(() => {
+    resetMaterialForm();
+    setIsMaterialModalOpen(true);
+  }, [resetMaterialForm]);
+
+  const openEditMaterialModal = useCallback((material: Material) => {
+    setEditingMaterialId(material.id);
+    setIsMaterialImageDragOver(false);
+    setNewMaterialForm({
+      id: material.id,
+      title: material.title,
+      subject: subjectFromInput(material.subject) || material.subject,
+      difficulty: material.difficulty || 'standard',
+      image_url: material.image_url || '',
+      description: material.description || '',
+      created_by: material.created_by,
+    });
+    setIsMaterialModalOpen(true);
+  }, []);
+
+  const applyMaterialImageFile = useCallback((file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('画像ファイルを選択してください。');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setNewMaterialForm((prev) => ({ ...prev, image_url: reader.result as string }));
+      }
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  const handleCreateMaterial = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMaterialForm.title.trim()) {
+      alert('教材タイトルは必須項目です。');
+      return;
+    }
+    const subject = subjectFromInput(newMaterialForm.subject);
+    if (!subject) {
+      alert('教科を選択してください。');
+      return;
+    }
+    const creatorId = (editingMaterialId ? newMaterialForm.created_by : currentUser?.id) || currentUser?.id || '';
+    if (!creatorId) {
+      alert('ログイン中のユーザーIDを取得できません。');
+      return;
+    }
+
+    const explicit = editingMaterialId ? materials.find((item) => item.id === editingMaterialId) : undefined;
+    const existing = explicit || findMaterialByTitle(materials, newMaterialForm.title);
+    const overwriteBlanks = Boolean(explicit);
+    const allocateDisplayOrder = createDisplayOrderAllocator(materials);
+    const saved = mergeMaterialRecord(existing, {
+      id: explicit?.id || `mat_${Date.now()}`,
+      title: newMaterialForm.title.trim(),
+      subject,
+      description: newMaterialForm.description,
+      image_url: newMaterialForm.image_url.trim() || null,
+      difficulty: newMaterialForm.difficulty,
+      created_by: creatorId,
+      overwriteBlanks,
+      display_order: allocateDisplayOrder(subject, existing),
+    });
+
+    cacheMaterial(saved);
+    setMaterials((prev) => upsertMaterialList(prev, saved));
+    addNotification(
+      'success',
+      existing
+        ? `教材「${saved.title}」を更新いたしました！`
+        : `新規教材「${saved.title}」を登録いたしました！`
+    );
+    setIsMaterialModalOpen(false);
+    resetMaterialForm();
+
+    try {
+      await writeMaterialRow(
+        supabase,
+        saved.id,
+        materialWritePayload(saved, {
+          includeImage: overwriteBlanks || Boolean(newMaterialForm.image_url.trim()),
+          includeDescription: overwriteBlanks || Boolean(newMaterialForm.description.trim()),
+        }),
+      );
+      await fetchAllData({ silent: true });
+    } catch {
+      await fetchAllData({ silent: true });
+    }
+  }, [newMaterialForm, editingMaterialId, currentUser, materials, supabase, fetchAllData, addNotification, resetMaterialForm]);
+
+  const handleDeleteMaterial = useCallback(async (material: Material) => {
+    if (!window.confirm('この教材を削除しますか？')) return;
+    const { error } = await supabase.from('materials').delete().eq('id', material.id);
+    if (error) {
+      alert(`教材の削除に失敗しました: ${error.message}`);
+      return;
+    }
+    uncacheMaterial(material.id);
+    setMaterials((prev) => prev.filter((item) => item.id !== material.id));
+    addNotification('success', `教材「${material.title}」を削除しました。`);
+  }, [supabase, addNotification]);
+
+  const persistMaterialSnapshot = useCallback(async (saved: Material) => {
+    cacheMaterial(saved);
+    try {
+      await writeMaterialRow(
+        supabase,
+        saved.id,
+        materialWritePayload(saved, { includeImage: false, includeDescription: false }),
+      );
+    } catch {
+      cacheMaterial(saved);
+    }
+  }, [supabase]);
+
+  const handleDisplayOrderCommit = useCallback((material: Material, raw: string) => {
+    const order = Number(raw);
+    if (!Number.isFinite(order) || order === material.display_order) return;
+    const saved = { ...material, display_order: order };
+    setMaterials((prev) => prev.map((item) => (item.id === saved.id ? saved : item)));
+    void persistMaterialSnapshot(saved);
+  }, [persistMaterialSnapshot]);
+
+  const handleMoveMaterialOrder = useCallback((_material: Material, _direction: -1 | 1) => {
+    // 表示順の一括振り直しはしない。数値の変更は管理画面の直接入力だけ。
+  }, []);
+
+  const downloadMaterialCsvTemplate = useCallback(() => {
+    const csvBody = [
+      'title,subject,description',
+      '英語長文マスター,英語,長文読解の基礎から演習まで',
+      'チャート式数学,数学,計算問題と標準問題の演習',
+      '学校配布プリントまとめ,高校の予習,授業で配られたプリントの保管',
+    ].join('\n');
+    const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'material_import_template.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const handleMaterialCsvFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setMaterialCsvUploading(true);
+    setMaterialCsvStatusMessage({ type: null, text: '' });
+    setMaterialCsvParsedPreview([]);
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: 'greedy',
+      complete: (results) => {
+        try {
+          if (!results.data || results.data.length === 0) {
+            throw new Error('CSVファイル内に有効なデータ行が存在しません。');
+          }
+
+          const parsedRows: Material[] = [];
+          const errors: CsvRowError[] = [];
+          const createdBy = currentUser?.id || '';
+          if (!createdBy) {
+            throw new Error('ログイン中のユーザーIDを取得できません。');
+          }
+          const batchStamp = Date.now();
+
+          results.data.forEach((row: any, index: number) => {
+            const rowNum = index + 2;
+            const title = row.title ? String(row.title).trim() : '';
+            const subjectRaw = row.subject ? String(row.subject).trim().replace(/（/g, '(').replace(/）/g, ')') : '';
+            const description = row.description ? String(row.description).trim() : '';
+
+            if (!title) {
+              errors.push({ rowNumber: rowNum, field: 'title', message: '教材タイトル (title) が空欄です。' });
+            }
+            if (!isSubjectType(subjectRaw)) {
+              errors.push({ rowNumber: rowNum, field: 'subject', message: `科目 (subject)「${subjectRaw || '未入力'}」は登録できません。` });
+            }
+
+            if (title && isSubjectType(subjectRaw)) {
+              parsedRows.push({
+                id: `mat_${batchStamp + index}`,
+                title,
+                subject: subjectRaw,
+                description: description || undefined,
+                color: SUBJECT_COLOR_MAP[subjectRaw].hexCode,
+                created_by: createdBy,
+                difficulty: 'standard',
+                display_order: 0,
+              });
+            }
+          });
+
+          if (errors.length > 0) {
+            setMaterialCsvStatusMessage({ type: 'error', text: `${errors.length} 件のデータ不備が検出されました。` });
+          } else {
+            setMaterialCsvParsedPreview(parsedRows);
+            setMaterialCsvStatusMessage({ type: 'success', text: `${parsedRows.length} 件の教材を登録可能です。` });
+          }
+        } catch (err: any) {
+          setMaterialCsvStatusMessage({ type: 'error', text: err.message || 'CSV解析エラー' });
+        } finally {
+          setMaterialCsvUploading(false);
+          event.target.value = '';
+        }
+      },
+      error: (err) => {
+        setMaterialCsvStatusMessage({ type: 'error', text: `CSVエラー: ${err.message}` });
+        setMaterialCsvUploading(false);
+        event.target.value = '';
+      },
+    });
+  }, [currentUser]);
+
+  const executeMaterialCsvImport = useCallback(async () => {
+    if (materialCsvParsedPreview.length === 0) return;
+
+    const hasInvalidSubject = materialCsvParsedPreview.some((row) => !isSubjectType(row.subject));
+    if (hasInvalidSubject) {
+      setMaterialCsvStatusMessage({ type: 'error', text: '登録できない科目が含まれているため、取り込みを中止しました。' });
+      return;
+    }
+
+    setMaterialCsvUploading(true);
+    let announced = false;
+    try {
+      let next = [...materials];
+      const applied: Array<{ material: Material; includeDescription: boolean }> = [];
+      const allocateDisplayOrder = createDisplayOrderAllocator(materials);
+      materialCsvParsedPreview.forEach((row) => {
+        const subject = subjectFromInput(row.subject);
+        if (!subject) return;
+        const existing = findMaterialByTitle(next, row.title);
+        const saved = mergeMaterialRecord(existing, {
+          id: existing?.id || row.id,
+          title: row.title,
+          subject,
+          description: row.description,
+          image_url: null,
+          difficulty: row.difficulty || existing?.difficulty || 'standard',
+          created_by: row.created_by || currentUser?.id || existing?.created_by || '',
+          display_order: allocateDisplayOrder(subject, existing),
+          overwriteBlanks: false,
+        });
+        cacheMaterial(saved);
+        next = upsertMaterialList(next, saved);
+        applied.push({ material: saved, includeDescription: Boolean(row.description?.trim()) });
+      });
+
+      setMaterials(next);
+      const doneText = `${applied.length}件の教材を登録・更新しました`;
+      setMaterialCsvStatusMessage({ type: 'success', text: doneText });
+      addNotification('success', doneText);
+      announced = true;
+
+      for (const item of applied) {
+        try {
+          await writeMaterialRow(
+            supabase,
+            item.material.id,
+            materialWritePayload(item.material, {
+              includeImage: false,
+              includeDescription: item.includeDescription,
+            }),
+          );
+        } catch {
+          cacheMaterial(item.material);
+        }
+      }
+      await fetchAllData({ silent: true });
+
+      setTimeout(() => {
+        setIsMaterialCsvModalOpen(false);
+        setMaterialCsvParsedPreview([]);
+        setMaterialCsvStatusMessage({ type: null, text: '' });
+      }, 1200);
+    } catch (err: any) {
+      if (!announced) setMaterialCsvStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setMaterialCsvUploading(false);
+    }
+  }, [materialCsvParsedPreview, materials, currentUser, supabase, fetchAllData, addNotification]);
+
+  const handleCreateLog = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    const userId = newLogForm.user_id.trim();
+    if (!userId || !newLogForm.material_id) {
+      alert('対象生徒とテキストを指定してください。');
+      return;
+    }
+
+    const payload: StudyLog = {
+      id: `log_${Date.now()}`,
+      user_id: userId,
+      material_id: newLogForm.material_id.trim(),
+      score: Number(newLogForm.score),
+      max_score: Number(newLogForm.max_score),
+      time_spent_minutes: Number(newLogForm.time_spent_minutes),
+      is_mission_completed: newLogForm.is_mission_completed,
+      comment: newLogForm.comment.trim() || undefined,
+      created_at: new Date().toISOString(),
+    };
+
+    rememberPendingStudyLog(payload);
+    setLogs((prev) => [payload, ...prev.filter((log) => log.id !== payload.id)]);
+    addNotification('success', newLogForm.is_mission_completed ? '👑 ミッション完了！学習ログを記録いたしました！' : '学習ログを記録いたしました！');
+    setIsLogModalOpen(false);
+    setNewLogForm({ user_id: '', subject: '', material_id: '', score: 0, max_score: 100, time_spent_minutes: 0, is_mission_completed: false, comment: '' });
+
+    try {
+      const insertPayload = { ...payload, comment: payload.comment || null };
+      let { error } = await supabase.from('study_logs').insert([insertPayload]);
+      if (error) {
+        const retry = await supabase.from('study_logs').insert([{
+          id: payload.id,
+          user_id: payload.user_id,
+          material_id: payload.material_id,
+          score: payload.score,
+          is_mission_completed: payload.is_mission_completed,
+          comment: payload.comment || null,
+        }]);
+        error = retry.error;
+      }
+      if (error) addNotification('warning', '学習ログは画面へ反映済みです。データベースへの保存は未完了のため、この端末の記録として保持しています。');
+    } catch (err: any) {
+      addNotification('warning', `学習ログは画面へ反映済みです。${err.message || ''}`);
+    }
+  }, [newLogForm, supabase, addNotification]);
+
+  const saveStudentMinutes = useCallback(async (
+    minutes: number,
+    materialId: string,
+    comment: string,
+    slot?: (StudyClockRange & { date: string; mission: boolean }) | null,
+  ) => {
+    if (!currentUser || currentUser.role !== 'student') return false;
+    if (!materialId) {
+      alert('テキストを選択してください。');
+      return false;
+    }
+    const mission = Boolean(slot?.mission);
+    const range = slot ? clampStudyRange(slot) : null;
+    const created = new Date();
+    if (slot?.date && range) {
+      const [year, month, day] = slot.date.split('-').map(Number);
+      const hour = range.startHour;
+      if (hour >= 24) {
+        created.setFullYear(year, (month || 1) - 1, (day || 1) + 1);
+        created.setHours(hour - 24, range.startMinute, 0, 0);
+      } else {
+        created.setFullYear(year, (month || 1) - 1, day || 1);
+        created.setHours(hour, range.startMinute, 0, 0);
+      }
+    }
+    const payload: StudyLog = {
+      id: `log_${Date.now()}`,
+      user_id: currentUser.id,
+      material_id: materialId,
+      score: 0,
+      max_score: 100,
+      time_spent_minutes: range ? studyDurationMinutes(range) : Math.max(0, Math.round(minutes)),
+      is_mission_completed: mission,
+      comment: comment.trim() || undefined,
+      created_at: created.toISOString(),
+    };
+    const title = materials.find((item) => item.id === materialId)?.title || 'テキスト';
+    if (slot && range) {
+      writeLogSlot(payload.id, { date: slot.date, ...range });
+      setLogSlots(readLogSlots());
+    }
+    rememberPendingStudyLog(payload);
+    setLogs((prev) => [payload, ...prev.filter((log) => log.id !== payload.id)]);
+    if (mission) {
+      setCrownBurst(`${title}のミッション完了！`);
+      addNotification('success', `${title}のミッション完了！ 👑`);
+    } else {
+      addNotification('success', `${title}の学習を記録しました。`);
+    }
+    clearActiveStudyClock();
+    setStudyComposer(null);
+    setTimerRunning(false);
+    setCountdownRunning(false);
+    setCountdownFinished(false);
+    setNewLogForm((prev) => ({ ...prev, comment: '' }));
+    try {
+      const insertPayload = { ...payload, comment: payload.comment || null };
+      let { error } = await supabase.from('study_logs').insert([insertPayload]);
+      if (error) {
+        const retry = await supabase.from('study_logs').insert([{
+          id: payload.id,
+          user_id: payload.user_id,
+          material_id: payload.material_id,
+          score: payload.score,
+          is_mission_completed: payload.is_mission_completed,
+          comment: payload.comment || null,
+        }]);
+        error = retry.error;
+      }
+      if (error) addNotification('warning', '学習ログは画面へ反映済みです。データベースへの保存は未完了のため、この端末の記録として保持しています。');
+    } catch (err: any) {
+      addNotification('warning', `学習ログは画面へ反映済みです。${err.message || ''}`);
+    }
+    return true;
+  }, [currentUser, materials, supabase, addNotification]);
+
+  useEffect(() => {
+    if (!countdownRunning || countdownRemainingSec !== 0 || !countdownStartedAt) return;
+    setCountdownRunning(false);
+    setCountdownFinished(true);
+    const saved = readActiveStudyClock();
+    if (saved) writeActiveStudyClock({ ...saved, running: false, finished: true });
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (timeAttackFinishedRef.current === countdownStartedAt) return;
+    timeAttackFinishedRef.current = countdownStartedAt;
+    playTimeAttackChime();
+    addNotification('success', 'タイムアタック終了！');
+  }, [countdownRunning, countdownRemainingSec, countdownStartedAt, addNotification]);
+
+  const appendMyMaterial = (title: string, subject: SubjectType) => {
+    if (!currentUser || currentUser.role !== 'student') return;
+    const trimmed = title.trim();
+    if (!trimmed) {
+      addNotification('warning', '教材名を入力してください。');
+      return;
+    }
+    const exists = myMaterials.some((item) => materialTitleKey(item.title) === materialTitleKey(trimmed) && item.subject === subject);
+    if (exists) {
+      addNotification('info', `「${trimmed}」はすでにマイ教材にあります。`);
+      return;
+    }
+    const next = [...myMaterials, {
+      id: `mym_${Date.now()}`,
+      title: trimmed,
+      subject,
+      addedAt: new Date().toISOString(),
+    }];
+    writeMyMaterials(currentUser.id, next);
+    setMyMaterials(next);
+    addNotification('success', `「${trimmed}」をマイ教材に追加しました。`);
+  };
+
+  const handleManualMyMaterial = (event: React.FormEvent) => {
+    event.preventDefault();
+    appendMyMaterial(myMaterialTitle, myMaterialSubject);
+    setMyMaterialTitle('');
+  };
+
+  const handleQrMaterial = (raw: string) => {
+    setQrScanOpen(false);
+    const parsed = parseScannedMaterial(raw, materials);
+    if (!parsed) {
+      addNotification('warning', 'QRコードから教材を読み取れませんでした。');
+      return;
+    }
+    appendMyMaterial(parsed.title, parsed.subject);
+  };
+
+  const removeMyMaterial = (id: string) => {
+    if (!currentUser || currentUser.role !== 'student') return;
+    const next = myMaterials.filter((item) => item.id !== id);
+    writeMyMaterials(currentUser.id, next);
+    setMyMaterials(next);
+  };
+
+  const toggleFavoriteMaterial = (materialId: string) => {
+    if (!currentUser || currentUser.role !== 'student') return;
+    setFavoriteMaterialIds((prev) => {
+      const next = prev.includes(materialId) ? prev.filter((id) => id !== materialId) : [...prev, materialId];
+      writeFavoriteMaterialIds(currentUser.id, next);
+      return next;
+    });
+  };
+
+  const openStudentLogEditor = (log: StudyLog) => {
+    const material = materials.find((item) => item.id === log.material_id);
+    setEditingLog(log);
+    setEditSubject(material && isSubjectType(material.subject) ? material.subject : '');
+    setEditMaterialId(log.material_id);
+    const placed = studyPlacement(log, readLogSlots());
+    const recordedMinutes = Math.max(0, Math.round(log.time_spent_minutes || 0));
+    const stamp = new Date(log.created_at || 0);
+    const stampClock = Number.isNaN(stamp.getTime()) ? { hour: 6, minute: 0 } : jstClock(stamp);
+    const recordedStart = placed
+      ? clockMinutes(placed.startHour, placed.startMinute || 0)
+      : clockMinutes(stampClock.hour, stampClock.minute);
+    const recordedEnd = recordedStart + (placed ? studyDurationMinutes(studyRangeFromSlot(placed)) : recordedMinutes);
+    setEditRange(clampStudyRange({
+      startHour: Math.floor(recordedStart / 60),
+      startMinute: recordedStart % 60,
+      endHour: Math.floor(recordedEnd / 60),
+      endMinute: recordedEnd % 60,
+    }));
+    setEditComment(log.comment || '');
+    setEditMission(Boolean(log.is_mission_completed));
+  };
+
+  const saveStudentLogEdit = useCallback(async () => {
+    if (!editingLog || !editMaterialId) {
+      alert('テキストを選択してください。');
+      return;
+    }
+    const range = clampStudyRange(editRange);
+    const placed = studyPlacement(editingLog, readLogSlots());
+    const next: StudyLog = {
+      ...editingLog,
+      material_id: editMaterialId,
+      time_spent_minutes: studyDurationMinutes(range),
+      comment: editComment.trim() || undefined,
+      is_mission_completed: editMission,
+    };
+    if (placed?.date) {
+      const created = new Date(editingLog.created_at || Date.now());
+      const [year, month, day] = placed.date.split('-').map(Number);
+      if (range.startHour >= 24) {
+        created.setFullYear(year, (month || 1) - 1, (day || 1) + 1);
+        created.setHours(range.startHour - 24, range.startMinute, 0, 0);
+      } else {
+        created.setFullYear(year, (month || 1) - 1, day || 1);
+        created.setHours(range.startHour, range.startMinute, 0, 0);
+      }
+      next.created_at = created.toISOString();
+      writeLogSlot(editingLog.id, { date: placed.date, ...range });
+      setLogSlots(readLogSlots());
+    }
+    setLogs((prev) => prev.map((log) => (log.id === next.id ? next : log)));
+    const pending = readPendingStudyLogs();
+    if (pending.some((log) => log.id === next.id)) {
+      writePendingStudyLogs(pending.map((log) => (log.id === next.id ? next : log)));
+    }
+    const overrides = readStudyLogOverrides();
+    overrides[next.id] = next;
+    writeStudyLogOverrides(overrides);
+    setEditingLog(null);
+    try {
+      let { error } = await supabase.from('study_logs').update({
+        material_id: next.material_id,
+        time_spent_minutes: next.time_spent_minutes,
+        is_mission_completed: next.is_mission_completed,
+        comment: next.comment || null,
+        score: next.score,
+        max_score: next.max_score,
+        created_at: next.created_at,
+      }).eq('id', next.id);
+      if (error) {
+        const retry = await supabase.from('study_logs').update({
+          material_id: next.material_id,
+          score: next.score,
+          is_mission_completed: next.is_mission_completed,
+          comment: next.comment || null,
+        }).eq('id', next.id);
+        error = retry.error;
+      }
+      if (!error) {
+        const current = readStudyLogOverrides();
+        delete current[next.id];
+        writeStudyLogOverrides(current);
+        addNotification('success', '学習記録を更新しました。');
+      } else {
+        addNotification('warning', '画面上の記録は更新済みです。データベースへの反映は未完了のため、この端末の修正として保持しています。');
+      }
+    } catch (err: any) {
+      addNotification('warning', `画面上の記録は更新済みです。${err.message || ''}`);
+    }
+  }, [editingLog, editMaterialId, editRange, editComment, editMission, supabase, addNotification]);
+
+  const deleteStudentLog = useCallback(async (log: StudyLog) => {
+    const title = materials.find((item) => item.id === log.material_id)?.title || 'この記録';
+    if (!window.confirm(`「${title}」の記録を削除しますか？`)) return;
+    setLogs((prev) => prev.filter((item) => item.id !== log.id));
+    removeLogSlot(log.id);
+    setLogSlots(readLogSlots());
+    writePendingStudyLogs(readPendingStudyLogs().filter((item) => item.id !== log.id));
+    const overrides = readStudyLogOverrides();
+    delete overrides[log.id];
+    writeStudyLogOverrides(overrides);
+    const deleted = readDeletedStudyLogIds();
+    if (!deleted.includes(log.id)) writeDeletedStudyLogIds([...deleted, log.id]);
+    setEditingLog(null);
+    const { error } = await supabase.from('study_logs').delete().eq('id', log.id);
+    if (error) {
+      addNotification('warning', '画面上から削除しました。データベースへの反映は未完了のため、この端末では非表示のまま保持しています。');
+      return;
+    }
+    writeDeletedStudyLogIds(readDeletedStudyLogIds().filter((id) => id !== log.id));
+    addNotification('success', '学習記録を削除しました。');
+  }, [materials, supabase, addNotification]);
+
+  // ---------------------------------------------------------------------------
+  // 未ログイン時：独立 ログイン画面コンポーネント (Y Log タイトル ＆ ロゴ画像 /logo.png 固定表示)
+  // ---------------------------------------------------------------------------
+  if (!currentUser && !sessionChecked) {
+    return <div className="min-h-screen bg-slate-950" />;
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 selection:bg-sky-500 selection:text-white font-sans">
+        <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl space-y-6 border border-slate-200 animate-in fade-in zoom-in-95 duration-300">
+          <div className="text-center space-y-3">
+            {/* ロゴ画像(/logo.png): 幅120px・中央配置・巨大化防止 */}
+            <div
+              className="mx-auto flex items-center justify-center overflow-hidden rounded-2xl bg-slate-50 border border-slate-200 p-3 shadow-inner"
+              style={{ width: 140, height: 140 }}
+            >
+              <img
+                src="/logo.png"
+                alt="Y Log Logo"
+                className="ylog-login-logo"
+                width={120}
+                height={120}
+                style={{ width: 120, maxWidth: 120, height: 'auto', display: 'block', margin: '0 auto', objectFit: 'contain' }}
+              />
+            </div>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Y Log</h1>
+          </div>
+
+          {(loginError || connectionError) && (
+            <div className="p-3 bg-red-50 border border-red-200 text-red-700 font-bold text-xs rounded-2xl text-center">
+              ⚠️ {loginError || connectionError}
+            </div>
+          )}
+
+          <form onSubmit={handleLoginSubmit} className="space-y-4 text-xs font-bold">
+            <div>
+              <label className="block text-slate-600 mb-1.5">独自ID (id) <span className="text-red-500">*</span></label>
+              <input
+                type="text"
+                required
+                value={loginInputId}
+                onChange={(e) => setLoginInputId(toHalfWidthAscii(e.target.value))}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                inputMode="email"
+                autoComplete="username"
+                className="w-full bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-2xl font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                placeholder=""
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 mb-1.5">パスワード <span className="text-red-500">*</span></label>
+              <div className="flex gap-2">
+                <input
+                  type={loginPasswordVisible ? 'text' : 'password'}
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(toHalfWidthAscii(e.target.value))}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  inputMode="email"
+                  autoComplete="current-password"
+                  className="flex-1 bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-2xl font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  placeholder=""
+                />
+                <button
+                  type="button"
+                  onClick={() => setLoginPasswordVisible((visible) => !visible)}
+                  className="px-3 rounded-2xl border border-slate-200 bg-white text-[11px] font-extrabold text-slate-600 cursor-pointer"
+                >
+                  {loginPasswordVisible ? '隠す' : '表示'}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-3.5 bg-sky-600 hover:bg-sky-500 active:scale-95 text-white font-extrabold text-sm rounded-2xl shadow-lg shadow-sky-600/30 transition-all mt-2 cursor-pointer"
+            >
+              ログイン ➔
+            </button>
+            {!usersReady && (
+              <p className="text-[11px] font-bold text-slate-400 text-center">ユーザー一覧を確認しています。確認後にログインできます。</p>
+            )}
+          </form>
+
+          <div className="pt-4 border-t border-slate-100 text-[11px] text-slate-400 text-center leading-relaxed">
+            独自IDをお忘れの場合は管理者の講師までお尋ねください。
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // SECTION 5. アプリケーション全体UI描画 (1,858行高密度コンポーネント)
+  // ---------------------------------------------------------------------------
+
+  if (studyComposer) {
+    composerContext.current = {
+      date: composerDateKey,
+      startHour: studyComposer.startHour,
+      startMinute: studyComposer.startMinute,
+      endHour: studyComposer.endHour,
+      endMinute: studyComposer.endMinute,
+      mission: composerMission,
+    };
+  }
+  const studentNav: { id: ActiveTab; label: string; icon: string }[] = [
+    { id: 'schedule_planner', label: '今日のスケジュール', icon: '📅' },
+    { id: 'dashboard', label: 'ログ・集計', icon: '📊' },
+    { id: 'materials', label: 'マイ教材', icon: '📚' },
+    { id: 'logs', label: '週スケジュール登録', icon: '🗓️' },
+  ];
+
+  function renderAdminScreen(currentUser: User) {
+  return (
+    <div className={`bg-slate-100 font-sans text-slate-800 antialiased selection:bg-sky-500 selection:text-white min-h-screen flex`}>
+      
+      {/* Toast通知 */}
+      <div className="fixed top-5 right-5 z-50 space-y-2 pointer-events-none max-w-sm w-full">
+        {notifications.map((n) => (
+          <div
+            key={n.id}
+            className={`pointer-events-auto p-4 rounded-2xl shadow-xl border backdrop-blur-md flex items-start justify-between gap-3 animate-in slide-in-from-top duration-300 ${
+              n.type === 'success'
+                ? 'bg-emerald-900/90 text-white border-emerald-500/50'
+                : n.type === 'error'
+                ? 'bg-red-900/90 text-white border-red-500/50'
+                : 'bg-slate-900/90 text-white border-slate-700/50'
+            }`}
+          >
+            <div className="space-y-0.5">
+              <div className="text-[10px] opacity-60 font-mono">{n.timestamp}</div>
+              <p className="text-xs font-bold leading-relaxed">{n.message}</p>
+            </div>
+            <button onClick={() => removeNotification(n.id)} className="text-white/60 hover:text-white font-bold text-xs cursor-pointer">✕</button>
+          </div>
+        ))}
+      </div>
+
+      {/* 統合サイドバー（生徒画面では描画しない） */}
+      
+      <aside className="w-64 bg-slate-950 text-white flex flex-col h-screen sticky top-0 self-start shrink-0 shadow-2xl border-r border-slate-800 overflow-hidden">
+        <div className="shrink-0 p-5 pb-4">
+          <div className="flex items-center gap-3 px-2 py-1 border-b border-slate-800 pb-4">
+            {/* ロゴ画像(/logo.png)を表示 */}
+            <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-900 border border-slate-700 p-1 flex items-center justify-center shrink-0">
+              <img
+                src="/logo.png"
+                alt="Y Log Logo"
+                width={32}
+                height={32}
+                style={{ width: 32, height: 32, objectFit: 'contain' }}
+              />
+            </div>
+            <div>
+              <h1 className="font-black text-lg tracking-tight text-slate-100 leading-tight">
+                Y Log
+              </h1>
+              <span className="text-[10px] font-mono text-sky-400 block mt-0.5 tracking-tight">
+                STUDENT-FIRST ENGINE
+              </span>
+            </div>
+          </div>
+        </div>
+
+          <nav className="flex-1 min-h-0 overflow-y-auto px-5 pb-4 space-y-1.5">
+            {[
+              { id: 'dashboard', label: 'ダッシュボード', icon: '📊' },
+              { id: 'schedule_planner', label: 'スケジュール', icon: '📅' },
+              { id: 'students', label: '所属生徒一覧', icon: '🎓' },
+              { id: 'teachers', label: '所属教師・管理者一覧', icon: '👨‍🏫' },
+              { id: 'materials', label: '教材マスタ', icon: '📚' },
+              { id: 'progress', label: '教室別・生徒学習進捗', icon: '🏫' },
+              { id: 'logs', label: '生徒別 学習ログ詳細', icon: '📊' },
+            ].map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setActiveTab(item.id as ActiveTab);
+                  if (item.id !== 'student_detail') setSelectedStudentId(null);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-2xl text-xs font-bold transition-all duration-200 cursor-pointer ${
+                  activeTab === item.id
+                    ? 'bg-sky-600 text-white shadow-lg shadow-sky-600/30 translate-x-1'
+                    : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                }`}
+              >
+                <span className="text-base">{item.icon}</span>
+                {item.label}
+              </button>
+            ))}
+          </nav>
+
+        <div className="shrink-0 space-y-3 border-t border-slate-800 p-5">
+          {/* ログインユーザープロフ ＆ ログアウトボタン */}
+          <div className="bg-slate-900 p-3 rounded-2xl border border-slate-800 flex items-center justify-between">
+            <div className="truncate">
+              <div className="font-extrabold text-xs text-white truncate">{currentUser.name}</div>
+              <div className="text-[10px] font-mono text-sky-400 font-bold">ID: {currentUser.id} ({currentUser.role})</div>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="px-2.5 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white rounded-xl text-[10px] font-extrabold transition-all cursor-pointer"
+            >
+              切替
+            </button>
+          </div>
+
+          <div className="bg-slate-900 p-3 rounded-2xl border border-slate-800 space-y-2">
+            <div className="text-[10px] font-black text-slate-300">ユーザー切替</div>
+            <div className="grid grid-cols-3 gap-1">
+              {(['student', 'teacher', 'admin'] as const).map((role) => {
+                const sample = users.find((user) => user.role === role);
+                const label = role === 'student' ? '生徒' : role === 'teacher' ? '講師' : '管理者';
+                return (
+                  <button
+                    key={role}
+                    type="button"
+                    disabled={!sample}
+                    onClick={() => {
+                      if (!sample) return;
+                      setCurrentUser(sample);
+                      setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
+                    }}
+                    className="py-2 rounded-xl bg-slate-800 text-[10px] font-black text-white cursor-pointer disabled:opacity-40"
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <button
+            onClick={() => setIsUserModalOpen(true)}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-2xl transition-all shadow-lg shadow-sky-600/20 active:scale-95 cursor-pointer"
+          >
+            <span>👤</span> ＋ 新規ユーザー個別登録
+          </button>
+          <button
+            onClick={() => { setCsvImportKind('student'); setCsvParsedPreview([]); setCsvValidationErrors([]); setCsvStatusMessage({ type: null, text: '' }); setIsStudentCsvModalOpen(true); }}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold rounded-2xl transition-all shadow-lg shadow-emerald-600/20 active:scale-95 cursor-pointer"
+          >
+            <span>🎓</span> 生徒専用CSV一括登録
+          </button>
+          <button
+            onClick={() => { setCsvImportKind('teacher'); setCsvParsedPreview([]); setCsvValidationErrors([]); setCsvStatusMessage({ type: null, text: '' }); setIsTeacherCsvModalOpen(true); }}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-sky-700 hover:bg-sky-600 text-white text-xs font-extrabold rounded-2xl transition-all shadow-lg shadow-sky-700/20 active:scale-95 cursor-pointer"
+          >
+            <span>👨‍🏫</span> 教師専用CSV一括登録
+          </button>
+        </div>
+      </aside>
+
+      <main className="flex-1 p-8 overflow-y-auto">
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm">
+
+<div>
+            <h2 className="text-xl font-black text-slate-900 tracking-tight">
+              {activeTab === 'dashboard' && 'Y Log 統合ダッシュボード'}
+              {activeTab === 'schedule_planner' && 'スケジュール'}
+              {activeTab === 'teachers' && '所属教師・管理者管理一覧'}
+              {activeTab === 'students' && '所属生徒データ一覧'}
+              {activeTab === 'student_detail' && `生徒個人カルテ & 科目別成長チャート (${selectedStudent?.name || '未選択'})`}
+              {activeTab === 'materials' && '教材マスタ'}
+              {activeTab === 'progress' && '教室別・生徒学習進捗'}
+              {activeTab === 'logs' && '生徒別 学習ログ詳細'}
+            </h2>
+            <p className="text-xs text-slate-400 font-medium mt-1">
+              メールアドレス不使用・独自文字列IDによる生徒第一の統合アプリ
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="氏名・教材名・ID検索..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="bg-slate-50 border border-slate-200 text-xs font-bold text-slate-800 rounded-2xl px-3.5 py-2.5 pl-9 focus:outline-none focus:ring-2 focus:ring-sky-500 w-52"
+              />
+              <span className="absolute left-3 top-3 text-xs text-slate-400">🔍</span>
+            </div>
+
+            <div className="flex items-center gap-2 bg-slate-50 p-2 px-3 rounded-2xl border border-slate-200">
+              <span className="text-xs font-extrabold text-slate-500">校舎:</span>
+              <select
+                value={selectedClassroom}
+                onChange={(e) => setSelectedClassroom(e.target.value)}
+                className="bg-transparent text-xs font-extrabold text-slate-800 focus:outline-none cursor-pointer"
+              >
+                <option value="ALL">全校舎表示</option>
+                <option value="本川越校">本川越校</option>
+                <option value="川越校">川越校</option>
+                <option value="ＥＸ校">ＥＸ校</option>
+              </select>
+            </div>
+          </div>
+        </header>
+        
+
+        {globalError && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-3xl text-xs font-bold text-red-700 flex justify-between items-center">
+            <span>⚠️ {globalError}</span>
+            <button onClick={() => { void fetchAllData(); }} className="px-3 py-1 bg-red-600 text-white rounded-xl text-xs hover:bg-red-700 font-bold cursor-pointer">
+              再同期実行
+            </button>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="bg-white p-20 rounded-3xl border border-slate-200 text-center space-y-3 shadow-sm">
+            <div className="w-12 h-12 mx-auto animate-bounce">
+              <img src="/logo.png" alt="Loading Logo" className="w-full h-full object-contain" />
+            </div>
+            <div className="text-slate-400 text-xs font-bold animate-pulse">Y Log データベースと同期中...</div>
+          </div>
+        ) : (
+          <div className='space-y-6'>
+
+            
+
+            {activeTab === 'dashboard' && (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-1">
+                    <div className="text-xs text-slate-400 font-bold">総生徒数</div>
+                    <div className="text-3xl font-black text-emerald-600">{globalSummaryStats.totalStudents} <span className="text-xs font-bold text-slate-400">名</span></div>
+                  </div>
+                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-1">
+                    <div className="text-xs text-slate-400 font-bold">教員・管理者</div>
+                    <div className="text-3xl font-black text-sky-950">{globalSummaryStats.totalTeachers} <span className="text-xs font-bold text-slate-400">名</span></div>
+                  </div>
+                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-1">
+                    <div className="text-xs text-slate-400 font-bold">登録教材数</div>
+                    <div className="text-3xl font-black text-purple-600">{globalSummaryStats.totalMaterials} <span className="text-xs font-bold text-slate-400">件</span></div>
+                  </div>
+                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-1">
+                    <div className="text-xs text-slate-400 font-bold">全体の平均得点</div>
+                    <div className="text-3xl font-black text-amber-600">{globalSummaryStats.overallAvgScore} <span className="text-xs font-bold text-slate-400">点</span></div>
+                  </div>
+                </div>
+
+                
+
+                {/* 正しい各教科の指定テーマカラーリファレンス表示 */}
+                <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
+                  <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">教科テーマカラー ＆ 正しい修正科目定義</h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                    {SUBJECT_NAMES.map((subj) => {
+                      const cfg = SUBJECT_COLOR_MAP[subj];
+                      return (
+                        <div key={subj} className={`p-3 rounded-2xl border ${cfg.borderClass} ${cfg.bgClass} space-y-1`}>
+                          <div className={`font-black text-xs ${cfg.textClass}`}>{subj}</div>
+                          <div className="text-[9px] font-mono text-slate-500">HEX: {cfg.hexCode} ({cfg.colorName})</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* 生徒サマリー */}
+                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                      <h3 className="text-sm font-extrabold text-emerald-950 flex items-center gap-2">
+                        <span>🎓</span> 所属生徒 ({students.length}名)
+                      </h3>
+                      <button onClick={() => setActiveTab('students')} className="text-xs text-emerald-600 font-bold hover:underline cursor-pointer">
+                        すべて表示 ➔
+                      </button>
+                    </div>
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-emerald-50 text-emerald-900 border-b border-emerald-100">
+                          <th className="p-3 font-black">氏名</th>
+                          <th className="p-3 font-black">校舎</th>
+                          <th className="p-3 font-black">独自ID</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {students.slice(0, 5).map((s) => (
+                          <tr key={s.id} className="hover:bg-emerald-50/30">
+                            <td className="p-3 font-bold text-slate-900">{s.name}</td>
+                            <td className="p-3 text-slate-600">{s.classroom}</td>
+                            <td className="p-3 font-mono font-bold text-slate-700">{s.id}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* 最新学習評価ログ */}
+                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                      <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                        <span>📝</span> 直近の学習記録 (👑ミッション完了)
+                      </h3>
+                      <button onClick={() => setActiveTab('logs')} className="text-xs text-slate-600 font-bold hover:underline cursor-pointer">
+                        全ログを見る ➔
+                      </button>
+                    </div>
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-slate-100 text-slate-900 border-b border-slate-200">
+                          <th className="p-3 font-bold">生徒ID</th>
+                          <th className="p-3 font-bold">得点</th>
+                          <th className="p-3 font-bold">状態</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {logs.slice(0, 5).map((log) => (
+                          <tr key={log.id} className="hover:bg-slate-50">
+                            <td className="p-3 font-mono text-sky-800 font-bold">{log.user_id}</td>
+                            <td className="p-3 font-black text-sky-600">{log.score} 点</td>
+                            <td className="p-3 font-bold">
+                              {log.is_mission_completed ? (
+                                <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-md text-[10px] font-black inline-flex items-center gap-1">
+                                  <span>👑</span> ミッション完了
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">通常記録</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* TAB 2. スケジュール */}
+            
+
+            
+
+            
+
+            {activeTab === 'schedule_planner' && (
+              <div className="space-y-4">
+                
+                  <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
+                    <h3 className="text-sm font-extrabold text-slate-900">全体ひな形</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {STAFF_SCHEDULE_TEMPLATES.map((template) => (
+                        <button
+                          key={template.id}
+                          type="button"
+                          onClick={() => handleSelectStaffTemplate(template.id)}
+                          className={`p-4 rounded-2xl border text-left text-xs font-extrabold cursor-pointer ${
+                            selectedStaffTemplateId === template.id
+                              ? 'bg-sky-50 border-sky-500 ring-2 ring-sky-500/20'
+                              : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {template.name}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="text-right">
+                      <button
+                        type="button"
+                        onClick={handleSaveStaffTemplate}
+                        className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-extrabold cursor-pointer"
+                      >
+                        このひな形を保存
+                      </button>
+                    </div>
+                  </div>
+                
+
+                <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-sm font-extrabold text-slate-900">週間タイムテーブル</h3>
+                    <button
+                      type="button"
+                      onClick={() => openSlotDraft(scheduleFocusDay, 8)}
+                      className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-extrabold cursor-pointer"
+                    >
+                      ＋ コマを追加
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {SCHEDULE_CATEGORIES.map((category) => (
+                      <span
+                        key={category.id}
+                        className="px-2 py-1 rounded-lg border text-[10px] font-bold text-slate-700"
+                        style={{ backgroundColor: category.color, borderColor: category.border }}
+                      >
+                        {category.label}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="md:hidden grid grid-cols-7 gap-1">
+                    {WEEKDAYS.map((day) => (
+                      <button
+                        key={day.id}
+                        type="button"
+                        onClick={() => setScheduleFocusDay(day.id)}
+                        className={`py-3 rounded-xl text-sm font-black cursor-pointer ${
+                          scheduleFocusDay === day.id ? 'bg-sky-600 text-white' : 'bg-slate-50 text-slate-600 border border-slate-200'
+                        }`}
+                      >
+                        {day.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="md:hidden">
+                    <DayTimetable day={scheduleFocusDay} slots={scheduleSlots} onAddAt={openSlotDraft} onEdit={openSlotEditor} />
+                  </div>
+                  <div className="hidden md:block">
+                    <WeeklyTimetable slots={scheduleSlots} onAddAt={openSlotDraft} onEdit={openSlotEditor} />
+                  </div>
+                </div>
+
+                {slotDraft && (
+                  <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <form onSubmit={handleSaveSlotDraft} className="bg-white w-full max-w-lg rounded-3xl p-6 shadow-2xl space-y-4 border border-slate-200">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-extrabold text-sm text-slate-900">{slotDraft.id ? 'コマを修正' : 'コマを追加'}</h4>
+                        <button type="button" onClick={() => setSlotDraft(null)} className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-bold cursor-pointer">✕</button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-bold">
+                        <label className="space-y-1">
+                          <span className="text-slate-500">曜日</span>
+                          <select
+                            value={slotDraft.day}
+                            onChange={(e) => setSlotDraft({ ...slotDraft, day: e.target.value as WeekdayId })}
+                            className="w-full bg-white border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                          >
+                            {WEEKDAYS.map((day) => (
+                              <option key={day.id} value={day.id}>{day.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-slate-500">カテゴリ</span>
+                          <select
+                            value={slotDraft.category}
+                            onChange={(e) => setSlotDraft({ ...slotDraft, category: e.target.value as ScheduleCategoryId })}
+                            className="w-full bg-white border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                          >
+                            {SCHEDULE_CATEGORIES.map((category) => (
+                              <option key={category.id} value={category.id}>{category.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-slate-500">開始</span>
+                          <span className="flex gap-1">
+                            <select
+                              value={slotDraft.startHour}
+                              onChange={(e) => setSlotDraft({ ...slotDraft, startHour: Number(e.target.value) })}
+                              className="w-full bg-white border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                            >
+                              {SCHEDULE_HOURS.map((hour) => (
+                                <option key={hour} value={hour}>{String(hour).padStart(2, '0')}時</option>
+                              ))}
+                            </select>
+                            <select
+                              value={slotDraft.startMinute}
+                              onChange={(e) => setSlotDraft({ ...slotDraft, startMinute: Number(e.target.value) })}
+                              className="w-full bg-white border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                            >
+                              {SCHEDULE_MINUTE_OPTIONS.map((minute) => (
+                                <option key={minute} value={minute}>{String(minute).padStart(2, '0')}分</option>
+                              ))}
+                            </select>
+                          </span>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-slate-500">終了</span>
+                          <span className="flex gap-1">
+                            <select
+                              value={slotDraft.endHour}
+                              onChange={(e) => {
+                                const endHour = Number(e.target.value);
+                                setSlotDraft({ ...slotDraft, endHour, endMinute: endHour === 24 ? 0 : slotDraft.endMinute });
+                              }}
+                              className="w-full bg-white border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                            >
+                              {Array.from({ length: 25 }, (_, hour) => hour).map((hour) => (
+                                <option key={hour} value={hour}>{String(hour).padStart(2, '0')}時</option>
+                              ))}
+                            </select>
+                            <select
+                              value={slotDraft.endHour === 24 ? 0 : slotDraft.endMinute}
+                              onChange={(e) => setSlotDraft({ ...slotDraft, endMinute: Number(e.target.value) })}
+                              className="w-full bg-white border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                            >
+                              {(slotDraft.endHour === 24 ? [0] : SCHEDULE_MINUTE_OPTIONS).map((minute) => (
+                                <option key={minute} value={minute}>{String(minute).padStart(2, '0')}分</option>
+                              ))}
+                            </select>
+                          </span>
+                        </label>
+                        <label className="space-y-1 sm:col-span-2">
+                          <span className="text-slate-500">内容</span>
+                          <input
+                            type="text"
+                            value={slotDraft.title}
+                            onChange={(e) => setSlotDraft({ ...slotDraft, title: e.target.value })}
+                            className="w-full bg-white border border-slate-200 p-2.5 rounded-xl"
+                          />
+                        </label>
+                      </div>
+                      <p className="rounded-xl bg-sky-50 px-3 py-2 text-sm font-black text-sky-800">
+                        合計 {Math.max(0, (slotDraft.endHour * 60 + (slotDraft.endHour === 24 ? 0 : slotDraft.endMinute)) - (slotDraft.startHour * 60 + slotDraft.startMinute))}分
+                      </p>
+                      <div className="flex items-center justify-between gap-3">
+                        {slotDraft.id ? (
+                          <button type="button" onClick={handleDeleteSlotDraft} className="px-4 py-2 bg-white border border-red-200 text-red-700 rounded-xl text-xs font-extrabold cursor-pointer">
+                            削除
+                          </button>
+                        ) : <span />}
+                        <button type="submit" className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-extrabold cursor-pointer">
+                          保存
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 3. 生徒一覧 */}
+            {activeTab === 'students' && (
+              <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3">
+                  <h3 className="text-base font-extrabold text-emerald-950">🎓 所属生徒管理一覧 ({visibleStudents.length}名)</h3>
+                  <button onClick={() => { setNewUserForm(blankUserForm('student')); setIsUserModalOpen(true); }} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer">
+                    ＋ 新規生徒を個別登録
+                  </button>
+                </div>
+
+                <form onSubmit={handleSendStudentMessages} className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 space-y-3 shadow-md">
+                    <div className="text-sm font-extrabold text-amber-950">📢 チェックした生徒へお知らせ・コメント送信</div>
+                    <textarea
+                      value={messageDraft}
+                      onChange={(e) => setMessageDraft(e.target.value)}
+                      rows={4}
+                      placeholder="生徒へ送るお知らせ・コメントを入力..."
+                      className="w-full bg-white border border-amber-300 p-3 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                    />
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[11px] font-bold text-amber-800">選択中 {selectedStudentIds.length} 名。送信日時は自動で記録されます。</p>
+                      <button
+                        type="submit"
+                        disabled={selectedStudentIds.length === 0}
+                        className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer"
+                      >
+                        選択中の生徒へ送信
+                      </button>
+                    </div>
+                  </form>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs font-medium">
+                    <thead>
+                      <tr className="bg-emerald-50 text-emerald-900 border-b border-emerald-100">
+                        <th className="p-2 align-bottom whitespace-nowrap">
+                          <div className="font-black mb-1">選択</div>
+                          <input
+                            type="checkbox"
+                            aria-label="表示中の生徒をすべて選択"
+                            checked={visibleStudents.length > 0 && visibleStudents.every((student) => selectedStudentIds.includes(student.id))}
+                            onChange={(e) => {
+                              const visibleIds = visibleStudents.map((student) => student.id);
+                              if (e.target.checked) {
+                                setSelectedStudentIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+                              } else {
+                                setSelectedStudentIds((prev) => prev.filter((id) => !visibleIds.includes(id)));
+                              }
+                            }}
+                            className="w-4 h-4 accent-emerald-600 cursor-pointer"
+                          />
+                        </th>
+                        <th className="p-2 align-bottom font-black whitespace-nowrap">操作</th>
+                        {STUDENT_LIST_COLUMNS.map((column) => {
+                          if (column.key === 'password') {
+                            return (
+                              <th key={column.key} className="p-2 align-bottom whitespace-nowrap">
+                                <div className="flex items-center gap-1">
+                                  <span className="font-black">パスワード</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setStudentPasswordsVisible((visible) => !visible)}
+                                    className="px-1.5 py-0.5 bg-white border border-emerald-200 rounded-md text-[10px] font-extrabold text-slate-700 cursor-pointer"
+                                  >
+                                    {studentPasswordsVisible ? '隠す' : '表示'}
+                                  </button>
+                                </div>
+                              </th>
+                            );
+                          }
+                          const options = Array.from(new Set(students.map((student) => String(student[column.key] || '')).filter(Boolean))).sort();
+                          return (
+                            <th key={column.key} className="p-2 align-bottom whitespace-nowrap">
+                              <div className="flex items-center gap-1">
+                                <span className="font-black">{column.label}</span>
+                                <select
+                                  aria-label={`${column.label}で絞り込み`}
+                                  value={studentFieldFilters[column.key]}
+                                  onChange={(e) => setStudentFieldFilters((prev) => ({ ...prev, [column.key]: e.target.value }))}
+                                  className="max-w-[76px] bg-white border border-emerald-200 text-[10px] font-bold text-slate-700 rounded-md px-1 py-0.5 cursor-pointer"
+                                >
+                                  <option value="ALL">すべて</option>
+                                  {options.map((option) => (
+                                    <option key={option} value={option}>{option}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </th>
+                          );
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {visibleStudents.map((student) => (
+                        <tr key={student.id} className="hover:bg-emerald-50/40">
+                          <td className="p-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`${student.name}を選択`}
+                              checked={selectedStudentIds.includes(student.id)}
+                              onChange={(e) => {
+                                setSelectedStudentIds((prev) => (
+                                  e.target.checked ? [...prev, student.id] : prev.filter((id) => id !== student.id)
+                                ));
+                              }}
+                              className="w-4 h-4 accent-emerald-600 cursor-pointer"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openStudentEditModal(student)}
+                                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-extrabold border border-slate-200 cursor-pointer whitespace-nowrap"
+                              >
+                                ✏️ 編集
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteStudent(student)}
+                                className="px-3 py-1.5 bg-white hover:bg-red-50 text-red-700 rounded-xl text-xs font-extrabold border border-red-200 cursor-pointer whitespace-nowrap"
+                              >
+                                🗑️ 削除
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSelectedStudentId(student.id);
+                                  setActiveTab('student_detail');
+                                }}
+                                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-extrabold shadow-sm active:scale-95 cursor-pointer whitespace-nowrap"
+                              >
+                                個人成長カルテを開く ➔
+                              </button>
+                            </div>
+                          </td>
+                          {STUDENT_LIST_COLUMNS.map((column) => (
+                            <td key={column.key} className={`p-2 ${column.key === 'name' ? 'font-bold text-slate-900' : column.key === 'id' || column.key === 'password' ? 'font-mono font-bold text-slate-700' : 'text-slate-600'}`}>
+                              {column.key === 'role' ? (
+                                <span className="px-2.5 py-1 text-[10px] rounded-md font-extrabold bg-emerald-100 text-emerald-700">{student.role}</span>
+                              ) : column.key === 'password' ? (
+                                student.password ? (studentPasswordsVisible ? student.password : '••••') : '未設定'
+                              ) : (
+                                student[column.key] || '-'
+                              )}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4. 生徒個人成長カルテ (修正教科別の個人成長チャート) */}
+            {activeTab === 'student_detail' && selectedStudent && (
+              <div className="space-y-6">
+                <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div>
+                    <span className="text-xs text-slate-400 font-bold font-mono">独自生徒ID: {selectedStudent.id}</span>
+                    <h3 className="text-2xl font-black text-slate-900 mt-0.5">{selectedStudent.name} さんの個人成長カルテ</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">所属校舎: {selectedStudent.classroom}</p>
+                  </div>
+                  <button onClick={() => setActiveTab('students')} className="px-4 py-2 bg-slate-200 text-slate-700 font-bold text-xs rounded-xl cursor-pointer">
+                    ⬅ 生徒一覧に戻る
+                  </button>
+                </div>
+
+                {/* 生徒一人ひとりの修正教科別成長グラフ・インセンティブカード */}
+                <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                  <h4 className="text-sm font-extrabold text-slate-900">📊 修正教科別成長スコア ＆ 👑ミッション達成数</h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                    {selectedStudentSubjectStats.map((st) => {
+                      const cfg = SUBJECT_COLOR_MAP[st.subject];
+                      return (
+                        <div key={st.subject} className={`p-3.5 rounded-2xl border ${cfg.borderClass} ${cfg.bgClass} space-y-1.5`}>
+                          <div className={`font-black text-xs ${cfg.textClass}`}>{st.subject}</div>
+                          <div className="text-2xl font-black text-slate-900">{st.avgScore} <span className="text-[10px] font-bold text-slate-400">点</span></div>
+                          <div className="flex justify-between items-center text-[9px] font-bold text-slate-600 pt-1 border-t border-slate-200/60">
+                            <span>学習: {st.totalHours}h</span>
+                            <span className="text-amber-700 font-black">👑 x{st.crownCount}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* ログ履歴 */}
+                <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                  <h4 className="text-sm font-extrabold text-slate-900">積算学習ログ履歴 ({selectedStudentLogs.length}件)</h4>
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-900 border-b border-slate-200">
+                        <th className="p-3 font-bold">ログID</th>
+                        <th className="p-3 font-bold">教材ID</th>
+                        <th className="p-3 font-bold">得点</th>
+                        <th className="p-3 font-bold">時間</th>
+                        <th className="p-3 font-bold">ミッション状態</th>
+                        <th className="p-3 font-bold">メモ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {selectedStudentLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50">
+                          <td className="p-3 font-mono text-slate-500">{log.id}</td>
+                          <td className="p-3 font-mono font-bold text-slate-700">{log.material_id}</td>
+                          <td className="p-3 font-black text-sky-600">{log.score} 点</td>
+                          <td className="p-3 text-slate-600">{log.time_spent_minutes} 分</td>
+                          <td className="p-3">
+                            {log.is_mission_completed ? (
+                              <span className="px-2.5 py-0.5 bg-amber-100 text-amber-800 rounded-md font-black text-[10px] inline-flex items-center gap-1">
+                                <span>👑</span> ミッション完了
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">通常</span>
+                            )}
+                          </td>
+                          <td className="p-3 text-slate-600">{log.comment || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 5. 教材マスタ (各教科テーマカラー対応) */}
+            
+
+            {activeTab === 'materials' && (
+              <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-4">
+                  <h3 className="text-base font-extrabold text-purple-950">📚 教材マスタ ({filteredMaterials.length}件)</h3>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button onClick={openCreateMaterialModal} className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-extrabold rounded-2xl shadow-md cursor-pointer">
+                      ＋ 新規教材登録
+                    </button>
+                    <button onClick={() => { setMaterialCsvParsedPreview([]); setMaterialCsvStatusMessage({ type: null, text: '' }); setIsMaterialCsvModalOpen(true); }} className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold rounded-2xl shadow-md cursor-pointer">
+                      📁 教材CSV一括登録
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="text-xs font-extrabold text-slate-600">教科別並び替え</label>
+                  <select
+                    value={subjectFilter}
+                    onChange={(e) => setSubjectFilter(e.target.value)}
+                    className="bg-white border border-slate-300 text-xs font-bold text-slate-800 rounded-xl px-3 py-2.5 focus:outline-none cursor-pointer"
+                  >
+                    <option value="ALL">全教科（教科ごと）</option>
+                    {SUBJECT_NAMES.map((subj) => (
+                      <option key={subj} value={subj}>{subj}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="overflow-x-auto border border-slate-200 rounded-2xl">
+                  <table className="w-full text-left border-collapse text-xs font-medium min-w-[880px]">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-900 border-b border-slate-200">
+                        <th className="p-3 font-black w-40">表示順序</th>
+                        <th className="p-3 font-black w-36">教科</th>
+                        <th className="p-3 font-black">教材タイトル</th>
+                        <th className="p-3 font-black w-24">写真</th>
+                        <th className="p-3 font-black">説明</th>
+                        <th className="p-3 font-black w-44">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredMaterials.map((m) => {
+                        const siblings = materialsForSubject(materials, m.subject);
+                        const siblingIndex = siblings.findIndex((item) => item.id === m.id);
+                        return (
+                          <tr key={m.id} className="hover:bg-slate-50 align-middle">
+                            <td className="p-3">
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveMaterialOrder(m, -1)}
+                                  disabled={siblingIndex <= 0}
+                                  className="w-7 h-7 rounded-lg border border-slate-200 bg-white text-slate-700 font-black disabled:text-slate-300 disabled:cursor-not-allowed cursor-pointer"
+                                  aria-label="上へ"
+                                >
+                                  ↑
+                                </button>
+                                <input
+                                  type="number"
+                                  key={`${m.id}-${m.display_order}`}
+                                  defaultValue={m.display_order}
+                                  onBlur={(e) => handleDisplayOrderCommit(m, e.target.value)}
+                                  className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-center font-bold"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveMaterialOrder(m, 1)}
+                                  disabled={siblingIndex < 0 || siblingIndex >= siblings.length - 1}
+                                  className="w-7 h-7 rounded-lg border border-slate-200 bg-white text-slate-700 font-black disabled:text-slate-300 disabled:cursor-not-allowed cursor-pointer"
+                                  aria-label="下へ"
+                                >
+                                  ↓
+                                </button>
+                              </div>
+                            </td>
+                            <td className="p-3">
+                              <span className={`inline-block px-2.5 py-1 rounded-lg text-[10px] font-extrabold ${subjectBadgeClass(m.subject)}`}>
+                                {m.subject}
+                              </span>
+                            </td>
+                            <td className="p-3 font-extrabold text-slate-900">{m.title}</td>
+                            <td className="p-3">
+                              {m.image_url ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewImageUrl({ url: m.image_url as string, title: m.title })}
+                                  className="block w-14 h-14 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 cursor-pointer"
+                                >
+                                  <img src={m.image_url} alt={m.title} className="w-full h-full object-cover" />
+                                </button>
+                              ) : (
+                                <div className="w-14 h-14 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center text-[10px] font-bold text-slate-400">なし</div>
+                              )}
+                            </td>
+                            <td className="p-3 text-slate-600 max-w-xs">{m.description || ''}</td>
+                            <td className="p-3">
+                              <div className="flex gap-2">
+                                <button onClick={() => openEditMaterialModal(m)} className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 font-bold text-xs rounded-xl border border-slate-200 cursor-pointer">
+                                  ✏️ 編集
+                                </button>
+                                <button onClick={() => handleDeleteMaterial(m)} className="px-3 py-2 bg-white hover:bg-red-50 text-red-700 font-bold text-xs rounded-xl border border-red-200 cursor-pointer">
+                                  🗑️ 削除
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 6. 教師・管理者一覧 */}
+            {activeTab === 'teachers' && (
+              <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                  <h3 className="text-base font-extrabold text-sky-950">👨‍🏫 所属教師・管理者管理一覧 ({teachersAndAdmins.length}名)</h3>
+                  <button onClick={() => { setNewUserForm(blankUserForm('teacher')); setIsUserModalOpen(true); }} className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer">
+                    ＋ 新規教師・管理者を個別登録
+                  </button>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs font-medium">
+                    <thead>
+                      <tr className="bg-sky-50 text-sky-900 border-b border-sky-100">
+                        <th className="p-3.5 font-black">操作</th>
+                        <th className="p-3.5 font-black">氏名</th>
+                        <th className="p-3.5 font-black">担当校舎</th>
+                        <th className="p-3.5 font-black">区分</th>
+                        <th className="p-3.5 font-black">独自ID</th>
+                        <th className="p-3.5 font-black">
+                          <div className="flex items-center gap-1">
+                            <span>パスワード</span>
+                            <button
+                              type="button"
+                              onClick={() => setTeacherPasswordsVisible((visible) => !visible)}
+                              className="px-1.5 py-0.5 bg-white border border-sky-200 rounded-md text-[10px] font-extrabold text-slate-700 cursor-pointer"
+                            >
+                              {teacherPasswordsVisible ? '隠す' : '表示'}
+                            </button>
+                          </div>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {teachersAndAdmins.map((teacher) => (
+                        <tr key={teacher.id} className="hover:bg-sky-50/40">
+                          <td className="p-3.5">
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openTeacherEditModal(teacher)}
+                                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-extrabold border border-slate-200 cursor-pointer whitespace-nowrap"
+                              >
+                                ✏️ 編集
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteTeacher(teacher)}
+                                className="px-3 py-1.5 bg-white hover:bg-red-50 text-red-700 rounded-xl text-xs font-extrabold border border-red-200 cursor-pointer whitespace-nowrap"
+                              >
+                                🗑️ 削除
+                              </button>
+                            </div>
+                          </td>
+                          <td className="p-3.5 font-bold text-slate-900">{teacher.name}</td>
+                          <td className="p-3.5 text-slate-600">{teacher.classroom}</td>
+                          <td className="p-3.5">
+                            <span className={`px-2.5 py-1 text-[10px] rounded-md font-extrabold ${teacher.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-sky-100 text-sky-700'}`}>
+                              {teacher.role}
+                            </span>
+                          </td>
+                          <td className="p-3.5 font-mono text-slate-700 font-bold">{teacher.id}</td>
+                          <td className="p-3.5 font-mono text-slate-700 font-bold">
+                            {teacher.password ? (teacherPasswordsVisible ? teacher.password : '••••') : '未設定'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'progress' && (
+              <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-black text-slate-500">校舎・教室選択</label>
+                    <select
+                      value={progressBoard.classroom}
+                      disabled={progressBoard.viewerRole === 'teacher'}
+                      onChange={(event) => setProgressClassroom(event.target.value)}
+                      className="bg-white border border-slate-200 text-sm font-black text-slate-900 rounded-2xl px-4 py-3 cursor-pointer disabled:bg-slate-100 disabled:cursor-default"
+                    >
+                      {progressBoard.viewerRole !== 'teacher' && <option value="ALL">全校舎・全教室</option>}
+                      {(progressBoard.viewerRole === 'teacher' ? [progressBoard.classroom].filter(Boolean) : progressBoard.classrooms).map((room) => (
+                        <option key={room} value={room}>{room}</option>
+                      ))}
+                    </select>
+                    {progressBoard.viewerRole === 'teacher' && (
+                      <p className="text-[11px] font-bold text-slate-400">所属校舎の生徒だけを表示しています。</p>
+                    )}
+                  </div>
+                  <div className="text-xs font-bold text-slate-400">
+                    今週 {progressBoard.weekLabel} / 今月 {progressBoard.monthLabel}
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-900 border-b border-slate-200">
+                        <th className="p-3.5 font-black">生徒氏名</th>
+                        <th className="p-3.5 font-black">
+                          <button type="button" onClick={() => {
+                            if (progressSortKey === 'week') setProgressSortDir((dir) => (dir === 'desc' ? 'asc' : 'desc'));
+                            else { setProgressSortKey('week'); setProgressSortDir('desc'); }
+                          }} className="font-black cursor-pointer">
+                            今週の総学習時間 {progressSortKey === 'week' ? (progressSortDir === 'desc' ? '↓' : '↑') : ''}
+                          </button>
+                        </th>
+                        <th className="p-3.5 font-black">
+                          <button type="button" onClick={() => {
+                            if (progressSortKey === 'month') setProgressSortDir((dir) => (dir === 'desc' ? 'asc' : 'desc'));
+                            else { setProgressSortKey('month'); setProgressSortDir('desc'); }
+                          }} className="font-black cursor-pointer">
+                            今月の総学習時間 {progressSortKey === 'month' ? (progressSortDir === 'desc' ? '↓' : '↑') : ''}
+                          </button>
+                        </th>
+                        <th className="p-3.5 font-black">今週のミッション達成数</th>
+                        <th className="p-3.5 font-black">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {progressBoard.rows.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="p-6 text-sm font-bold text-slate-400">この教室の生徒はまだいません。</td>
+                        </tr>
+                      ) : progressBoard.rows.map((row) => (
+                        <tr key={row.student.id} className="hover:bg-slate-50">
+                          <td className="p-3.5">
+                            <div className="font-black text-slate-900">{row.student.name}</div>
+                            <div className="text-[11px] font-bold text-slate-400 mt-0.5">{row.student.id} / {row.student.grade || '学年未設定'}</div>
+                          </td>
+                          <td className="p-3.5 font-black text-slate-800">{formatStudyDuration(row.weekMinutes)}</td>
+                          <td className="p-3.5 font-black text-slate-800">{formatStudyDuration(row.monthMinutes)}</td>
+                          <td className="p-3.5 font-black text-amber-700">👑 {row.weekCrowns}</td>
+                          <td className="p-3.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMeetingStudentId(row.student.id);
+                                setMeetingWeekStart(weekStartKey(todayDateKey()));
+                                setActiveTab('logs');
+                              }}
+                              className="px-3 py-2 rounded-xl bg-sky-600 text-white text-[11px] font-black cursor-pointer"
+                            >
+                              個別に詳細を見る
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'logs' && (
+              <div className="space-y-4">
+                <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                  <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+                    <div className="flex-1 space-y-2">
+                      <label className="block text-xs font-black text-slate-500">対象生徒の選択</label>
+                      <input
+                        type="text"
+                        value={meetingStudentQuery}
+                        onChange={(event) => setMeetingStudentQuery(event.target.value)}
+                        placeholder="氏名・IDで絞り込み（例: 山田太郎 / exs001）"
+                        className="w-full bg-slate-50 border border-slate-200 text-sm font-bold text-slate-900 rounded-2xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      />
+                      <select
+                        value={meetingStudentId}
+                        onChange={(event) => {
+                          setMeetingStudentId(event.target.value);
+                          setMeetingWeekStart(weekStartKey(todayDateKey()));
+                        }}
+                        className="w-full bg-white border border-slate-200 text-sm font-black text-slate-900 rounded-2xl px-4 py-3 cursor-pointer"
+                      >
+                        <option value="">生徒を選択</option>
+                        {meetingRoster.map((student) => (
+                          <option key={student.id} value={student.id}>{student.name} / {student.id}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <button onClick={() => setIsLogModalOpen(true)} className="px-4 py-3 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-2xl shadow-md cursor-pointer shrink-0">
+                      ＋ 学習記録を追加
+                    </button>
+                  </div>
+                </div>
+                {!meetingStudentId ? (
+                  <div className="bg-white p-8 rounded-3xl border border-slate-200/80 shadow-sm text-sm font-bold text-slate-400">
+                    生徒を選ぶと、その週のトップ画面（月〜日）と学習時間の積み上げが表示されます。
+                  </div>
+                ) : (
+                  <>
+                    <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-sm flex items-center justify-between gap-3">
+                      <button type="button" onClick={() => setMeetingWeekStart((key) => shiftDateKey(key, -7))} className="w-10 h-10 rounded-2xl bg-slate-100 text-lg font-black cursor-pointer">◀</button>
+                      <div className="text-center">
+                        <div className="text-sm font-black text-slate-900">{meetingBoard.weekLabel}</div>
+                        <div className="text-[11px] font-bold text-slate-400">{users.find((user) => user.id === meetingStudentId)?.name || '生徒'} / {meetingStudentId}</div>
+                      </div>
+                      <button type="button" onClick={() => setMeetingWeekStart((key) => {
+                        const next = shiftDateKey(key, 7);
+                        return next > weekStartKey(todayDateKey()) ? key : next;
+                      })} className="w-10 h-10 rounded-2xl bg-slate-100 text-lg font-black cursor-pointer">▶</button>
+                    </div>
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                      <StudyMaterialStack
+                        heading="週の総学習時間"
+                        rangeLabel={meetingBoard.weekLabel}
+                        totalMinutes={meetingBoard.week.totalMinutes}
+                        subjects={meetingBoard.week.subjects}
+                      />
+                      <StudyMaterialStack
+                        heading="月の総学習時間"
+                        rangeLabel={meetingBoard.monthLabel}
+                        totalMinutes={meetingBoard.month.totalMinutes}
+                        subjects={meetingBoard.month.subjects}
+                      />
+                    </div>
+                    <MeetingWeekBoard
+                      weekStart={meetingWeekStart}
+                      plans={meetingBoard.plans}
+                      studentLogs={meetingBoard.studentLogs}
+                      slots={logSlots}
+                      catalog={materials}
+                      userId={meetingStudentId}
+                    />
+                    <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
+                      <h3 className="text-sm font-black text-slate-900">この週の学習ログ</h3>
+                      {meetingBoard.weekLogs.length === 0 ? (
+                        <p className="text-xs font-bold text-slate-400">この週の学習ログはありません。</p>
+                      ) : [...meetingBoard.weekLogs].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()).map((log) => {
+                        const student = users.find((user) => user.id === log.user_id);
+                        return (
+                          <article key={log.id} className="rounded-2xl border border-slate-200 p-4 space-y-2">
+                            <div className="text-[11px] font-bold text-slate-400">学習日時</div>
+                            <div className="text-base font-black text-slate-900">{formatMeetingWhen(log, logSlots[log.id])}</div>
+                            <div className="text-sm font-black text-slate-800">{student?.name || '氏名未登録'} / {log.user_id}</div>
+                            <div className="text-sm font-bold text-slate-900">{meetingMaterialTitle(log.material_id, log.user_id, materials)}</div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-black text-slate-700">{log.time_spent_minutes}分</span>
+                              {log.is_mission_completed ? (
+                                <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-xs font-black">👑 ミッション完了</span>
+                              ) : (
+                                <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 text-xs font-black">通常学習</span>
+                              )}
+                            </div>
+                            {log.comment ? (
+                              <p className="text-sm font-bold text-slate-700">自己評価・メモ: {log.comment}</p>
+                            ) : null}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+          </div>
+        )}
+      </main>
+
+      {/* モーダル群 */}
+      {previewImageUrl && <MaterialImagePreviewModal imageUrl={previewImageUrl.url} title={previewImageUrl.title} onClose={() => setPreviewImageUrl(null)} />}
+
+      {/* モーダル: 教師・生徒個別手動登録モーダル */}
+      {isUserModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="p-5 bg-sky-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm flex items-center gap-2">👤 新規ユーザー (教師/生徒/管理者) 個別登録</h4>
+              <button onClick={() => setIsUserModalOpen(false)} className="text-sky-300 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            
+            <form onSubmit={handleCreateUser} className="p-6 space-y-4 text-xs font-bold">
+              <div>
+                <label className="block text-slate-600 mb-1">独自ID (id) <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  required
+                  value={newUserForm.id}
+                  onChange={(e) => setNewUserForm({ ...newUserForm, id: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  placeholder="例: ext005, teacher03"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">パスワード</label>
+                <input
+                  type="text"
+                  value={newUserForm.password}
+                  onChange={(e) => setNewUserForm({ ...newUserForm, password: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  placeholder=""
+                />
+                <p className="mt-1 text-[10px] font-bold text-slate-400">未入力の場合は、独自IDまたは1234でログインできます。</p>
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">氏名 <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  required
+                  value={newUserForm.name}
+                  onChange={(e) => setNewUserForm({ ...newUserForm, name: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  placeholder="例: 山手 太郎"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">区分 (権限)</label>
+                <select
+                  value={newUserForm.role}
+                  onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value as UserRole })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none cursor-pointer"
+                >
+                  <option value="student">生徒 (student)</option>
+                  <option value="teacher">講師 (teacher)</option>
+                  {currentUser.role === 'admin' && (
+                    <option value="admin">管理者 (admin)</option>
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">所属校舎</label>
+                <select
+                  value={newUserForm.classroom}
+                  onChange={(e) => setNewUserForm({ ...newUserForm, classroom: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none cursor-pointer"
+                >
+                  <option value="本川越校">本川越校</option>
+                  <option value="川越校">川越校</option>
+                  <option value="ＥＸ校">ＥＸ校</option>
+                </select>
+              </div>
+
+              {newUserForm.role === 'student' && (
+                <StudentProfileFields
+                  value={newUserForm}
+                  onChange={(key, next) => setNewUserForm((prev) => ({ ...prev, [key]: next }))}
+                />
+              )}
+
+              <div className="pt-2 flex justify-end gap-3">
+                <button 
+                  type="button" 
+                  onClick={() => setIsUserModalOpen(false)} 
+                  className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl cursor-pointer"
+                >
+                  キャンセル
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-5 py-2 bg-sky-600 text-white rounded-xl shadow-md font-bold cursor-pointer"
+                >
+                  登録実行
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isStudentEditModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="p-5 bg-emerald-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">生徒情報編集</h4>
+              <button type="button" onClick={() => setIsStudentEditModalOpen(false)} className="text-emerald-300 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <form onSubmit={handleSaveStudentEdit} className="p-6 space-y-4 text-xs font-bold">
+              <div>
+                <label className="block text-slate-600 mb-1">氏名 <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  required
+                  value={studentEditForm.name}
+                  onChange={(e) => setStudentEditForm({ ...studentEditForm, name: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-600 mb-1">学年</label>
+                  <input
+                    type="text"
+                    value={studentEditForm.grade}
+                    onChange={(e) => setStudentEditForm({ ...studentEditForm, grade: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-600 mb-1">高校</label>
+                  <input
+                    type="text"
+                    value={studentEditForm.highSchool}
+                    onChange={(e) => setStudentEditForm({ ...studentEditForm, highSchool: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-slate-600 mb-1">所属校舎</label>
+                <select
+                  value={studentEditForm.classroom}
+                  onChange={(e) => setStudentEditForm({ ...studentEditForm, classroom: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                >
+                  <option value="本川越校">本川越校</option>
+                  <option value="川越校">川越校</option>
+                  <option value="ＥＸ校">ＥＸ校</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-600 mb-1">区分</label>
+                  <select
+                    value={studentEditForm.role}
+                    onChange={(e) => setStudentEditForm({ ...studentEditForm, role: e.target.value as UserRole })}
+                    className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                  >
+                    <option value="student">生徒 (student)</option>
+                    <option value="teacher">講師 (teacher)</option>
+                    <option value="admin">管理者 (admin)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-600 mb-1">独自ID <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    required
+                    value={studentEditForm.id}
+                    onChange={(e) => setStudentEditForm({ ...studentEditForm, id: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-slate-600 mb-1">パスワード</label>
+                <input
+                  type="text"
+                  value={studentEditForm.password}
+                  onChange={(e) => setStudentEditForm({ ...studentEditForm, password: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder=""
+                />
+                <p className="mt-1 text-[10px] font-bold text-slate-400">空欄のまま保存すると、独自IDまたは1234でログインできます。</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {STUDENT_PROFILE_FIELDS.filter((field) => field.key !== 'grade' && field.key !== 'highSchool').map((field) => (
+                  <div key={field.key}>
+                    <label className="block text-slate-600 mb-1">{field.key === 'biology' ? '生徒(生物)' : field.label}</label>
+                    <input
+                      type="text"
+                      value={studentEditForm[field.key]}
+                      onChange={(e) => setStudentEditForm({ ...studentEditForm, [field.key]: e.target.value })}
+                      className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="pt-2 flex justify-end gap-3">
+                <button type="button" onClick={() => setIsStudentEditModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl cursor-pointer">キャンセル</button>
+                <button type="submit" className="px-5 py-2 bg-emerald-600 text-white rounded-xl shadow-md cursor-pointer">保存する</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isTeacherEditModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="p-5 bg-sky-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">教師・管理者情報編集</h4>
+              <button type="button" onClick={() => setIsTeacherEditModalOpen(false)} className="text-sky-300 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <form onSubmit={handleSaveTeacherEdit} className="p-6 space-y-4 text-xs font-bold">
+              <div>
+                <label className="block text-slate-600 mb-1">氏名 <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  required
+                  value={studentEditForm.name}
+                  onChange={(e) => setStudentEditForm({ ...studentEditForm, name: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-600 mb-1">担当校舎</label>
+                <select
+                  value={studentEditForm.classroom}
+                  onChange={(e) => setStudentEditForm({ ...studentEditForm, classroom: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                >
+                  <option value="本川越校">本川越校</option>
+                  <option value="川越校">川越校</option>
+                  <option value="ＥＸ校">ＥＸ校</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-600 mb-1">区分</label>
+                  <select
+                    value={studentEditForm.role}
+                    onChange={(e) => setStudentEditForm({ ...studentEditForm, role: e.target.value as UserRole })}
+                    className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl cursor-pointer"
+                  >
+                    <option value="teacher">講師 (teacher)</option>
+                    <option value="admin">管理者 (admin)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-600 mb-1">独自ID <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    required
+                    value={studentEditForm.id}
+                    onChange={(e) => setStudentEditForm({ ...studentEditForm, id: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-slate-600 mb-1">パスワード</label>
+                <input
+                  type="text"
+                  value={studentEditForm.password}
+                  onChange={(e) => setStudentEditForm({ ...studentEditForm, password: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  placeholder=""
+                />
+                <p className="mt-1 text-[10px] font-bold text-slate-400">空欄のまま保存すると、独自IDまたは1234でログインできます。</p>
+              </div>
+              <div className="pt-2 flex justify-end gap-3">
+                <button type="button" onClick={() => setIsTeacherEditModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl cursor-pointer">キャンセル</button>
+                <button type="submit" className="px-5 py-2 bg-sky-600 text-white rounded-xl shadow-md cursor-pointer">保存</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      
+
+      {activeNotice && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-[60]">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-5 bg-slate-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">お知らせ閲覧</h4>
+              <button type="button" onClick={() => setActiveNotice(null)} className="text-slate-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="p-6 space-y-3 text-xs">
+              <p className="font-bold text-slate-500">送信日時: {formatSentAt(activeNotice.sent_at)}</p>
+              <p className="font-bold text-slate-500">送信者: {activeNotice.sender_name}</p>
+              <p className="whitespace-pre-wrap text-sm font-bold text-slate-900 leading-relaxed">{activeNotice.body}</p>
+              <div className="text-right">
+                <button type="button" onClick={() => setActiveNotice(null)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl font-bold cursor-pointer">閉じる</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* サクサク学習記録モーダル (👑ミッション完了選択可能) */}
+      {isLogModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-5 bg-sky-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm flex items-center gap-2">📝 学習記録の追加</h4>
+              <button onClick={() => setIsLogModalOpen(false)} className="text-sky-300 font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <form onSubmit={handleCreateLog} className="p-6 space-y-4 text-xs font-bold">
+              <div>
+                <label className="block text-slate-600 mb-1">生徒ID (例: ext002)</label>
+                <input type="text" required value={newLogForm.user_id} onChange={(e) => setNewLogForm({ ...newLogForm, user_id: e.target.value })} className="w-full bg-slate-50 border p-2.5 rounded-xl font-mono" />
+              </div>
+              <div>
+                <label className="block text-slate-600 mb-1">教科</label>
+                <select
+                  required
+                  value={newLogForm.subject}
+                  onChange={(e) => setNewLogForm({ ...newLogForm, subject: e.target.value as SubjectType | '', material_id: '' })}
+                  className="w-full bg-slate-50 border p-2.5 rounded-xl cursor-pointer"
+                >
+                  <option value="">教科を選択</option>
+                  {logSubjectChoices.map((subject) => (
+                    <option key={subject} value={subject}>{subject}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-slate-600 mb-1">テキスト</label>
+                <select
+                  required
+                  value={newLogForm.material_id}
+                  onChange={(e) => setNewLogForm({ ...newLogForm, material_id: e.target.value })}
+                  className="w-full bg-slate-50 border p-2.5 rounded-xl cursor-pointer"
+                >
+                  <option value="">テキストを選択</option>
+                  {logMaterialChoices.map((material) => (
+                    <option key={material.id} value={material.id}>{material.title}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-600 mb-1">得点</label>
+                  <input type="number" required value={newLogForm.score} onChange={(e) => setNewLogForm({ ...newLogForm, score: Number(e.target.value) })} className="w-full bg-slate-50 border p-2.5 rounded-xl" />
+                </div>
+                <div>
+                  <label className="block text-slate-600 mb-1">勉強時間(分)</label>
+                  <StudyMinuteChips
+                    value={newLogForm.time_spent_minutes}
+                    onChange={(minutes) => setNewLogForm({ ...newLogForm, time_spent_minutes: minutes })}
+                  />
+                  <input type="number" required value={newLogForm.time_spent_minutes} onChange={(e) => setNewLogForm({ ...newLogForm, time_spent_minutes: Number(e.target.value) })} className="w-full bg-slate-50 border p-2.5 rounded-xl mt-2" />
+                </div>
+              </div>
+
+              {/* 👑ミッション完了選択トグル */}
+              <div className="bg-amber-50 border border-amber-200 p-3 rounded-2xl flex items-center justify-between">
+                <div>
+                  <div className="font-extrabold text-amber-900 text-xs">👑 ミッション完了判定</div>
+                  <div className="text-[10px] text-amber-700">オンにすると学習ログに黄金の王冠マークが付きます！</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={newLogForm.is_mission_completed}
+                  onChange={(e) => setNewLogForm({ ...newLogForm, is_mission_completed: e.target.checked })}
+                  className="w-5 h-5 accent-amber-600 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">感想・メモ</label>
+                <textarea value={newLogForm.comment} onChange={(e) => setNewLogForm({ ...newLogForm, comment: e.target.value })} className="w-full bg-slate-50 border p-2.5 rounded-xl" rows={2} />
+              </div>
+              <div className="pt-2 flex justify-end gap-3">
+                <button type="button" onClick={() => setIsLogModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl cursor-pointer">キャンセル</button>
+                <button type="submit" className="px-5 py-2 bg-sky-600 text-white rounded-xl shadow-md cursor-pointer">記録を保存 👑</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isStudentCsvModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-5 bg-emerald-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">🎓 生徒専用CSV一括登録</h4>
+              <button onClick={() => setIsStudentCsvModalOpen(false)} className="text-emerald-300 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-2xl text-xs text-emerald-950 space-y-2">
+                <p className="font-extrabold break-all">📄 CSVヘッダー仕様: id,password,name,role,classroom,grade,high_school,english,math,japanese,physics,chemistry,biology,japanese_history,world_history,individual</p>
+                <button
+                  type="button"
+                  onClick={downloadStudentCsvTemplate}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold rounded-xl shadow-sm cursor-pointer"
+                >
+                  📥 生徒用雛形CSVをダウンロード(BOM付きUTF-8)
+                </button>
+                <p>※ role は student です。password が空欄の既存データは維持され、未設定の場合は独自IDまたは1234でログインできます。</p>
+              </div>
+              <div className="border-2 border-dashed border-slate-300 p-6 rounded-2xl text-center bg-slate-50">
+                <input type="file" accept=".csv" onChange={handleCsvFileSelect} disabled={csvUploading} className="block w-full text-xs text-slate-500" />
+              </div>
+              {csvStatusMessage.text && (
+                <p className={`text-xs font-bold ${csvStatusMessage.type === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>{csvStatusMessage.text}</p>
+              )}
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button onClick={() => setIsStudentCsvModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer">閉じる</button>
+              {csvParsedPreview.length > 0 && csvImportKind === 'student' && (
+                <button onClick={executeCsvImport} disabled={csvUploading} className="px-5 py-2 bg-emerald-600 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer">
+                  登録実行
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isTeacherCsvModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-5 bg-sky-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">👨‍🏫 教師専用CSV一括登録</h4>
+              <button onClick={() => setIsTeacherCsvModalOpen(false)} className="text-sky-300 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-sky-50 border border-sky-200 p-4 rounded-2xl text-xs text-sky-950 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-extrabold">📄 CSVヘッダー仕様: id,password,name,role,classroom</p>
+                  <button
+                    type="button"
+                    onClick={downloadTeacherCsvTemplate}
+                    className="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-xl shadow-sm cursor-pointer"
+                  >
+                    📥 雛形CSVをダウンロード
+                  </button>
+                </div>
+                <p>※ role は teacher のみです。管理者以外は admin を登録できません。password が空欄のときは、既存のパスワードを維持します。</p>
+              </div>
+              <div className="border-2 border-dashed border-slate-300 p-6 rounded-2xl text-center bg-slate-50">
+                <input type="file" accept=".csv" onChange={handleCsvFileSelect} disabled={csvUploading} className="block w-full text-xs text-slate-500" />
+              </div>
+              {csvStatusMessage.text && (
+                <p className={`text-xs font-bold ${csvStatusMessage.type === 'error' ? 'text-red-600' : 'text-sky-700'}`}>{csvStatusMessage.text}</p>
+              )}
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button onClick={() => setIsTeacherCsvModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer">閉じる</button>
+              {csvParsedPreview.length > 0 && csvImportKind === 'teacher' && (
+                <button onClick={executeCsvImport} disabled={csvUploading} className="px-5 py-2 bg-sky-600 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer">
+                  登録実行
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isMaterialCsvModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-5 bg-emerald-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">📁 教材CSV一括インポート</h4>
+              <button onClick={() => setIsMaterialCsvModalOpen(false)} className="text-emerald-300 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-2xl text-xs text-emerald-950 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-extrabold">📄 CSVヘッダー仕様: title,subject,description</p>
+                  <button
+                    type="button"
+                    onClick={downloadMaterialCsvTemplate}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold rounded-xl shadow-sm cursor-pointer"
+                  >
+                    📥 教材用雛形CSVをダウンロード (BOM付きUTF-8)
+                  </button>
+                </div>
+                <p>id・作成者・教科カラーは取り込み時に自動で付きます。subject は登録画面と同じ24科目名です。</p>
+              </div>
+              <div className="border-2 border-dashed border-slate-300 p-6 rounded-2xl text-center bg-slate-50">
+                <input type="file" accept=".csv" onChange={handleMaterialCsvFileSelect} disabled={materialCsvUploading} className="block w-full text-xs text-slate-500" />
+              </div>
+              {materialCsvStatusMessage.text && (
+                <p className={`text-xs font-bold ${materialCsvStatusMessage.type === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {materialCsvStatusMessage.text}
+                </p>
+              )}
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button onClick={() => setIsMaterialCsvModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer">閉じる</button>
+              {materialCsvParsedPreview.length > 0 && (
+                <button onClick={executeMaterialCsvImport} disabled={materialCsvUploading} className="px-5 py-2 bg-emerald-600 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer">
+                  登録実行
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* モーダル: 教材の新規登録・編集 */}
+      {isMaterialModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="p-5 bg-purple-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm flex items-center gap-2">
+                {editingMaterialId ? '📚 教材マスタ編集' : '📚 新規教材登録'}
+              </h4>
+              <button onClick={() => { setIsMaterialModalOpen(false); resetMaterialForm(); }} className="text-purple-300 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            
+            <form onSubmit={handleCreateMaterial} className="p-6 space-y-4 text-xs font-bold">
+              <div>
+                <label className="block text-slate-600 mb-1">教材タイトル</label>
+                <input
+                  type="text"
+                  required
+                  value={newMaterialForm.title}
+                  onChange={(e) => setNewMaterialForm({ ...newMaterialForm, title: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder=""
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">教科</label>
+                <select
+                  value={newMaterialForm.subject}
+                  onChange={(e) => setNewMaterialForm({ ...newMaterialForm, subject: e.target.value as SubjectType | '' })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none cursor-pointer"
+                >
+                  <option value=""></option>
+                  {SUBJECT_NAMES.map((subj) => (
+                    <option key={subj} value={subj}>{subj}</option>
+                  ))}
+                </select>
+                {isSubjectType(newMaterialForm.subject) && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span
+                      className="inline-block w-4 h-4 rounded-full border border-slate-200"
+                      style={{ backgroundColor: SUBJECT_COLOR_MAP[newMaterialForm.subject].hexCode }}
+                    />
+                    <span className="text-[11px] font-bold text-slate-500">
+                      教科カラー自動設定: {SUBJECT_COLOR_MAP[newMaterialForm.subject].colorName}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">教材写真</label>
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setIsMaterialImageDragOver(true); }}
+                  onDragLeave={() => setIsMaterialImageDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsMaterialImageDragOver(false);
+                    applyMaterialImageFile(e.dataTransfer.files?.[0]);
+                  }}
+                  className={`rounded-2xl border-2 border-dashed p-4 text-center space-y-3 ${isMaterialImageDragOver ? 'border-purple-500 bg-purple-50' : 'border-slate-300 bg-slate-50'}`}
+                >
+                  <p className="text-[11px] text-slate-500 font-bold">画像ファイルをドラッグ＆ドロップ</p>
+                  <label className="inline-flex px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl cursor-pointer">
+                    画像ファイルを選択
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        applyMaterialImageFile(e.target.files?.[0]);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  {newMaterialForm.image_url ? (
+                    <div className="space-y-2">
+                      <img src={newMaterialForm.image_url} alt="教材写真プレビュー" className="mx-auto max-h-40 rounded-xl object-contain border border-slate-200 bg-white" />
+                      <button
+                        type="button"
+                        onClick={() => setNewMaterialForm({ ...newMaterialForm, image_url: '' })}
+                        className="text-[11px] text-slate-500 underline cursor-pointer"
+                      >
+                        選択した写真を外す
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-400">写真は未選択です</p>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-600 mb-1">教材説明</label>
+                <textarea
+                  value={newMaterialForm.description}
+                  onChange={(e) => setNewMaterialForm({ ...newMaterialForm, description: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  rows={2}
+                  placeholder=""
+                />
+              </div>
+
+              <div className="pt-2 flex justify-end gap-3">
+                <button 
+                  type="button" 
+                  onClick={() => { setIsMaterialModalOpen(false); resetMaterialForm(); }} 
+                  className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl cursor-pointer"
+                >
+                  キャンセル
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-5 py-2 bg-purple-600 text-white rounded-xl shadow-md font-bold cursor-pointer"
+                >
+                  {editingMaterialId ? '更新保存' : '登録実行'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      
+
+
+      
+
+      
+
+      
+
+    </div>
+  
+  );
+  }
+
+  function renderStudentScreen(currentUser: User) {
+  return (
+    <div className={`bg-slate-100 font-sans text-slate-800 antialiased selection:bg-sky-500 selection:text-white ${activeTab === 'schedule_planner' ? 'h-dvh overflow-hidden' : 'min-h-screen'}`}>
+      
+      {/* Toast通知 */}
+      <div className="fixed top-5 right-5 z-50 space-y-2 pointer-events-none max-w-sm w-full">
+        {notifications.map((n) => (
+          <div
+            key={n.id}
+            className={`pointer-events-auto p-4 rounded-2xl shadow-xl border backdrop-blur-md flex items-start justify-between gap-3 animate-in slide-in-from-top duration-300 ${
+              n.type === 'success'
+                ? 'bg-emerald-900/90 text-white border-emerald-500/50'
+                : n.type === 'error'
+                ? 'bg-red-900/90 text-white border-red-500/50'
+                : 'bg-slate-900/90 text-white border-slate-700/50'
+            }`}
+          >
+            <div className="space-y-0.5">
+              <div className="text-[10px] opacity-60 font-mono">{n.timestamp}</div>
+              <p className="text-xs font-bold leading-relaxed">{n.message}</p>
+            </div>
+            <button onClick={() => removeNotification(n.id)} className="text-white/60 hover:text-white font-bold text-xs cursor-pointer">✕</button>
+          </div>
+        ))}
+      </div>
+
+      {/* 統合サイドバー（生徒画面では描画しない） */}
+      
+
+      {/* メインエリア */}
+      <main className={activeTab === 'schedule_planner' ? 'h-dvh max-h-dvh overflow-hidden flex flex-col p-2 pb-[4.6rem] gap-1.5' : 'min-h-screen min-w-0 overflow-y-auto p-4 pb-28 md:p-8 md:pb-8'}>
+        
+          <header className={activeTab === 'schedule_planner' ? 'shrink-0 space-y-1' : 'mb-4 space-y-3'}>
+            <div className={`flex items-center gap-2 ${activeTab === 'schedule_planner' ? 'px-0.5' : 'px-1'}`}>
+              <img src="/logo.png" alt="Y Log" className={`object-contain ${activeTab === 'schedule_planner' ? 'w-7 h-7' : 'w-11 h-11'}`} />
+              <p className={`font-black tracking-tight text-slate-900 ${activeTab === 'schedule_planner' ? 'text-sm leading-none' : 'text-xl leading-none'}`}>Y Log</p>
+            </div>
+            <section className="bg-white rounded-2xl border border-amber-200 shadow-sm overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setIsNoticeListOpen(true)}
+                className="w-full text-left px-3 py-2 flex items-center gap-2 cursor-pointer"
+              >
+                <span className="relative text-base leading-none">
+                  🔔
+                  {unreadNoticeCount > 0 && (
+                    <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-red-600 ring-2 ring-white" />
+                  )}
+                </span>
+                <span className="flex-1">
+                  <span className="block text-sm font-black text-amber-950">教師からのメッセージ・新着コメント</span>
+                  <span className="block text-[11px] font-bold text-amber-800 mt-0.5">
+                    {unreadNoticeCount > 0 ? `未読 ${unreadNoticeCount} 件` : '未読のお知らせはありません'}
+                  </span>
+                </span>
+                {unreadNoticeCount > 0 && (
+                  <span className="min-w-6 h-6 px-1.5 rounded-full bg-red-600 text-white text-xs font-black flex items-center justify-center">
+                    {unreadNoticeCount}
+                  </span>
+                )}
+              </button>
+              {noticesExpanded && activeTab !== 'schedule_planner' && (
+                <div className="border-t border-amber-100 p-3 space-y-2">
+                  {myMessages.length === 0 ? (
+                    <p className="text-xs font-bold text-slate-500 text-center py-4">お知らせはまだありません。</p>
+                  ) : myMessages.map((message) => (
+                    <button
+                      key={message.id}
+                      type="button"
+                      onClick={() => openNoticeDetail(message)}
+                      className={`w-full text-left p-3 rounded-2xl border cursor-pointer ${message.read_at ? 'bg-slate-50 border-slate-200' : 'bg-amber-50 border-amber-300'}`}
+                    >
+                      <div className="flex justify-between text-[10px] font-bold text-slate-500">
+                        <span>{formatSentAt(message.sent_at)}</span>
+                        <span className={message.read_at ? '' : 'text-red-600'}>{message.read_at ? '既読' : '未読'}</span>
+                      </div>
+                      <p className="mt-1 text-sm font-extrabold text-slate-900 whitespace-pre-wrap">{message.body}</p>
+                      <p className="mt-1 text-[10px] text-slate-500">{message.sender_name}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+            <div className={`bg-white p-4 rounded-3xl border border-slate-200/80 shadow-sm flex items-center gap-3 ${activeTab === 'schedule_planner' ? 'hidden' : ''}`}>
+              <img src="/logo.png" alt="Y Log" className="w-10 h-10 object-contain" />
+              <div className="min-w-0 flex-1">
+                <div className="font-black text-slate-900 truncate">{currentUser.name}</div>
+                <div className="text-[11px] font-bold text-slate-400">連続 {studyStreakDays} 日</div>
+              </div>
+            </div>
+            <nav className="hidden md:grid grid-cols-4 gap-2">
+              {studentNav.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveTab(item.id)}
+                  className={`py-3 rounded-2xl text-xs font-black cursor-pointer ${
+                    activeTab === item.id ? 'bg-sky-600 text-white shadow-md' : 'bg-white text-slate-600 border border-slate-200'
+                  }`}
+                >
+                  <span className="mr-1">{item.icon}</span>{item.label}
+                </button>
+              ))}
+            </nav>
+          </header>
+        
+        
+
+        {globalError && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-3xl text-xs font-bold text-red-700 flex justify-between items-center">
+            <span>⚠️ {globalError}</span>
+            <button onClick={() => { void fetchAllData(); }} className="px-3 py-1 bg-red-600 text-white rounded-xl text-xs hover:bg-red-700 font-bold cursor-pointer">
+              再同期実行
+            </button>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="bg-white p-20 rounded-3xl border border-slate-200 text-center space-y-3 shadow-sm">
+            <div className="w-12 h-12 mx-auto animate-bounce">
+              <img src="/logo.png" alt="Loading Logo" className="w-full h-full object-contain" />
+            </div>
+            <div className="text-slate-400 text-xs font-bold animate-pulse">Y Log データベースと同期中...</div>
+          </div>
+        ) : (
+          <div className={activeTab === 'schedule_planner' ? 'flex-1 min-h-0 flex flex-col' : 'space-y-6'}>
+
+            {activeTab === 'dashboard' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-3 gap-1 rounded-2xl bg-slate-200/80 p-1">
+                  {LOG_SUMMARY_PERIODS.map((period) => (
+                    <button
+                      key={period.id}
+                      type="button"
+                      onClick={() => setLogSummaryPeriod(period.id)}
+                      className={`py-2 rounded-xl text-[11px] font-black cursor-pointer ${logSummaryPeriod === period.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}
+                    >
+                      {period.label}
+                    </button>
+                  ))}
+                </div>
+                <PreviousWeekRankBadge rank={previousWeekRank.rank} totalMinutes={previousWeekRank.totalMinutes} />
+                <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4">
+                  <div className="text-[11px] font-bold text-slate-400">合計の学習時間</div>
+                  <div className="text-3xl font-black text-slate-900 mt-1">{formatStudyDuration(periodStudy.totalMinutes)}</div>
+                </section>
+                <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-4">
+                  <h3 className="text-sm font-black text-slate-900">科目別学習時間</h3>
+                  {periodStudy.subjects.length === 0 ? (
+                    <p className="text-xs font-bold text-slate-400">この期間の記録はまだありません。</p>
+                  ) : periodStudy.subjects.map((item) => {
+                    const max = Math.max(...periodStudy.subjects.map((stat) => stat.minutes), 1);
+                    const color = SUBJECT_COLOR_MAP[item.subject];
+                    return (
+                      <div key={item.subject} className="space-y-1.5">
+                        <div className="flex justify-between text-xs font-black">
+                          <span className={color.textClass}>{item.subject}</span>
+                          <span className="text-slate-500">{formatStudyDuration(item.minutes)}</span>
+                        </div>
+                        <div className="h-4 rounded-full bg-slate-100 overflow-hidden flex">
+                          {item.materials.map((material) => (
+                            <div
+                              key={material.id}
+                              title={`${material.title} ${formatStudyDuration(material.minutes)}`}
+                              style={{ width: `${(material.minutes / max) * 100}%`, backgroundColor: material.color }}
+                            />
+                          ))}
+                        </div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-1">
+                          {item.materials.map((material) => (
+                            <span key={`${item.subject}-${material.id}`} className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500">
+                              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: material.color }} />
+                              <span className="truncate max-w-[9rem]">{material.title}</span>
+                              <span>{material.minutes}分</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </section>
+                <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3">
+                  <h3 className="text-sm font-black text-slate-900">ログの振り返り</h3>
+                  {periodStudy.logs.length === 0 ? (
+                    <p className="text-xs font-bold text-slate-400">この期間の記録はまだありません。</p>
+                  ) : periodStudy.logs.map((log) => {
+                    const material = materials.find((item) => item.id === log.material_id) || myMaterials.find((item) => item.id === log.material_id);
+                    return (
+                      <div key={log.id} className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-black text-slate-900 truncate flex items-center gap-1">
+                            {log.is_mission_completed && <span className="text-base"><MissionCrown /></span>}
+                            <span className="truncate">{material?.title || '教材'}</span>
+                          </div>
+                          <div className="text-[11px] font-bold text-slate-400">
+                            {formatLogStamp(log.created_at)} · {material?.subject || ''} · {log.time_spent_minutes}分
+                            {log.comment ? ` · ${log.comment}` : ''}
+                          </div>
+                        </div>
+                        <div className="flex gap-2 shrink-0">
+                          <button type="button" onClick={() => openStudentLogEditor(log)} className="px-3 py-2 rounded-xl bg-slate-100 text-[11px] font-black cursor-pointer">修正</button>
+                          <button type="button" onClick={() => { void deleteStudentLog(log); }} className="px-3 py-2 rounded-xl bg-red-50 text-red-700 text-[11px] font-black cursor-pointer">削除</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </section>
+                <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3">
+                  <h3 className="text-sm font-black text-slate-900">📅 過去の学習記録（全週分）を振り返る</h3>
+                  {pastWeekReviews.length === 0 ? (
+                    <p className="text-xs font-bold text-slate-400">まだ振り返れる週の記録がありません。</p>
+                  ) : pastWeekReviews.map((week, index) => {
+                    const opened = pastWeekStart === week.start;
+                    const weekNumber = pastWeekReviews.length - index;
+                    const rank = rankFromMinutes(week.rankMinutes);
+                    const rankNote = `勉強時間 ${formatHourAndMinute(week.stack.totalMinutes)}＋塾の時間 ${formatHourAndMinute(week.jukuMinutes)}`;
+                    return (
+                      <div key={week.start} className="rounded-2xl border border-slate-200 overflow-hidden">
+                        <div className="w-full px-3 py-3 flex items-center justify-between gap-2 bg-slate-50">
+                          <button
+                            type="button"
+                            onClick={() => setPastWeekStart(opened ? null : week.start)}
+                            className="min-w-0 flex-1 text-left cursor-pointer"
+                          >
+                            <span className="text-sm font-black text-slate-900">{week.label}</span>
+                          </button>
+                          <WeekRankThumb
+                            rank={rank}
+                            onOpen={() => setWeekRankPreview({ weekNumber, totalMinutes: week.rankMinutes, rank, note: rankNote })}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setPastWeekStart(opened ? null : week.start)}
+                            className="text-[11px] font-black text-slate-500 shrink-0 cursor-pointer"
+                          >
+                            {week.rankMinutes > 0 ? formatStudyDuration(week.rankMinutes) : '0時間0分'} {opened ? '閉じる' : '開く'}
+                          </button>
+                        </div>
+                        {opened && (
+                          <div className="p-3 space-y-3 bg-slate-50">
+                            {week.jukuMinutes > 0 && (
+                              <p className="text-[11px] font-bold text-slate-500">塾の予定 {formatHourAndMinute(week.jukuMinutes)} をランクに含めています。</p>
+                            )}
+                            <StudyMaterialStack
+                              heading="この週の総学習時間"
+                              rangeLabel={formatWeekRange(week.start)}
+                              totalMinutes={week.stack.totalMinutes}
+                              subjects={week.stack.subjects}
+                            />
+                            <MeetingWeekBoard
+                              compact
+                              weekStart={week.start}
+                              plans={weekPlans}
+                              studentLogs={myStudyLogs}
+                              slots={logSlots}
+                              catalog={materials}
+                              userId={currentUser.id}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {weekRankPreview && (
+                    <WeekRankPreviewModal
+                      weekNumber={weekRankPreview.weekNumber}
+                      rank={weekRankPreview.rank}
+                      totalMinutes={weekRankPreview.totalMinutes}
+                      note={weekRankPreview.note}
+                      onClose={() => setWeekRankPreview(null)}
+                    />
+                  )}
+                </section>
+              </div>
+            )}
+
+            
+
+            {/* TAB 2. スケジュール */}
+            {activeTab === 'schedule_planner' && (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="shrink-0 flex items-center justify-between gap-2 px-1">
+                  <button type="button" onClick={() => setFocusDateKey((key) => shiftDateKey(key, -1))} className="w-9 h-7 rounded-xl bg-white border border-slate-200 text-sm font-black cursor-pointer">◀</button>
+                  <div className="text-[11px] font-black text-slate-900 text-center leading-tight">
+                    {formatFocusDate(focusDateKey)}
+                    <span className="text-slate-300"> ｜ </span>
+                    {formatFocusDate(shiftDateKey(focusDateKey, 1))}
+                  </div>
+                  <button type="button" onClick={() => setFocusDateKey((key) => shiftDateKey(key, 1))} className="w-9 h-7 rounded-xl bg-white border border-slate-200 text-sm font-black cursor-pointer">▶</button>
+                </div>
+                {[focusDateKey, shiftDateKey(focusDateKey, 1)].some((dateKey) => !weekPlans[weekStartKey(dateKey)]) && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('logs')}
+                    className="shrink-0 w-full py-1.5 rounded-2xl bg-amber-400 text-amber-950 text-xs font-black cursor-pointer shadow-sm"
+                  >
+                    まずは週の予定を教えてね 📅
+                  </button>
+                )}
+                <div className="flex-1 min-h-0 grid grid-cols-2 gap-1">
+                  {[focusDateKey, shiftDateKey(focusDateKey, 1)].map((dateKey, columnIndex) => {
+                    const planSlots = planSlotsForDate(weekPlans[weekStartKey(dateKey)], dateKey);
+                    const weekday = weekdayIdFromDateKey(dateKey);
+                    return (
+                      <div key={dateKey} className="min-h-0 flex flex-col rounded-2xl border border-slate-200 bg-white overflow-hidden">
+                        <div className="flex-1 min-h-0 flex flex-col">
+                          {DAY_VIEW_HOURS.map((hour) => {
+                            const studies = myStudyLogs.flatMap((log) => {
+                              const placed = studyPlacement(log, logSlots);
+                              if (!placed || placed.date !== dateKey) return [];
+                              const slice = sliceInHour(hour, placed);
+                              if (!slice) return [];
+                              const material = materials.find((item) => item.id === log.material_id)
+                                || myMaterials.find((item) => item.id === log.material_id);
+                              const subjectColor = material && isSubjectType(material.subject) ? SUBJECT_COLOR_MAP[material.subject].hexCode : '#64748b';
+                              return [{
+                                key: `${log.id}-${hour}`,
+                                color: subjectColor,
+                                title: material?.title || '学習',
+                                crown: Boolean(log.is_mission_completed),
+                                slice,
+                                onClick: () => openStudentLogEditor(log),
+                              }];
+                            });
+                            return (
+                              <DayHourLane
+                                key={hour}
+                                hour={hour}
+                                showHourLabel={columnIndex === 0}
+                                planBands={studies.length === 0 ? planBandsForHour(planSlots, weekday, hour) : undefined}
+                                studies={studies}
+                                onDeleteSlot={(slotId) => {
+                                  if (!currentUser) return;
+                                  const weekStart = weekStartKey(dateKey);
+                                  const plan = weekPlans[weekStart];
+                                  if (!plan) return;
+                                  if (!window.confirm('この予定を削除しますか？')) return;
+                                  const slots = (plan.slots || []).filter((slot) => slot.id !== slotId);
+                                  const snapshots = plan.dateSnapshots
+                                    ? Object.fromEntries(Object.entries(plan.dateSnapshots).map(([key, list]) => [key, list.filter((slot) => slot.id !== slotId)]))
+                                    : undefined;
+                                  const next = { ...weekPlans };
+                                  const snapshotLists = snapshots ? Object.values(snapshots) : [];
+                                  if (slots.length === 0 && snapshotLists.every((list) => list.length === 0)) {
+                                    delete next[weekStart];
+                                  } else {
+                                    next[weekStart] = { ...plan, slots, dateSnapshots: snapshots, is_customized: true };
+                                  }
+                                  setWeekPlans(next);
+                                  writeWeekPlans(currentUser.id, next);
+                                }}
+                                onEmpty={() => {
+                                  const endHour = Math.min(hour + 1, 25);
+                                  setComposerDateKey(dateKey);
+                                  setComposerMission(false);
+                                  setRecordMode('timer');
+                                  setTimerRunning(false);
+                                  setCountdownRunning(false);
+                                  setTimerElapsedSec(0);
+                                  setNewLogForm((prev) => ({ ...prev, subject: '', material_id: '' }));
+                                  setStudyComposer(clampStudyRange({ startHour: hour, startMinute: 0, endHour, endMinute: 0 }));
+                                }}
+                              />
+                            );
+                          })}
+                        </div>
+                        <div className="shrink-0 h-3 text-[8px] font-mono font-bold text-slate-400 pl-1 leading-none">25:00</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'logs' && (
+              <div className="space-y-4">
+                <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3">
+                  <h2 className="text-base font-black text-slate-900">１. Myひな型を登録しよう</h2>
+                  {[1, 2, 3].map((slotNumber) => {
+                    const saved = findMyHina(mySchedules, slotNumber);
+                    const opened = openHinaSlot === slotNumber;
+                    return (
+                      <div key={slotNumber} className="rounded-2xl border border-slate-200 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (opened) {
+                              setOpenHinaSlot(null);
+                              return;
+                            }
+                            setOpenHinaSlot(slotNumber);
+                            setHinaDraftSlots(cloneScheduleSlots(saved?.slots || []));
+                            setHinaDraftTitle(saved ? hinaDisplayName(saved, slotNumber) : `Myひな型${slotNumber}`);
+                          }}
+                          className="w-full px-3 py-3 flex items-center justify-between text-left cursor-pointer bg-slate-50"
+                        >
+                          <span className="font-black text-sm truncate">{saved ? hinaDisplayName(saved, slotNumber) : `Myひな型${slotNumber}`}</span>
+                          {saved && <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800">登録済み</span>}
+                        </button>
+                        {opened && (
+                          <div className="fixed inset-x-0 top-0 bottom-[4.6rem] z-40 bg-white flex flex-col p-3 gap-2">
+                            <div className="shrink-0 flex items-center justify-between gap-2">
+                              <p className="font-black text-sm truncate">{hinaDraftTitle.trim() || `Myひな型${slotNumber}`}</p>
+                              <button type="button" onClick={() => setOpenHinaSlot(null)} className="text-xs font-black text-slate-400 cursor-pointer shrink-0">閉じる</button>
+                            </div>
+                            <label className="shrink-0 block">
+                              <span className="text-xs font-black text-slate-700">ひな型の名前</span>
+                              <input
+                                value={hinaDraftTitle}
+                                onChange={(event) => setHinaDraftTitle(event.target.value)}
+                                placeholder="例：通常時、定期テスト前、夏休み用"
+                                maxLength={24}
+                                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900"
+                              />
+                            </label>
+                            <div className="shrink-0">
+                              <p className="text-xs font-black text-slate-700 mb-1.5">① もとになるひな型を選んでね</p>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                {HINA_BASES.map((base) => (
+                                  <button
+                                    key={base.id}
+                                    type="button"
+                                    onClick={() => setHinaDraftSlots(copyScheduleSlotsWithNewIds(staffTemplates[base.id]))}
+                                    className="py-2 rounded-xl border border-slate-200 bg-slate-50 text-[11px] font-black cursor-pointer"
+                                  >
+                                    {base.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="flex-1 min-h-0 flex flex-col">
+                              <p className="shrink-0 text-xs font-black text-slate-700">② ひな型をカスタマイズしてね</p>
+                              <p className="shrink-0 text-[10px] font-bold text-slate-400 mb-1">マスをタップすると 高校 → 部活 → 活動 → 塾 → 他 → なし。時刻表示をタップすると開始・終了を5分単位で変更できます。</p>
+                              <HourCategoryGrid
+                                slots={hinaDraftSlots}
+                                onPaint={(day, hour, category) => setHinaDraftSlots((prev) => paintHourCategory(prev, day, hour, category))}
+                                onCommit={setHinaDraftSlots}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => saveMyHina(slotNumber, hinaDraftSlots, hinaDraftTitle)}
+                              className="shrink-0 w-full py-3 rounded-2xl bg-sky-600 text-white text-sm font-black cursor-pointer shadow-md"
+                            >
+                              Myひな型に登録
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </section>
+                <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-2">
+                  <h2 className="text-base font-black text-slate-900">２. 週スケジュールを登録してね</h2>
+                  <p className="text-[11px] font-bold text-slate-400">週をタップして、ひな型を当てるか、その週だけ時間を編集できます。</p>
+                  {upcomingWeekStarts(3).map((weekStart) => {
+                    const plan = weekPlans[weekStart];
+                    return (
+                      <button
+                        key={weekStart}
+                        type="button"
+                        onClick={() => openWeekEditor(weekStart)}
+                        className={`w-full px-3 py-3 rounded-2xl border text-left flex items-center justify-between gap-2 cursor-pointer ${plan?.is_customized ? 'border-amber-200 bg-amber-50/70' : 'border-slate-200 bg-slate-50'}`}
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-sm font-black text-slate-900">{formatWeekRange(weekStart)}</span>
+                          {plan?.is_customized && plan.templateName ? (
+                            <span className="block text-[10px] font-bold text-slate-400 truncate">もと: {plan.templateName}</span>
+                          ) : null}
+                        </span>
+                        {plan?.is_customized ? (
+                          <span className="shrink-0 text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">個別設定済み</span>
+                        ) : plan ? (
+                          <span className="shrink-0 text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">{plan.templateName}</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </section>
+              </div>
+            )}
+
+            {weekPickerStart && activeTab === 'logs' && (
+              <div className="fixed inset-x-0 top-0 bottom-[4.6rem] z-50 bg-white flex flex-col p-3 gap-2">
+                <div className="shrink-0 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-black text-sm truncate">この週のスケジュール</p>
+                    <p className="text-[11px] font-bold text-slate-400 truncate">{formatWeekRange(weekPickerStart)}</p>
+                  </div>
+                  <button type="button" onClick={() => setWeekPickerStart(null)} className="text-xs font-black text-slate-400 cursor-pointer shrink-0">閉じる</button>
+                </div>
+                <div className="shrink-0">
+                  <p className="text-xs font-black text-slate-700 mb-1.5">ひな型から始める</p>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[1, 2, 3].map((slotNumber) => {
+                      const item = findMyHina(mySchedules, slotNumber);
+                      const selected = Boolean(item && weekDraftTemplateId === item.id);
+                      return (
+                        <button
+                          key={slotNumber}
+                          type="button"
+                          disabled={!item}
+                          onClick={() => { if (item) loadHinaIntoWeekDraft(item); }}
+                          className={`py-2 px-1 rounded-xl border text-[11px] font-black cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed truncate ${selected ? 'bg-sky-600 text-white border-sky-600' : 'bg-slate-50 text-slate-800 border-slate-200'}`}
+                        >
+                          {hinaDisplayName(item, slotNumber)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <p className="shrink-0 text-xs font-black text-slate-700">この週の時間を編集</p>
+                  <p className="shrink-0 text-[10px] font-bold text-slate-400 mb-1">マスをタップすると 高校 → 部活 → 活動 → 塾 → 他 → なし。時刻表示をタップすると開始・終了を5分単位で変更できます。</p>
+                  <HourCategoryGrid
+                    slots={weekDraftSlots}
+                    onPaint={(day, hour, category) => setWeekDraftSlots((prev) => paintHourCategory(prev, day, hour, category))}
+                    onCommit={setWeekDraftSlots}
+                  />
+                </div>
+                <p className="shrink-0 text-[10px] font-bold text-slate-400">
+                  {(() => {
+                    const baseItem = weekDraftTemplateId ? mySchedules.find((item) => item.id === weekDraftTemplateId) : undefined;
+                    const follows = Boolean(baseItem && scheduleSlotsMatch(weekDraftSlots, baseItem.slots));
+                    return follows
+                      ? 'ひな型と同じ内容です。保存すると、あとからひな型を変えたときにこの週も更新されます。'
+                      : '時間を変えて保存すると「個別設定済み」になり、ひな型の一括反映では上書きされません。';
+                  })()}
+                </p>
+                <button
+                  type="button"
+                  onClick={saveWeekEditor}
+                  className="shrink-0 w-full py-3 rounded-2xl bg-sky-600 text-white text-sm font-black cursor-pointer shadow-md"
+                >
+                  この週の予定を保存
+                </button>
+              </div>
+            )}
+
+            
+
+            {/* TAB 3. 生徒一覧 */}
+            
+
+            {/* TAB 4. 生徒個人成長カルテ (修正教科別の個人成長チャート) */}
+            
+
+            {/* TAB 5. 教材マスタ (各教科テーマカラー対応) */}
+            {activeTab === 'materials' && (
+              <div className="space-y-4">
+                <h3 className="text-base font-black text-slate-900">📚 マイ教材</h3>
+                <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => setQrScanOpen(true)}
+                    className="w-full py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer"
+                  >
+                    QRコードを読み取る
+                  </button>
+                  <form onSubmit={handleManualMyMaterial} className="space-y-2">
+                    <p className="text-xs font-black text-slate-700">リストに載っていない教材の追加</p>
+                    <label className="block">
+                      <span className="text-[11px] font-black text-slate-500">教材名</span>
+                      <input
+                        value={myMaterialTitle}
+                        onChange={(event) => setMyMaterialTitle(event.target.value)}
+                        placeholder="例：学校の英語プリント"
+                        maxLength={40}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-[11px] font-black text-slate-500">科目</span>
+                      <select
+                        value={myMaterialSubject}
+                        onChange={(event) => {
+                          const subject = subjectFromInput(event.target.value);
+                          if (subject) setMyMaterialSubject(subject);
+                        }}
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900 bg-white"
+                      >
+                        {SUBJECT_NAMES.map((subject) => (
+                          <option key={subject} value={subject}>{subject}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button type="submit" className="w-full py-3 rounded-2xl bg-sky-600 text-white text-sm font-black cursor-pointer">
+                      マイ教材に追加
+                    </button>
+                  </form>
+                </section>
+                <section className="space-y-2">
+                  <h4 className="text-sm font-black text-slate-900">追加した教材</h4>
+                  {myMaterials.length === 0 ? (
+                    <p className="bg-white rounded-3xl border border-slate-200 p-6 text-sm font-bold text-slate-400">追加した教材はまだありません。</p>
+                  ) : myMaterials.map((item) => {
+                    const color = SUBJECT_COLOR_MAP[item.subject];
+                    return (
+                      <article key={item.id} className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <span className={`inline-block text-[10px] font-black px-2 py-0.5 rounded-full ${color.bgClass} ${color.textClass}`}>{item.subject}</span>
+                          <div className="font-black text-slate-900 mt-1 truncate">{item.title}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeMyMaterial(item.id)}
+                          className="shrink-0 px-3 py-2 rounded-xl bg-red-50 text-red-700 text-[11px] font-black cursor-pointer"
+                        >
+                          削除
+                        </button>
+                      </article>
+                    );
+                  })}
+                </section>
+              </div>
+            )}
+            {qrScanOpen && activeTab === 'materials' && (
+              <QrMaterialScanner onResult={handleQrMaterial} onClose={() => setQrScanOpen(false)} />
+            )}
+
+            
+
+            {/* TAB 6. 教師・管理者一覧 */}
+            
+
+            {/* TAB 7. サクサク学習評価記録 (👑ミッション完了機能) */}
+                        
+
+          </div>
+        )}
+      </main>
+
+      {/* モーダル群 */}
+      {previewImageUrl && <MaterialImagePreviewModal imageUrl={previewImageUrl.url} title={previewImageUrl.title} onClose={() => setPreviewImageUrl(null)} />}
+
+      {/* モーダル: 教師・生徒個別手動登録モーダル */}
+      
+
+      
+
+      
+
+      {isNoticeListOpen && currentUser.role === 'student' && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="p-5 bg-amber-600 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">🔔 お知らせ一覧</h4>
+              <button type="button" onClick={() => setIsNoticeListOpen(false)} className="text-amber-100 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="p-4 space-y-2 overflow-y-auto">
+              {myMessages.length === 0 ? (
+                <p className="text-xs text-slate-500 font-bold p-4 text-center">お知らせはまだありません。</p>
+              ) : myMessages.map((message) => (
+                <button
+                  key={message.id}
+                  type="button"
+                  onClick={() => openNoticeDetail(message)}
+                  className={`w-full text-left p-4 rounded-2xl border cursor-pointer ${message.read_at ? 'bg-slate-50 border-slate-200' : 'bg-amber-50 border-amber-200'}`}
+                >
+                  <div className="flex justify-between gap-3 text-[10px] font-bold text-slate-500">
+                    <span>{formatSentAt(message.sent_at)}</span>
+                    <span>{message.read_at ? '既読' : '未読'}</span>
+                  </div>
+                  <p className="mt-1 text-xs font-extrabold text-slate-900 line-clamp-2">{message.body}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">送信者: {message.sender_name}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeNotice && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-[60]">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-5 bg-slate-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">お知らせ閲覧</h4>
+              <button type="button" onClick={() => setActiveNotice(null)} className="text-slate-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="p-6 space-y-3 text-xs">
+              <p className="font-bold text-slate-500">送信日時: {formatSentAt(activeNotice.sent_at)}</p>
+              <p className="font-bold text-slate-500">送信者: {activeNotice.sender_name}</p>
+              <p className="whitespace-pre-wrap text-sm font-bold text-slate-900 leading-relaxed">{activeNotice.body}</p>
+              <div className="text-right">
+                <button type="button" onClick={() => setActiveNotice(null)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl font-bold cursor-pointer">閉じる</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* サクサク学習記録モーダル (👑ミッション完了選択可能) */}
+      
+
+      
+
+      
+
+      
+
+      {/* モーダル: 教材の新規登録・編集 */}
+      
+
+      {studyComposer && (
+        <div className="fixed inset-0 z-[70] bg-slate-950/60 flex items-end justify-center">
+          <div className="bg-white w-full max-w-lg h-[100dvh] max-h-[100dvh] flex flex-col overflow-hidden">
+            <div className="shrink-0 px-3 pt-2 pb-1 flex items-start justify-between gap-2 border-b border-slate-100">
+              <div className="min-w-0">
+                <h4 className="font-black text-sm leading-tight">学習の記録方法を選んでね</h4>
+                <p className="text-[10px] font-bold text-slate-400">{formatFocusDate(composerDateKey)} {formatMeetingClock(studyComposer.startHour, studyComposer.startMinute)}–{formatMeetingClock(studyComposer.endHour, studyComposer.endMinute)}（{studyDurationMinutes(clampStudyRange(studyComposer))}分）</p>
+              </div>
+              <button type="button" onClick={() => { dismissStudyClock(); setStudyComposer(null); }} className="w-8 h-8 shrink-0 rounded-full bg-slate-100 font-bold cursor-pointer">✕</button>
+            </div>
+            <div className="shrink-0 px-3 py-1.5 space-y-1">
+              {([
+                ['timer', '⏱️ ①開始と終了を自分でタップ！'],
+                ['countdown', '⚡ ②時間を決めてタイムアタック！'],
+                ['manual', '📝 ③学習時間を直接記録'],
+              ] as const).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => { dismissStudyClock(); setRecordMode(id); }}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-xl text-[12px] font-black cursor-pointer border ${recordMode === id ? 'bg-sky-600 text-white border-sky-600' : 'bg-white text-slate-700 border-slate-200'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-3 py-1">
+              <SubjectTextPicker
+                compact
+                subject={newLogForm.subject}
+                materialId={newLogForm.material_id}
+                materials={materials}
+                myMaterials={myMaterials}
+                favoriteIds={favoriteMaterialIds}
+                onSubject={(subject) => setNewLogForm((prev) => ({ ...prev, subject, material_id: '' }))}
+                onMaterial={(materialId) => setNewLogForm((prev) => ({ ...prev, material_id: materialId }))}
+                onToggleFavorite={toggleFavoriteMaterial}
+              />
+            </div>
+            <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
+              <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} />
+              <MissionToggle checked={composerMission} onChange={setComposerMission} />
+              {recordMode === 'timer' && (
+                <div className="flex items-center gap-2">
+                  <div className="w-20 text-center text-2xl font-black font-mono">{formatClock(timerElapsedSec)}</div>
+                  {!timerRunning ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
+                        const startedAt = Date.now();
+                        setCountdownRunning(false);
+                        setCountdownFinished(false);
+                        setTimerStartedAt(startedAt);
+                        setTimerElapsedSec(0);
+                        setTimerRunning(true);
+                        if (studyComposer) {
+                          writeActiveStudyClock({
+                            userId: currentUser.id,
+                            mode: 'timer',
+                            running: true,
+                            startedAt,
+                            targetSec: 0,
+                            finished: false,
+                            subject: String(newLogForm.subject || ''),
+                            materialId: newLogForm.material_id,
+                            comment: newLogForm.comment,
+                            mission: composerMission,
+                            date: composerDateKey,
+                            composer: studyComposer,
+                          });
+                        }
+                      }}
+                      className="flex-1 py-3 rounded-2xl bg-sky-600 text-white font-black cursor-pointer"
+                    >
+                      スタート
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTimerRunning(false);
+                        clearActiveStudyClock();
+                        const seconds = elapsedSecondsSince(timerStartedAt);
+                        void saveStudentMinutes(Math.max(0, Math.round(seconds / 60)), newLogForm.material_id, newLogForm.comment, composerContext.current);
+                      }}
+                      className="flex-1 py-3 rounded-2xl bg-amber-500 text-white font-black cursor-pointer"
+                    >
+                      ストップ＆保存
+                    </button>
+                  )}
+                </div>
+              )}
+              {recordMode === 'countdown' && (
+                <div className="space-y-2">
+                  <label className="block text-[11px] font-black text-slate-600">
+                    学習の予定時間(分)
+                    <input
+                      type="number"
+                      min={1}
+                      value={countdownTargetMin}
+                      disabled={countdownRunning || countdownFinished}
+                      onChange={(event) => {
+                        const next = Math.max(1, Number(event.target.value) || 1);
+                        setCountdownTargetMin(next);
+                        if (!countdownRunning && !countdownFinished) setCountdownRemainingSec(next * 60);
+                      }}
+                      className="mt-1 w-full bg-slate-50 border border-slate-200 p-2 rounded-xl text-base font-black"
+                    />
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="w-20 text-center text-2xl font-black font-mono">{formatClock(countdownRemainingSec)}</div>
+                    {!countdownRunning && !countdownFinished ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
+                          const startedAt = Date.now();
+                          const targetSec = countdownTargetMin * 60;
+                          countdownSaveLock.current = false;
+                          timeAttackFinishedRef.current = 0;
+                          setTimerRunning(false);
+                          setCountdownFinished(false);
+                          setCountdownStartedAt(startedAt);
+                          setCountdownRemainingSec(targetSec);
+                          setCountdownRunning(true);
+                          if (studyComposer) {
+                            writeActiveStudyClock({
+                              userId: currentUser.id,
+                              mode: 'countdown',
+                              running: true,
+                              startedAt,
+                              targetSec,
+                              finished: false,
+                              subject: String(newLogForm.subject || ''),
+                              materialId: newLogForm.material_id,
+                              comment: newLogForm.comment,
+                              mission: composerMission,
+                              date: composerDateKey,
+                              composer: studyComposer,
+                            });
+                          }
+                        }}
+                        className="flex-1 py-3 rounded-2xl bg-sky-600 text-white font-black cursor-pointer"
+                      >
+                        スタート
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (countdownSaveLock.current) return;
+                          countdownSaveLock.current = true;
+                          const targetSec = countdownTargetMin * 60;
+                          const elapsedSec = countdownFinished
+                            ? targetSec
+                            : Math.min(targetSec, countdownStartedAt ? elapsedSecondsSince(countdownStartedAt) : Math.max(0, targetSec - countdownRemainingSec));
+                          setCountdownRunning(false);
+                          setCountdownFinished(false);
+                          clearActiveStudyClock();
+                          void saveStudentMinutes(Math.max(0, Math.round(elapsedSec / 60)), newLogForm.material_id, newLogForm.comment, composerContext.current).finally(() => {
+                            countdownSaveLock.current = false;
+                          });
+                        }}
+                        className="flex-1 py-3 rounded-2xl bg-amber-500 text-white font-black cursor-pointer"
+                      >
+                        {countdownFinished ? '記録する' : '途中停止して記録'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+              {recordMode === 'manual' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const span = composerContext.current ? studyDurationMinutes(clampStudyRange(composerContext.current)) : 0;
+                    void saveStudentMinutes(span, newLogForm.material_id, newLogForm.comment, composerContext.current);
+                  }}
+                  className="w-full py-3 rounded-2xl bg-sky-600 text-white font-black cursor-pointer"
+                >
+                  記録保存
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {editingLog && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4 z-[70]">
+          <div className="bg-white w-full max-w-lg rounded-3xl p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h4 className="font-black text-sm">記録を修正</h4>
+              <button type="button" onClick={() => setEditingLog(null)} className="w-8 h-8 rounded-full bg-slate-100 font-bold cursor-pointer">✕</button>
+            </div>
+            <SubjectTextPicker
+              subject={editSubject}
+              materialId={editMaterialId}
+              materials={materials}
+              myMaterials={myMaterials}
+              favoriteIds={favoriteMaterialIds}
+              onSubject={(subject) => {
+                setEditSubject(subject);
+                setEditMaterialId('');
+              }}
+              onMaterial={setEditMaterialId}
+              onToggleFavorite={toggleFavoriteMaterial}
+            />
+            <StudyTimeRangeFields value={editRange} onChange={setEditRange} />
+            <textarea
+              value={editComment}
+              onChange={(event) => setEditComment(event.target.value)}
+              rows={3}
+              placeholder="ページ・メモ"
+              className="w-full bg-slate-50 border border-slate-200 p-3 rounded-2xl text-sm font-bold"
+            />
+            <MissionToggle checked={editMission} onChange={setEditMission} />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => { void deleteStudentLog(editingLog); }} className="px-4 py-3 rounded-2xl bg-red-50 text-red-700 text-sm font-black cursor-pointer">削除</button>
+              <button type="button" onClick={() => { void saveStudentLogEdit(); }} className="flex-1 py-3 rounded-2xl bg-sky-600 text-white text-sm font-black cursor-pointer">保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      
+        <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur border-t border-slate-200 px-1 pt-1 pb-[max(0.4rem,env(safe-area-inset-bottom))] grid grid-cols-4">
+          {studentNav.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setActiveTab(item.id)}
+              className={`relative py-2 px-0.5 rounded-2xl text-[9px] leading-tight font-black cursor-pointer ${
+                activeTab === item.id ? 'text-sky-700' : 'text-slate-400'
+              }`}
+            >
+              <span className="block text-lg leading-none">{item.icon}</span>
+              <span className="block mt-1">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      
+
+      {crownBurst && (
+        <button
+          type="button"
+          onClick={() => setCrownBurst(null)}
+          className="fixed inset-0 z-[80] bg-slate-950/55 flex items-center justify-center p-6 cursor-pointer"
+        >
+          <span className="relative bg-white rounded-[2rem] px-8 py-10 text-center shadow-2xl max-w-sm w-full">
+            <span className="ylog-crown-glow absolute inset-6 rounded-full bg-amber-200" />
+            <span className="ylog-crown-pop relative block text-7xl">👑</span>
+            <span className="relative block mt-3 text-xl font-black text-amber-900">{crownBurst} 👑</span>
+          </span>
+        </button>
+      )}
+
+    </div>
+  );
+  }
+
+  const role = currentUser.role;
+  const isKnownAdmin = isKnownAdminIdentity(currentUser.id, currentUser.email);
+  const isTeacherOrAdmin =
+    role === 'admin' ||
+    role === 'teacher' ||
+    isKnownAdmin ||
+    isStaffRole(role, currentUser.id, currentUser.email);
+  const screens = {
+    admin: renderAdminScreen,
+    student: renderStudentScreen,
+  };
+
+  if (isTeacherOrAdmin) {
+    const staffRole: UserRole = role === 'teacher' && !isKnownAdmin ? 'teacher' : resolveAppRole(role, currentUser.id, currentUser.email);
+    const staffUser = staffRole === 'student' ? { ...currentUser, role: 'admin' as const } : (currentUser.role === staffRole ? currentUser : { ...currentUser, role: staffRole });
+    return (
+      <RoleScreenContext.Provider value={screens}>
+        <AdminView currentUser={staffUser} />
+      </RoleScreenContext.Provider>
+    );
+  }
+
+  return (
+    <RoleScreenContext.Provider value={screens}>
+      <StudentView currentUser={currentUser} />
+    </RoleScreenContext.Provider>
+  );
+}

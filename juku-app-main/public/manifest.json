@@ -1,0 +1,23 @@
+{
+  "name": "Y Log - サクサク学習記録",
+  "short_name": "Y Log",
+  "description": "中高生向け・高密度学習スケジューラー＆ログ管理",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#0284C7",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

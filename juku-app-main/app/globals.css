@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Y Log — base polish */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+/* Login logo safety: never blow up even before CSS hydration */
+.ylog-login-logo {
+  display: block;
+  width: 120px;
+  max-width: 120px;
+  height: auto;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+@keyframes ylog-crown-pop {
+  0% { transform: scale(0.15) rotate(-18deg); opacity: 0; }
+  55% { transform: scale(1.18) rotate(8deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+@keyframes ylog-crown-glow {
+  0% { transform: scale(0.6); opacity: 0.0; }
+  40% { opacity: 0.9; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+
+.ylog-crown-pop {
+  animation: ylog-crown-pop 0.7s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+.ylog-crown-glow {
+  animation: ylog-crown-glow 1.1s ease-out both;
+}
