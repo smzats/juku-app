@@ -1586,6 +1586,261 @@ function writeWeekPlans(userId: string, plans: Record<string, WeekPlanRecord>) {
   writeLocalJson(WEEK_PLAN_KEY, stored);
 }
 
+const WEEK_PLAN_UPDATED_AT_KEY = 'juku_week_plans_updated_at';
+
+type WeekPlanRemoteMode = 'doc-user' | 'doc-id' | 'rows' | 'user-column';
+
+let rememberedWeekPlanMode: WeekPlanRemoteMode | null = null;
+let weekPlanRemoteUnavailable = false;
+
+function readWeekPlanUpdatedAt(userId: string): string {
+  const stored = readLocalJson<Record<string, string>>(WEEK_PLAN_UPDATED_AT_KEY, {});
+  const value = stored[userId];
+  return typeof value === 'string' ? value : '';
+}
+
+function writeWeekPlanUpdatedAt(userId: string, updatedAt: string) {
+  const stored = readLocalJson<Record<string, string>>(WEEK_PLAN_UPDATED_AT_KEY, {});
+  stored[userId] = updatedAt;
+  writeLocalJson(WEEK_PLAN_UPDATED_AT_KEY, stored);
+}
+
+function coerceWeekPlan(value: unknown): WeekPlanRecord | null {
+  if (!value || typeof value !== 'object') return null;
+  const plan = value as Partial<WeekPlanRecord>;
+  if (!Array.isArray(plan.slots)) return null;
+  return sanitizeWeekPlan({
+    templateId: typeof plan.templateId === 'string' ? plan.templateId : undefined,
+    templateName: typeof plan.templateName === 'string' ? plan.templateName : '',
+    slots: plan.slots,
+    dateSnapshots: plan.dateSnapshots && typeof plan.dateSnapshots === 'object' ? plan.dateSnapshots : undefined,
+    is_customized: plan.is_customized === true,
+  });
+}
+
+function parseWeekPlanMap(value: unknown): Record<string, WeekPlanRecord> {
+  let source: unknown = value;
+  if (typeof value === 'string') {
+    try {
+      source = JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+  const cleaned: Record<string, WeekPlanRecord> = {};
+  Object.entries(source as Record<string, unknown>).forEach(([weekStart, plan]) => {
+    const next = coerceWeekPlan(plan);
+    if (next) cleaned[weekStart] = next;
+  });
+  return cleaned;
+}
+
+function weekPlanTableMissing(message: string): boolean {
+  return /Could not find the table|relation .* does not exist/i.test(message);
+}
+
+function weekPlanSchemaMissing(message: string): boolean {
+  return weekPlanTableMissing(message) || /schema cache|Could not find the '|column .* does not exist/i.test(message);
+}
+
+function remoteWeekPlanStamp(row: { updated_at?: unknown; week_plans_updated_at?: unknown } | null | undefined): string {
+  const value = row?.updated_at || row?.week_plans_updated_at || '';
+  return typeof value === 'string' ? value : '';
+}
+
+function plansFromWeekPlanRows(rows: any[]): { plans: Record<string, WeekPlanRecord>; updatedAt: string; mode: WeekPlanRemoteMode | null } {
+  const plans: Record<string, WeekPlanRecord> = {};
+  let updatedAt = '';
+  let mode: WeekPlanRemoteMode | null = null;
+  rows.forEach((row) => {
+    if (!row || typeof row !== 'object') return;
+    const stamp = remoteWeekPlanStamp(row);
+    if (stamp > updatedAt) updatedAt = stamp;
+    if (row.week_start && Array.isArray(row.slots)) {
+      mode = 'rows';
+      const next = coerceWeekPlan({
+        templateId: row.template_id || row.templateId,
+        templateName: row.template_name || row.templateName || '',
+        slots: row.slots,
+        dateSnapshots: row.date_snapshots || row.dateSnapshots,
+        is_customized: row.is_customized,
+      });
+      if (next) plans[String(row.week_start)] = next;
+      return;
+    }
+    if (row.plans != null) {
+      mode = row.user_id ? 'doc-user' : 'doc-id';
+      Object.assign(plans, parseWeekPlanMap(row.plans));
+    }
+  });
+  return { plans, updatedAt, mode };
+}
+
+function mergeWeekPlanSnapshot(
+  local: Record<string, WeekPlanRecord>,
+  localUpdatedAt: string,
+  remote: Record<string, WeekPlanRecord>,
+  remoteUpdatedAt: string,
+): { plans: Record<string, WeekPlanRecord>; updatedAt: string; push: boolean } {
+  const localTime = Date.parse(localUpdatedAt) || 0;
+  const remoteTime = Date.parse(remoteUpdatedAt) || 0;
+  const localCount = Object.keys(local).length;
+  const remoteCount = Object.keys(remote).length;
+  if (remoteCount === 0 && remoteTime === 0) {
+    return {
+      plans: local,
+      updatedAt: localUpdatedAt || new Date().toISOString(),
+      push: localCount > 0,
+    };
+  }
+  if (localTime > remoteTime) {
+    return { plans: local, updatedAt: localUpdatedAt, push: true };
+  }
+  if (remoteTime > localTime) {
+    return { plans: remote, updatedAt: remoteUpdatedAt, push: false };
+  }
+  const plans = { ...local, ...remote };
+  const push = Object.keys(local).some((key) => {
+    const right = remote[key];
+    if (!right) return true;
+    const left = local[key];
+    return left.templateName !== right.templateName
+      || left.templateId !== right.templateId
+      || Boolean(left.is_customized) !== Boolean(right.is_customized)
+      || !scheduleSlotsMatch(left.slots, right.slots);
+  });
+  return {
+    plans,
+    updatedAt: remoteUpdatedAt || localUpdatedAt || new Date().toISOString(),
+    push,
+  };
+}
+
+async function selectRemoteWeekPlans(
+  supabase: { from: (table: string) => any },
+  userId: string,
+): Promise<{ plans: Record<string, WeekPlanRecord>; updatedAt: string } | null> {
+  if (weekPlanRemoteUnavailable) return null;
+  if (rememberedWeekPlanMode !== 'user-column') {
+    const tableResult = await supabase.from('week_plans').select('*').eq('user_id', userId);
+    if (!tableResult.error) {
+      const parsed = plansFromWeekPlanRows(tableResult.data || []);
+      if (parsed.mode) rememberedWeekPlanMode = parsed.mode;
+      return { plans: parsed.plans, updatedAt: parsed.updatedAt };
+    }
+    const tableMessage = String(tableResult.error.message || '');
+    if (!weekPlanTableMissing(tableMessage)) return null;
+  }
+  const userResult = await supabase.from('users').select('week_plans, week_plans_updated_at').eq('id', userId).maybeSingle();
+  if (userResult.error) {
+    const message = String(userResult.error.message || '');
+    if (weekPlanSchemaMissing(message) && /week_plans_updated_at/i.test(message)) {
+      const retry = await supabase.from('users').select('week_plans').eq('id', userId).maybeSingle();
+      if (!retry.error && retry.data && 'week_plans' in retry.data) {
+        rememberedWeekPlanMode = 'user-column';
+        return {
+          plans: parseWeekPlanMap(retry.data.week_plans),
+          updatedAt: '',
+        };
+      }
+    }
+    return null;
+  }
+  if (!userResult.data) return { plans: {}, updatedAt: '' };
+  if (userResult.data.week_plans == null && !('week_plans' in userResult.data)) return null;
+  rememberedWeekPlanMode = 'user-column';
+  return {
+    plans: parseWeekPlanMap(userResult.data.week_plans),
+    updatedAt: remoteWeekPlanStamp(userResult.data),
+  };
+}
+
+async function writeWeekPlanMode(
+  supabase: { from: (table: string) => any },
+  mode: WeekPlanRemoteMode,
+  userId: string,
+  plans: Record<string, WeekPlanRecord>,
+  updatedAt: string,
+): Promise<string | null> {
+  if (mode === 'doc-user') {
+    const result = await supabase.from('week_plans').upsert(
+      [{ user_id: userId, plans, updated_at: updatedAt }],
+      { onConflict: 'user_id' },
+    );
+    return result.error ? String(result.error.message || 'upsert failed') : null;
+  }
+  if (mode === 'doc-id') {
+    const result = await supabase.from('week_plans').upsert(
+      [{ id: userId, user_id: userId, plans, updated_at: updatedAt }],
+      { onConflict: 'id' },
+    );
+    return result.error ? String(result.error.message || 'upsert failed') : null;
+  }
+  if (mode === 'user-column') {
+    let result = await supabase.from('users').update({
+      week_plans: plans,
+      week_plans_updated_at: updatedAt,
+    }).eq('id', userId);
+    if (result.error && /week_plans_updated_at/i.test(String(result.error.message || ''))) {
+      result = await supabase.from('users').update({ week_plans: plans }).eq('id', userId);
+    }
+    return result.error ? String(result.error.message || 'update failed') : null;
+  }
+  const rows = Object.entries(plans).map(([weekStart, plan]) => ({
+    id: `${userId}__${weekStart}`,
+    user_id: userId,
+    week_start: weekStart,
+    template_id: plan.templateId || null,
+    template_name: plan.templateName || '',
+    slots: plan.slots,
+    date_snapshots: plan.dateSnapshots || null,
+    is_customized: Boolean(plan.is_customized),
+    updated_at: updatedAt,
+  }));
+  if (rows.length > 0) {
+    const saved = await supabase.from('week_plans').upsert(rows, { onConflict: 'id' });
+    if (saved.error) return String(saved.error.message || 'upsert failed');
+  }
+  const keys = Object.keys(plans);
+  const removal = keys.length === 0
+    ? await supabase.from('week_plans').delete().eq('user_id', userId)
+    : await supabase.from('week_plans').delete().eq('user_id', userId).not('week_start', 'in', `(${keys.map((key) => `"${key}"`).join(',')})`);
+  if (removal.error && !weekPlanSchemaMissing(String(removal.error.message || ''))) {
+    return String(removal.error.message || 'delete failed');
+  }
+  return null;
+}
+
+async function upsertRemoteWeekPlans(
+  supabase: { from: (table: string) => any },
+  userId: string,
+  plans: Record<string, WeekPlanRecord>,
+  updatedAt: string,
+): Promise<void> {
+  if (weekPlanRemoteUnavailable) return;
+  const order: WeekPlanRemoteMode[] = ['doc-user', 'doc-id', 'rows', 'user-column'];
+  const attempts = rememberedWeekPlanMode
+    ? [rememberedWeekPlanMode, ...order.filter((mode) => mode !== rememberedWeekPlanMode)]
+    : order;
+  let schemaFailures = 0;
+  for (const mode of attempts) {
+    const error = await writeWeekPlanMode(supabase, mode, userId, plans, updatedAt);
+    if (!error) {
+      rememberedWeekPlanMode = mode;
+      weekPlanRemoteUnavailable = false;
+      return;
+    }
+    if (weekPlanSchemaMissing(error) || /ON CONFLICT|42P10|unique or exclusion/i.test(error)) {
+      schemaFailures += 1;
+      rememberedWeekPlanMode = null;
+      continue;
+    }
+    return;
+  }
+  if (schemaFailures >= attempts.length) weekPlanRemoteUnavailable = true;
+}
+
 function findMyHina(items: MyScheduleFolderItem[], slotNumber: number): MyScheduleFolderItem | undefined {
   return items.find((item) => item.hinaSlot === slotNumber)
     || items.find((item) => item.name === `Myひな型${slotNumber}` || item.name === `Myスケジュール${slotNumber}`);
@@ -1942,11 +2197,17 @@ function HourCategoryGrid({
                       if (slot.day !== day.id) return [];
                       const slice = sliceInHour(hour, studyRangeFromSlot(slot));
                       if (!slice) return [];
+                      const meta = categoryMeta(slot.category);
                       return [(
                         <span
                           key={slot.id}
                           className="pointer-events-none absolute inset-x-0"
-                          style={{ top: `${slice.top}%`, height: `${slice.height}%`, backgroundColor: categoryMeta(slot.category).color }}
+                          style={{
+                            top: `${slice.top}%`,
+                            height: `${slice.height}%`,
+                            backgroundColor: meta.color,
+                            boxShadow: `inset 0 0 0 1px ${meta.border}`,
+                          }}
                         />
                       )];
                     })}
@@ -2046,17 +2307,46 @@ function cloneScheduleSlots(slots: ScheduleSlot[]): ScheduleSlot[] {
 }
 
 function copyScheduleSlotsWithNewIds(slots: ScheduleSlot[]): ScheduleSlot[] {
-  return slots.map((slot) => ({
+  const stamp = Date.now();
+  return slots.map((slot, index) => ({
     ...slot,
-    id: `slot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    id: `slot_${stamp}_${index}_${Math.random().toString(36).slice(2, 8)}`,
   }));
 }
 
+function baseScheduleSlot(
+  day: WeekdayId,
+  startHour: number,
+  endHour: number,
+  category: ScheduleCategoryId,
+): ScheduleSlot {
+  return {
+    id: `base_${category}_${day}_${startHour}`,
+    day,
+    startHour,
+    startMinute: 0,
+    endHour,
+    endMinute: 0,
+    category,
+    title: SHORT_CATEGORY_LABEL[category],
+  };
+}
+
+const HINA_SCHOOL_DAYS: WeekdayId[] = ['mon', 'tue', 'wed', 'thu', 'fri'];
+
 function buildDefaultStaffTemplates(): Record<StaffScheduleTemplateId, ScheduleSlot[]> {
+  const school = HINA_SCHOOL_DAYS.map((day) => baseScheduleSlot(day, 8, 16, 'high_school'));
+  const club = [
+    ...HINA_SCHOOL_DAYS.map((day) => baseScheduleSlot(day, 16, 19, 'club')),
+    baseScheduleSlot('sat', 8, 12, 'club'),
+  ];
   return {
     plain: [],
-    high_school: [],
-    high_school_club: [],
+    high_school: school,
+    high_school_club: [
+      ...school.map((slot) => ({ ...slot, id: `${slot.id}_with_club` })),
+      ...club,
+    ],
   };
 }
 
@@ -2064,6 +2354,26 @@ function isStaffScheduleTemplates(value: unknown): value is Record<StaffSchedule
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   return Array.isArray(record.plain) && Array.isArray(record.high_school) && Array.isArray(record.high_school_club);
+}
+
+function slotsForHinaBase(
+  templateId: StaffScheduleTemplateId,
+  stored: Record<StaffScheduleTemplateId, ScheduleSlot[]>,
+): ScheduleSlot[] {
+  const builtin = buildDefaultStaffTemplates()[templateId];
+  const custom = stored?.[templateId];
+  if (templateId !== 'plain' && (!custom || custom.length === 0)) return builtin;
+  return custom && custom.length > 0 ? custom : builtin;
+}
+
+function resolveStaffTemplates(stored: unknown): Record<StaffScheduleTemplateId, ScheduleSlot[]> {
+  const builtin = buildDefaultStaffTemplates();
+  if (!isStaffScheduleTemplates(stored)) return builtin;
+  return {
+    plain: stored.plain,
+    high_school: stored.high_school.length > 0 ? stored.high_school : builtin.high_school,
+    high_school_club: stored.high_school_club.length > 0 ? stored.high_school_club : builtin.high_school_club,
+  };
 }
 
 function WeeklyTimetable({
@@ -2917,9 +3227,13 @@ export default function Page() {
   const [focusDateKey, setFocusDateKey] = useState<string>(() => todayDateKey());
   const [composerDateKey, setComposerDateKey] = useState<string>(() => todayDateKey());
   const [weekPlans, setWeekPlans] = useState<Record<string, WeekPlanRecord>>({});
+  const [weekPlansResolved, setWeekPlansResolved] = useState(false);
+  const [weekPlanRevision, setWeekPlanRevision] = useState(0);
   const [openHinaSlot, setOpenHinaSlot] = useState<number | null>(null);
   const [hinaDraftSlots, setHinaDraftSlots] = useState<ScheduleSlot[]>([]);
   const [hinaDraftTitle, setHinaDraftTitle] = useState('');
+  const [hinaBaseId, setHinaBaseId] = useState<StaffScheduleTemplateId | null>(null);
+  const [hinaApplySerial, setHinaApplySerial] = useState(0);
   const [weekPickerStart, setWeekPickerStart] = useState<string | null>(null);
   const [weekDraftSlots, setWeekDraftSlots] = useState<ScheduleSlot[]>([]);
   const [weekDraftTemplateId, setWeekDraftTemplateId] = useState<string | undefined>(undefined);
@@ -3175,7 +3489,8 @@ export default function Page() {
   }, [supabase]);
 
   const fetchAllData = useCallback(async (options?: { silent?: boolean }) => {
-    if (!options?.silent) setLoading(true);
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     setGlobalError(null);
     try {
       const uData = await fetchUsers();
@@ -3189,20 +3504,17 @@ export default function Page() {
       setLogs((prev) => (lData.length === 0 && prev.length > 0 ? prev : lData));
       setMessages(await fetchStudentMessages());
       setConnectionError(null);
-      if (!options?.silent) addNotification('success', '最新データとの同期が完了いたしました。');
     } catch (err: any) {
       setConnectionError('通信エラーが発生しました');
-      if (!options?.silent) {
-        setGlobalError(err.message || '通信エラーが発生しました');
-        addNotification('error', '通信エラーが発生しました');
-      }
+      setGlobalError(err.message || '通信エラーが発生しました');
+      if (!silent) addNotification('error', '通信エラーが発生しました');
     } finally {
-      if (!options?.silent) setLoading(false);
+      setLoading(false);
     }
   }, [fetchUsers, fetchMaterials, fetchLogs, fetchStudentMessages, addNotification]);
 
   useEffect(() => {
-    fetchAllData();
+    void fetchAllData({ silent: true });
   }, [fetchAllData]);
 
   useEffect(() => {
@@ -3251,7 +3563,7 @@ export default function Page() {
 
   useEffect(() => {
     const storedTemplates = readLocalJson<unknown>(SCHEDULE_TEMPLATE_STORAGE_KEY, null);
-    const templates = isStaffScheduleTemplates(storedTemplates) ? storedTemplates : buildDefaultStaffTemplates();
+    const templates = resolveStaffTemplates(storedTemplates);
     setStaffTemplates(templates);
 
     if (!currentUser) return;
@@ -3352,7 +3664,7 @@ export default function Page() {
       );
       setIsUserModalOpen(false);
       setNewUserForm(blankUserForm());
-      if (!dbError) await fetchAllData();
+      if (!dbError) await fetchAllData({ silent: true });
     } catch (err: any) {
       alert(`ユーザー登録エラー: ${err.message}`);
     }
@@ -3749,12 +4061,66 @@ export default function Page() {
   const handleLogout = () => {
     clearAppSession();
     setCurrentUser(null);
+    setWeekPlans({});
+    setWeekPlansResolved(false);
+    loadedWeekPlanUser.current = '';
     setLoginInputId('');
     setLoginPassword('');
     setLoginPasswordVisible(false);
     void supabase.auth.signOut();
     addNotification('info', 'ログアウトいたしました。');
   };
+
+  const weekPlanSaveChain = useRef(Promise.resolve());
+  const weekPlanWriteVersion = useRef<Record<string, number>>({});
+  const loadedWeekPlanUser = useRef('');
+
+  const persistWeekPlans = useCallback((userId: string, plans: Record<string, WeekPlanRecord>) => {
+    const updatedAt = new Date().toISOString();
+    weekPlanWriteVersion.current[userId] = (weekPlanWriteVersion.current[userId] || 0) + 1;
+    writeWeekPlans(userId, plans);
+    writeWeekPlanUpdatedAt(userId, updatedAt);
+    setWeekPlans(plans);
+    setWeekPlansResolved(true);
+    setWeekPlanRevision((value) => value + 1);
+    weekPlanSaveChain.current = weekPlanSaveChain.current
+      .then(() => upsertRemoteWeekPlans(supabase, userId, plans, updatedAt))
+      .catch(() => undefined);
+  }, [supabase]);
+
+  const refreshWeekPlans = useCallback(async (userId: string, applyToScreen: boolean) => {
+    const local = readWeekPlans(userId);
+    const localUpdatedAt = readWeekPlanUpdatedAt(userId);
+    const seenVersion = weekPlanWriteVersion.current[userId] || 0;
+    if (applyToScreen && Object.keys(local).length > 0) {
+      setWeekPlans(local);
+      setWeekPlansResolved(true);
+    }
+    const remote = await selectRemoteWeekPlans(supabase, userId);
+    if ((weekPlanWriteVersion.current[userId] || 0) !== seenVersion) return;
+    if (!remote) {
+      if (applyToScreen) {
+        setWeekPlans(local);
+        setWeekPlansResolved(true);
+      }
+      return;
+    }
+    const merged = mergeWeekPlanSnapshot(local, localUpdatedAt, remote.plans, remote.updatedAt);
+    if ((weekPlanWriteVersion.current[userId] || 0) !== seenVersion) return;
+    writeWeekPlans(userId, merged.plans);
+    writeWeekPlanUpdatedAt(userId, merged.updatedAt);
+    if (applyToScreen) {
+      setWeekPlans(merged.plans);
+      setWeekPlansResolved(true);
+    }
+    setWeekPlanRevision((value) => value + 1);
+    if (!merged.push) return;
+    const pushedAt = merged.updatedAt || new Date().toISOString();
+    writeWeekPlanUpdatedAt(userId, pushedAt);
+    weekPlanSaveChain.current = weekPlanSaveChain.current
+      .then(() => upsertRemoteWeekPlans(supabase, userId, merged.plans, pushedAt))
+      .catch(() => undefined);
+  }, [supabase]);
 
   const persistMySchedules = (userId: string, items: MyScheduleFolderItem[]) => {
     const all = readLocalJson<Record<string, MyScheduleFolderItem[]>>(MY_SCHEDULE_STORAGE_KEY, {});
@@ -3765,7 +4131,7 @@ export default function Page() {
 
   const handleSelectStaffTemplate = (templateId: StaffScheduleTemplateId) => {
     setSelectedStaffTemplateId(templateId);
-    setScheduleSlots(cloneScheduleSlots(staffTemplates[templateId]));
+    setScheduleSlots(cloneScheduleSlots(slotsForHinaBase(templateId, staffTemplates)));
   };
 
   const handleSaveStaffTemplate = () => {
@@ -3781,9 +4147,15 @@ export default function Page() {
 
   const handleLoadTemplateForStudent = (templateId: StaffScheduleTemplateId) => {
     setSelectedMyScheduleId(null);
-    setScheduleSlots(copyScheduleSlotsWithNewIds(staffTemplates[templateId]));
+    setScheduleSlots(copyScheduleSlotsWithNewIds(slotsForHinaBase(templateId, staffTemplates)));
     const name = STAFF_SCHEDULE_TEMPLATES.find((item) => item.id === templateId)?.name || 'ひな形';
     addNotification('info', `「${name}」を読み込みました。`);
+  };
+
+  const handleApplyHinaBase = (templateId: StaffScheduleTemplateId) => {
+    setHinaBaseId(templateId);
+    setHinaApplySerial((value) => value + 1);
+    setHinaDraftSlots(copyScheduleSlotsWithNewIds(slotsForHinaBase(templateId, staffTemplates)));
   };
 
   const handleOpenMySchedule = (item: MyScheduleFolderItem) => {
@@ -3865,8 +4237,7 @@ export default function Page() {
       }
       nextPlans[weekStart] = writeWeekFromTemplate(plan, weekStart, id, name, savedSlots, true);
     });
-    setWeekPlans(nextPlans);
-    writeWeekPlans(currentUser.id, nextPlans);
+    persistWeekPlans(currentUser.id, nextPlans);
     addNotification(
       'success',
       keptCustomWeeks > 0
@@ -3889,8 +4260,7 @@ export default function Page() {
     }
     const record = writeWeekFromTemplate(existing, weekStart, item.id, templateName, item.slots, Boolean(existing));
     const next = { ...weekPlans, [weekStart]: record };
-    setWeekPlans(next);
-    writeWeekPlans(currentUser.id, next);
+    persistWeekPlans(currentUser.id, next);
     setWeekPickerStart(null);
     addNotification('success', `${formatWeekRange(weekStart)} に「${templateName}」を登録しました。`);
   };
@@ -3931,8 +4301,7 @@ export default function Page() {
     const templateName = weekDraftTemplateName || (baseItem ? hinaDisplayName(baseItem, baseItem.hinaSlot || 1) : '');
     const record = writeCustomizedWeek(existing, weekStart, weekDraftTemplateId, templateName, weekDraftSlots);
     const next = { ...weekPlans, [weekStart]: record };
-    setWeekPlans(next);
-    writeWeekPlans(currentUser.id, next);
+    persistWeekPlans(currentUser.id, next);
     setWeekPickerStart(null);
     addNotification(
       'success',
@@ -4061,7 +4430,7 @@ export default function Page() {
       monthLabel: `${year}年${month}月`,
       weekLabel: formatWeekRange(meetingWeekStart),
     };
-  }, [logs, meetingStudentId, meetingWeekStart, logSlots, materials]);
+  }, [logs, meetingStudentId, meetingWeekStart, logSlots, materials, weekPlanRevision]);
 
   const progressBoard = useMemo(() => {
     const viewerRole = currentUser ? resolveAppRole(currentUser.role, currentUser.id, currentUser.email) : 'student';
@@ -4344,6 +4713,8 @@ export default function Page() {
     const storedPlans = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {})[signedIn.id];
     const plans = readWeekPlans(signedIn.id);
     setWeekPlans(plans);
+    setWeekPlansResolved(Object.keys(plans).length > 0);
+    loadedWeekPlanUser.current = signedIn.id;
     const storedHasSeed = Boolean(storedPlans && Object.values(storedPlans).some((plan) => (
       (plan?.slots || []).some((slot) => SEEDED_JUKU_SLOT_IDS.has(String(slot.id)))
       || Object.values(plan?.dateSnapshots || {}).some((list) => (list || []).some((slot) => SEEDED_JUKU_SLOT_IDS.has(String(slot.id))))
@@ -4351,6 +4722,24 @@ export default function Page() {
     if (storedHasSeed) writeWeekPlans(signedIn.id, plans);
     setNewLogForm((prev) => (prev.user_id === signedIn.id ? prev : { ...prev, user_id: signedIn.id }));
   }, [currentUser?.id, currentUser?.role]);
+
+  useEffect(() => {
+    const signedIn = currentUser;
+    if (!signedIn || isStaffRole(signedIn.role, signedIn.id, signedIn.email) || resolveAppRole(signedIn.role, signedIn.id, signedIn.email) !== 'student') return;
+    const userChanged = loadedWeekPlanUser.current !== signedIn.id;
+    if (userChanged) {
+      loadedWeekPlanUser.current = signedIn.id;
+      const local = readWeekPlans(signedIn.id);
+      setWeekPlans(local);
+      setWeekPlansResolved(Object.keys(local).length > 0);
+    }
+    void refreshWeekPlans(signedIn.id, true);
+  }, [activeTab, currentUser?.id, currentUser?.role, refreshWeekPlans]);
+
+  useEffect(() => {
+    if (!currentUser || !isStaffRole(currentUser.role, currentUser.id, currentUser.email) || !meetingStudentId) return;
+    void refreshWeekPlans(meetingStudentId, false);
+  }, [meetingStudentId, currentUser?.id, currentUser?.role, refreshWeekPlans]);
 
   useEffect(() => {
     if (!currentUser || !isStaffRole(currentUser.role, currentUser.id, currentUser.email)) return;
@@ -4750,7 +5139,7 @@ export default function Page() {
         text: dbError ? `一覧へ反映しました。データベース保存は未完了です: ${dbError}` : '登録が完了いたしました！',
       });
       addNotification(dbError ? 'warning' : 'success', `${csvParsedPreview.length} 名の${csvImportKind === 'student' ? '生徒' : '教師'}データを登録いたしました。`);
-      if (!dbError) await fetchAllData();
+      if (!dbError) await fetchAllData({ silent: true });
       setTimeout(() => {
         setIsStudentCsvModalOpen(false);
         setIsTeacherCsvModalOpen(false);
@@ -7547,7 +7936,7 @@ export default function Page() {
                   </div>
                   <button type="button" onClick={() => setFocusDateKey((key) => shiftDateKey(key, 1))} className="w-9 h-7 rounded-xl bg-white border border-slate-200 text-sm font-black cursor-pointer">▶</button>
                 </div>
-                {[focusDateKey, shiftDateKey(focusDateKey, 1)].some((dateKey) => !weekPlans[weekStartKey(dateKey)]) && (
+                {weekPlansResolved && Object.keys(weekPlans).length === 0 && (
                   <button
                     type="button"
                     onClick={() => setActiveTab('logs')}
@@ -7605,8 +7994,7 @@ export default function Page() {
                                   } else {
                                     next[weekStart] = { ...plan, slots, dateSnapshots: snapshots, is_customized: true };
                                   }
-                                  setWeekPlans(next);
-                                  writeWeekPlans(currentUser.id, next);
+                                  persistWeekPlans(currentUser.id, next);
                                 }}
                                 onEmpty={() => {
                                   const endHour = Math.min(hour + 1, 25);
@@ -7648,6 +8036,7 @@ export default function Page() {
                               return;
                             }
                             setOpenHinaSlot(slotNumber);
+                            setHinaBaseId(null);
                             setHinaDraftSlots(cloneScheduleSlots(saved?.slots || []));
                             setHinaDraftTitle(saved ? hinaDisplayName(saved, slotNumber) : `Myひな型${slotNumber}`);
                           }}
@@ -7679,8 +8068,12 @@ export default function Page() {
                                   <button
                                     key={base.id}
                                     type="button"
-                                    onClick={() => setHinaDraftSlots(copyScheduleSlotsWithNewIds(staffTemplates[base.id]))}
-                                    className="py-2 rounded-xl border border-slate-200 bg-slate-50 text-[11px] font-black cursor-pointer"
+                                    onClick={() => handleApplyHinaBase(base.id)}
+                                    className={`py-2 rounded-xl border text-[11px] font-black cursor-pointer ${
+                                      hinaBaseId === base.id
+                                        ? 'bg-sky-600 text-white border-sky-600'
+                                        : 'border-slate-200 bg-slate-50 text-slate-800'
+                                    }`}
                                   >
                                     {base.label}
                                   </button>
@@ -7691,6 +8084,7 @@ export default function Page() {
                               <p className="shrink-0 text-xs font-black text-slate-700">② ひな型をカスタマイズしてね</p>
                               <p className="shrink-0 text-[10px] font-bold text-slate-400 mb-1">マスをタップすると 高校 → 部活 → 活動 → 塾 → 他 → なし。時刻表示をタップすると開始・終了を5分単位で変更できます。</p>
                               <HourCategoryGrid
+                                key={`hina-${slotNumber}-${hinaApplySerial}`}
                                 slots={hinaDraftSlots}
                                 onPaint={(day, hour, category) => setHinaDraftSlots((prev) => paintHourCategory(prev, day, hour, category))}
                                 onCommit={setHinaDraftSlots}
