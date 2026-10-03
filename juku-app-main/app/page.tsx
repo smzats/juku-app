@@ -195,24 +195,6 @@ function subjectBadgeClass(subject: string): string {
     : 'bg-slate-100 text-slate-800 border border-slate-300 font-bold';
 }
 
-const MATERIAL_CACHE_KEY = 'juku_materials_cache';
-
-function readMaterialCache(): Record<string, Material> {
-  return readLocalJson<Record<string, Material>>(MATERIAL_CACHE_KEY, {});
-}
-
-function cacheMaterial(material: Material) {
-  const all = readMaterialCache();
-  all[material.id] = material;
-  writeLocalJson(MATERIAL_CACHE_KEY, all);
-}
-
-function uncacheMaterial(id: string) {
-  const all = readMaterialCache();
-  delete all[id];
-  writeLocalJson(MATERIAL_CACHE_KEY, all);
-}
-
 function materialTitleKey(title: string): string {
   return title.trim();
 }
@@ -247,7 +229,7 @@ function maxDisplayOrder(list: Material[], subject: SubjectType): number {
 function createDisplayOrderAllocator(existingList: Material[]) {
   const cursor = new Map<SubjectType, number>();
   return (subject: SubjectType, existing: Material | undefined): number => {
-    if (existing && existing.subject === subject) return existing.display_order;
+    if (existing && existing.subject === subject && existing.display_order != null) return existing.display_order;
     if (!cursor.has(subject)) cursor.set(subject, maxDisplayOrder(existingList, subject));
     const next = (cursor.get(subject) ?? 0) + 1;
     cursor.set(subject, next);
@@ -259,8 +241,12 @@ function byDisplayOrder(list: readonly Material[]): Material[] {
   return list
     .map((item, index) => ({ item, index }))
     .sort((a, b) => {
-      const orderDiff = a.item.display_order - b.item.display_order;
-      if (orderDiff !== 0) return orderDiff;
+      const ao = a.item.display_order;
+      const bo = b.item.display_order;
+      if (ao == null && bo == null) return a.index - b.index;
+      if (ao == null) return 1;
+      if (bo == null) return -1;
+      if (ao !== bo) return ao - bo;
       return a.index - b.index;
     })
     .map(({ item }) => item);
@@ -318,8 +304,12 @@ function materialWritePayload(
     created_by: saved.created_by,
     color: saved.color || SUBJECT_COLOR_MAP[saved.subject].hexCode,
     difficulty: saved.difficulty || 'standard',
-    display_order: saved.display_order,
   };
+  if (saved.display_order != null) {
+    payload.display_order = saved.display_order;
+    payload.order_index = saved.display_order;
+    payload.sort_order = saved.display_order;
+  }
   if (options.includeImage) payload.image_url = saved.image_url || null;
   if (options.includeDescription) payload.description = saved.description ?? null;
   return payload;
@@ -364,6 +354,150 @@ async function writeMaterialRow(
     modeIndex += 1;
   }
   return lastMessage || '教材の保存に失敗しました';
+}
+
+async function updateMaterialOrder(supabase: any, id: string, order: number): Promise<string | null> {
+  const body: Record<string, unknown> = {
+    order_index: order,
+    sort_order: order,
+    display_order: order,
+  };
+  let lastMessage = '';
+  for (let attempt = 0; attempt < 8 && Object.keys(body).length > 0; attempt += 1) {
+    const result = await supabase.from('materials').update(body).eq('id', id);
+    if (!result.error) return null;
+    lastMessage = result.error.message || lastMessage;
+    const missing = missingMaterialsColumn(lastMessage);
+    if (missing && Object.prototype.hasOwnProperty.call(body, missing)) {
+      delete body[missing];
+      continue;
+    }
+    return lastMessage || '表示順の保存に失敗しました';
+  }
+  return lastMessage || '表示順の保存に失敗しました';
+}
+
+function materialOrderFromRow(row: any): number | null {
+  for (const key of ['order_index', 'sort_order', 'display_order']) {
+    const order = readDisplayOrder(row?.[key]);
+    if (order != null) return order;
+  }
+  return null;
+}
+
+function isMissingFavoriteStore(message: string): boolean {
+  return /user_favorites/i.test(message) && /does not exist|schema cache|Could not find the table|not found/i.test(message);
+}
+
+function reportMaterialError(error: unknown, fallback: string) {
+  const message = error instanceof Error
+    ? error.message
+    : String((error as { message?: string } | null)?.message || fallback);
+  console.error(message, error);
+  alert(message || fallback);
+}
+
+async function readMaterialPages(
+  supabase: { from: (table: string) => any },
+  orderColumn: string,
+  favoriteFirst: boolean,
+): Promise<{ data: any[]; error: { message?: string } | null }> {
+  const pageSize = 1000;
+  const rows: any[] = [];
+  for (let from = 0; from < 20000; from += pageSize) {
+    let query = supabase.from('materials').select('*');
+    if (favoriteFirst) query = query.order('is_favorite', { ascending: false });
+    query = query.order(orderColumn, { ascending: true });
+    const result = await query.range(from, from + pageSize - 1);
+    if (result.error) return { data: [], error: result.error };
+    const chunk = result.data || [];
+    rows.push(...chunk);
+    if (chunk.length < pageSize) break;
+  }
+  return { data: rows, error: null };
+}
+
+async function selectMaterialsOrdered(
+  supabase: { from: (table: string) => any },
+  studentView: boolean,
+): Promise<{ data: any[]; error: { message?: string } | null }> {
+  const orderColumns = ['order_index', 'sort_order', 'display_order'];
+  let lastError: { message?: string } | null = null;
+  for (const column of orderColumns) {
+    const ordered = await readMaterialPages(supabase, column, studentView);
+    if (!ordered.error) return ordered;
+    lastError = ordered.error;
+    const missing = missingMaterialsColumn(ordered.error.message || '');
+    if (studentView && (missing === 'is_favorite' || /is_favorite/i.test(ordered.error.message || ''))) {
+      const plain = await readMaterialPages(supabase, column, false);
+      if (!plain.error) return plain;
+      lastError = plain.error;
+      if (missingMaterialsColumn(plain.error.message || '') === column) continue;
+      return plain;
+    }
+    if (missing === column) continue;
+    return ordered;
+  }
+  return { data: [], error: lastError };
+}
+
+async function readUserFavoriteIds(
+  supabase: { from: (table: string) => any },
+  userId: string,
+): Promise<Set<string> | null> {
+  let lastError: { message?: string } | null = null;
+  for (const column of ['user_id', 'student_id']) {
+    const result = await supabase.from('user_favorites').select('*').eq(column, userId);
+    if (!result.error) {
+      const ids = (result.data || []).flatMap((row: any) => {
+        const materialId = String(row?.material_id ?? row?.materialId ?? '').trim();
+        return materialId ? [materialId] : [];
+      });
+      return new Set(ids);
+    }
+    lastError = result.error;
+    const missing = missingMaterialsColumn(result.error.message || '');
+    if (missing === column) continue;
+    if (isMissingFavoriteStore(result.error.message || '')) return null;
+    reportMaterialError(result.error, 'お気に入りの取得に失敗しました');
+    return null;
+  }
+  if (lastError && !isMissingFavoriteStore(lastError.message || '')) {
+    reportMaterialError(lastError, 'お気に入りの取得に失敗しました');
+  }
+  return null;
+}
+
+async function saveMaterialFavorite(
+  supabase: { from: (table: string) => any },
+  userId: string,
+  materialId: string,
+  next: boolean,
+): Promise<void> {
+  const messages: string[] = [];
+  let saved = false;
+  for (const column of ['user_id', 'student_id']) {
+    const result = next
+      ? await supabase.from('user_favorites').insert([{ [column]: userId, material_id: materialId }])
+      : await supabase.from('user_favorites').delete().eq(column, userId).eq('material_id', materialId);
+    if (!result.error || /duplicate key|already exists/i.test(result.error.message || '')) {
+      saved = true;
+      break;
+    }
+    const missing = missingMaterialsColumn(result.error.message || '');
+    if (missing === column) continue;
+    if (isMissingFavoriteStore(result.error.message || '')) break;
+    messages.push(result.error.message || 'お気に入りの保存に失敗しました');
+    break;
+  }
+  const updated = await supabase.from('materials').update({ is_favorite: next }).eq('id', materialId);
+  if (!updated.error) {
+    saved = true;
+  } else if (missingMaterialsColumn(updated.error.message || '') !== 'is_favorite') {
+    messages.push(updated.error.message || 'お気に入りの保存に失敗しました');
+  }
+  if (messages.length > 0) throw new Error(messages[0]);
+  if (!saved) throw new Error('お気に入りの保存に失敗しました');
 }
 
 async function selectAllRows(
@@ -800,7 +934,8 @@ export interface Material {
   description?: string;
   color?: string | null;
   created_by: string;
-  display_order: number;
+  display_order: number | null;
+  is_favorite?: boolean;
 }
 
 export interface StudyLog {
@@ -882,7 +1017,6 @@ const WEEKLY_GOAL_STORAGE_KEY = 'juku_weekly_goals';
 const PENDING_STUDY_LOGS_KEY = 'juku_pending_study_logs';
 const STUDY_LOG_OVERRIDES_KEY = 'juku_study_log_overrides';
 const DELETED_STUDY_LOGS_KEY = 'juku_deleted_study_log_ids';
-const FAVORITE_MATERIALS_KEY = 'juku_favorite_materials';
 const MY_MATERIALS_KEY = 'juku_my_materials';
 const COUNTDOWN_MINUTE_CHIPS = [15, 30, 45, 60, 90] as const;
 const SCHEDULE_HOUR_HEIGHT = 36;
@@ -1000,18 +1134,6 @@ function readDeletedStudyLogIds(): string[] {
 
 function writeDeletedStudyLogIds(ids: string[]) {
   writeStudyRecordJson(DELETED_STUDY_LOGS_KEY, ids);
-}
-
-function readFavoriteMaterialIds(userId: string): string[] {
-  const stored = readLocalJson<Record<string, string[]>>(FAVORITE_MATERIALS_KEY, {});
-  const ids = stored[userId];
-  return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && id) : [];
-}
-
-function writeFavoriteMaterialIds(userId: string, ids: string[]) {
-  const stored = readLocalJson<Record<string, string[]>>(FAVORITE_MATERIALS_KEY, {});
-  stored[userId] = ids;
-  writeLocalJson(FAVORITE_MATERIALS_KEY, stored);
 }
 
 interface MyMaterialItem {
@@ -1468,11 +1590,7 @@ function meetingMaterialInfo(materialId: string, userId: string, catalog: Materi
   if (master?.title && masterSubject) return { title: master.title, subject: masterSubject };
   const mine = readMyMaterials(userId).find((item) => item.id === materialId);
   if (mine) return { title: mine.title, subject: mine.subject };
-  const cached = readMaterialCache()[materialId];
-  const cachedSubject = subjectFromInput(cached?.subject);
-  if (cached?.title && cachedSubject) return { title: cached.title, subject: cachedSubject };
   if (master?.title) return { title: master.title, subject: 'その他' };
-  if (cached?.title) return { title: cached.title, subject: 'その他' };
   return { title: '学習', subject: 'その他' };
 }
 
@@ -3094,9 +3212,17 @@ function SubjectTextPicker({
   compact?: boolean;
 }) {
   const mine = isSubjectType(subject) ? myMaterials.filter((item) => item.subject === subject && item.title.trim()) : [];
-  const catalog = isSubjectType(subject)
+  const catalog = (isSubjectType(subject)
     ? materialsForSubject(materials, subject).filter((item) => item.title.trim())
-    : [];
+    : []
+  ).slice().sort((a, b) => {
+    const fav = Number(favoriteIds.includes(b.id)) - Number(favoriteIds.includes(a.id));
+    if (fav !== 0) return fav;
+    if (a.display_order == null && b.display_order == null) return 0;
+    if (a.display_order == null) return 1;
+    if (b.display_order == null) return -1;
+    return a.display_order - b.display_order;
+  });
   const pad = compact ? 'px-2 py-1.5 text-[11px]' : 'px-3 py-3 text-sm';
   return (
     <div className={compact ? 'space-y-1.5' : 'space-y-3'}>
@@ -3265,7 +3391,10 @@ export default function Page() {
   const [weeklyGoalMinutes, setWeeklyGoalMinutes] = useState<number>(0);
   const [noticesExpanded, setNoticesExpanded] = useState<boolean>(false);
   const [crownBurst, setCrownBurst] = useState<string | null>(null);
-  const [favoriteMaterialIds, setFavoriteMaterialIds] = useState<string[]>([]);
+  const favoriteMaterialIds = useMemo(
+    () => materials.filter((item) => item.is_favorite).map((item) => item.id),
+    [materials],
+  );
   const [myMaterials, setMyMaterials] = useState<MyMaterialItem[]>([]);
   const [myMaterialTitle, setMyMaterialTitle] = useState('');
   const [myMaterialSubject, setMyMaterialSubject] = useState<SubjectType>('英語');
@@ -3468,47 +3597,63 @@ export default function Page() {
     }) as User[];
   }, [supabase]);
 
+  const materialViewerRef = useRef<User | null>(null);
+  materialViewerRef.current = currentUser;
+
   const fetchMaterials = useCallback(async (): Promise<Material[]> => {
-    const materialFrom = (id: string, title: string, subject: SubjectType, row?: any): Material => {
-      const storedOrder = readDisplayOrder(row?.display_order);
-      return {
-        id,
-        title,
-        subject,
-        difficulty: row?.difficulty || 'standard',
-        created_by: String(row?.created_by || ''),
-        image_url: row?.image_url || null,
-        description: row?.description || undefined,
-        color: SUBJECT_COLOR_MAP[subject].hexCode,
-        display_order: storedOrder ?? Number.MAX_SAFE_INTEGER,
-      };
-    };
-
-    const loaded = await selectAllRows(supabase, 'materials');
-    if (loaded.error) {
-      const cache = readMaterialCache();
-      return Object.values(cache).flatMap((item) => {
-        if (!item?.id || !item.title) return [];
-        const subject = subjectForMasterRow(item as unknown as Record<string, unknown>, item.title, null);
-        return [materialFrom(item.id, item.title, subject, item)];
+    const viewer = materialViewerRef.current || readAppSession();
+    const studentView = Boolean(viewer && resolveAppRole(viewer.role, viewer.id, viewer.email) === 'student');
+    try {
+      const loaded = await selectMaterialsOrdered(supabase, studentView);
+      if (loaded.error) {
+        reportMaterialError(loaded.error, '教材の取得に失敗しました');
+        return [];
+      }
+      const favoriteIds = studentView && viewer ? await readUserFavoriteIds(supabase, viewer.id) : null;
+      const list: Material[] = [];
+      loaded.data.forEach((row: any) => {
+        const id = String(row.id ?? row.material_id ?? '').trim();
+        const title = String(row.title ?? row.name ?? row.material_name ?? row.material_title ?? '').trim();
+        if (!id || !title) return;
+        const storedSubject = exactSubjectFromRecord(row);
+        const hasSubjectValue = ['subject', 'category', '教科', 'subject_name', 'kamoku'].some((key) => {
+          const value = row?.[key];
+          return value != null && String(value).trim() !== '';
+        });
+        const subject = storedSubject || (hasSubjectValue ? 'その他' : (subjectFromMaterialTitle(title) || 'その他'));
+        const storedFavorite = row?.is_favorite === true || row?.is_favorite === 1 || row?.is_favorite === 'true' || row?.is_favorite === 't';
+        list.push({
+          id,
+          title,
+          subject,
+          difficulty: row?.difficulty || 'standard',
+          created_by: String(row?.created_by || ''),
+          image_url: row?.image_url || null,
+          description: row?.description || undefined,
+          color: SUBJECT_COLOR_MAP[subject].hexCode,
+          display_order: materialOrderFromRow(row),
+          is_favorite: favoriteIds ? favoriteIds.has(id) : storedFavorite,
+        });
       });
+      if (!studentView) return list;
+      return [...list].sort((a, b) => {
+        const fav = Number(Boolean(b.is_favorite)) - Number(Boolean(a.is_favorite));
+        if (fav !== 0) return fav;
+        if (a.display_order == null && b.display_order == null) return 0;
+        if (a.display_order == null) return 1;
+        if (b.display_order == null) return -1;
+        return a.display_order - b.display_order;
+      });
+    } catch (error) {
+      reportMaterialError(error, '教材の取得に失敗しました');
+      return [];
     }
-
-    const list: Material[] = [];
-    loaded.data.forEach((row: any) => {
-      const id = String(row.id ?? row.material_id ?? '').trim();
-      const title = String(row.title ?? row.name ?? row.material_name ?? row.material_title ?? '').trim();
-      if (!id || !title) return;
-      const storedSubject = exactSubjectFromRecord(row);
-      const hasSubjectValue = ['subject', 'category', '教科', 'subject_name', 'kamoku'].some((key) => {
-        const value = row?.[key];
-        return value != null && String(value).trim() !== '';
-      });
-      const subject = storedSubject || (hasSubjectValue ? 'その他' : (subjectFromMaterialTitle(title) || 'その他'));
-      list.push(materialFrom(id, title, subject, row));
-    });
-    return list;
   }, [supabase]);
+
+  const reloadMaterials = useCallback(async () => {
+    const list = await fetchMaterials();
+    setMaterials(list);
+  }, [fetchMaterials]);
 
   const fetchStudentMessages = useCallback(async (): Promise<StudentMessage[]> => {
     const local = readLocalMessages();
@@ -3609,6 +3754,16 @@ export default function Page() {
   useEffect(() => {
     void fetchAllData({ silent: true });
   }, [fetchAllData]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    let cancelled = false;
+    void (async () => {
+      const list = await fetchMaterials();
+      if (!cancelled) setMaterials(list);
+    })();
+    return () => { cancelled = true; };
+  }, [currentUser?.id, fetchMaterials]);
 
   useEffect(() => {
     const saved = readAppSession();
@@ -4805,7 +4960,6 @@ export default function Page() {
     const signedIn = currentUser;
     if (!signedIn || isStaffRole(signedIn.role, signedIn.id, signedIn.email) || resolveAppRole(signedIn.role, signedIn.id, signedIn.email) !== 'student') return;
     setActiveTab('schedule_planner');
-    setFavoriteMaterialIds(readFavoriteMaterialIds(signedIn.id));
     setMyMaterials(readMyMaterials(signedIn.id));
     setLogSlots(readLogSlots());
     const storedPlans = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {})[signedIn.id];
@@ -5333,19 +5487,8 @@ export default function Page() {
       display_order: allocateDisplayOrder(subject, existing),
     });
 
-    cacheMaterial(saved);
-    setMaterials((prev) => upsertMaterialList(prev, saved));
-    addNotification(
-      'success',
-      existing
-        ? `教材「${saved.title}」を更新いたしました！`
-        : `新規教材「${saved.title}」を登録いたしました！`
-    );
-    setIsMaterialModalOpen(false);
-    resetMaterialForm();
-
     try {
-      await writeMaterialRow(
+      const failure = await writeMaterialRow(
         supabase,
         saved.id,
         materialWritePayload(saved, {
@@ -5353,48 +5496,71 @@ export default function Page() {
           includeDescription: overwriteBlanks || Boolean(newMaterialForm.description.trim()),
         }),
       );
-      await fetchAllData({ silent: true });
-    } catch {
-      await fetchAllData({ silent: true });
+      if (failure) throw new Error(failure);
+      await reloadMaterials();
+      addNotification(
+        'success',
+        existing
+          ? `教材「${saved.title}」を更新いたしました！`
+          : `新規教材「${saved.title}」を登録いたしました！`
+      );
+      setIsMaterialModalOpen(false);
+      resetMaterialForm();
+    } catch (error) {
+      reportMaterialError(error, '教材の保存に失敗しました');
     }
-  }, [newMaterialForm, editingMaterialId, currentUser, materials, supabase, fetchAllData, addNotification, resetMaterialForm]);
+  }, [newMaterialForm, editingMaterialId, currentUser, materials, supabase, reloadMaterials, addNotification, resetMaterialForm]);
 
   const handleDeleteMaterial = useCallback(async (material: Material) => {
     if (!window.confirm('この教材を削除しますか？')) return;
-    const { error } = await supabase.from('materials').delete().eq('id', material.id);
-    if (error) {
-      alert(`教材の削除に失敗しました: ${error.message}`);
-      return;
-    }
-    uncacheMaterial(material.id);
-    setMaterials((prev) => prev.filter((item) => item.id !== material.id));
-    addNotification('success', `教材「${material.title}」を削除しました。`);
-  }, [supabase, addNotification]);
-
-  const persistMaterialSnapshot = useCallback(async (saved: Material) => {
-    cacheMaterial(saved);
     try {
-      await writeMaterialRow(
-        supabase,
-        saved.id,
-        materialWritePayload(saved, { includeImage: false, includeDescription: false }),
-      );
-    } catch {
-      cacheMaterial(saved);
+      const { error } = await supabase.from('materials').delete().eq('id', material.id);
+      if (error) throw error;
+      await reloadMaterials();
+      addNotification('success', `教材「${material.title}」を削除しました。`);
+    } catch (error) {
+      reportMaterialError(error, '教材の削除に失敗しました');
     }
-  }, [supabase]);
+  }, [supabase, addNotification, reloadMaterials]);
 
-  const handleDisplayOrderCommit = useCallback((material: Material, raw: string) => {
+  const handleDisplayOrderCommit = useCallback(async (material: Material, raw: string) => {
     const order = Number(raw);
     if (!Number.isFinite(order) || order === material.display_order) return;
-    const saved = { ...material, display_order: order };
-    setMaterials((prev) => prev.map((item) => (item.id === saved.id ? saved : item)));
-    void persistMaterialSnapshot(saved);
-  }, [persistMaterialSnapshot]);
+    try {
+      const failure = await updateMaterialOrder(supabase, material.id, order);
+      if (failure) throw new Error(failure);
+      await reloadMaterials();
+    } catch (error) {
+      reportMaterialError(error, '表示順の保存に失敗しました');
+    }
+  }, [supabase, reloadMaterials]);
 
-  const handleMoveMaterialOrder = useCallback((_material: Material, _direction: -1 | 1) => {
-    // 表示順の一括振り直しはしない。数値の変更は管理画面の直接入力だけ。
-  }, []);
+  const handleMoveMaterialOrder = useCallback(async (material: Material, direction: -1 | 1) => {
+    const ordered = materialsForSubject(materials, material.subject);
+    const index = ordered.findIndex((item) => item.id === material.id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ordered.length) return;
+    const next = [...ordered];
+    const [moved] = next.splice(index, 1);
+    next.splice(target, 0, moved);
+    const orders = ordered.map((item) => item.display_order);
+    const unique = orders.every((order) => order != null) && new Set(orders).size === orders.length;
+    const updates: Array<{ id: string; order: number }> = unique
+      ? [
+          { id: ordered[index].id, order: ordered[target].display_order as number },
+          { id: ordered[target].id, order: ordered[index].display_order as number },
+        ]
+      : next.flatMap((item, itemIndex) => (item.display_order === itemIndex + 1 ? [] : [{ id: item.id, order: itemIndex + 1 }]));
+    try {
+      for (const update of updates) {
+        const failure = await updateMaterialOrder(supabase, update.id, update.order);
+        if (failure) throw new Error(failure);
+      }
+      await reloadMaterials();
+    } catch (error) {
+      reportMaterialError(error, '表示順の保存に失敗しました');
+    }
+  }, [materials, supabase, reloadMaterials]);
 
   const downloadMaterialCsvTemplate = useCallback(() => {
     const csvBody = [
@@ -5517,32 +5683,26 @@ export default function Page() {
           display_order: allocateDisplayOrder(subject, existing),
           overwriteBlanks: false,
         });
-        cacheMaterial(saved);
         next = upsertMaterialList(next, saved);
         applied.push({ material: saved, includeDescription: Boolean(row.description?.trim()) });
       });
 
-      setMaterials(next);
+      for (const item of applied) {
+        const failure = await writeMaterialRow(
+          supabase,
+          item.material.id,
+          materialWritePayload(item.material, {
+            includeImage: false,
+            includeDescription: item.includeDescription,
+          }),
+        );
+        if (failure) throw new Error(failure);
+      }
+      await reloadMaterials();
       const doneText = `${applied.length}件の教材を登録・更新しました`;
       setMaterialCsvStatusMessage({ type: 'success', text: doneText });
       addNotification('success', doneText);
       announced = true;
-
-      for (const item of applied) {
-        try {
-          await writeMaterialRow(
-            supabase,
-            item.material.id,
-            materialWritePayload(item.material, {
-              includeImage: false,
-              includeDescription: item.includeDescription,
-            }),
-          );
-        } catch {
-          cacheMaterial(item.material);
-        }
-      }
-      await fetchAllData({ silent: true });
 
       setTimeout(() => {
         setIsMaterialCsvModalOpen(false);
@@ -5550,11 +5710,12 @@ export default function Page() {
         setMaterialCsvStatusMessage({ type: null, text: '' });
       }, 1200);
     } catch (err: any) {
+      reportMaterialError(err, '教材CSVの登録に失敗しました');
       if (!announced) setMaterialCsvStatusMessage({ type: 'error', text: err.message });
     } finally {
       setMaterialCsvUploading(false);
     }
-  }, [materialCsvParsedPreview, materials, currentUser, supabase, fetchAllData, addNotification]);
+  }, [materialCsvParsedPreview, materials, currentUser, supabase, reloadMaterials, addNotification]);
 
   const handleCreateLog = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -5737,13 +5898,15 @@ export default function Page() {
     setMyMaterials(next);
   };
 
-  const toggleFavoriteMaterial = (materialId: string) => {
+  const toggleFavoriteMaterial = async (materialId: string) => {
     if (!currentUser || currentUser.role !== 'student') return;
-    setFavoriteMaterialIds((prev) => {
-      const next = prev.includes(materialId) ? prev.filter((id) => id !== materialId) : [...prev, materialId];
-      writeFavoriteMaterialIds(currentUser.id, next);
-      return next;
-    });
+    const next = !favoriteMaterialIds.includes(materialId);
+    try {
+      await saveMaterialFavorite(supabase, currentUser.id, materialId, next);
+      await reloadMaterials();
+    } catch (error) {
+      reportMaterialError(error, 'お気に入りの保存に失敗しました');
+    }
   };
 
   const openStudentLogEditor = (log: StudyLog) => {
@@ -6784,7 +6947,7 @@ export default function Page() {
                                 <input
                                   type="number"
                                   key={`${m.id}-${m.display_order}`}
-                                  defaultValue={m.display_order}
+                                  defaultValue={m.display_order ?? ''}
                                   onBlur={(e) => handleDisplayOrderCommit(m, e.target.value)}
                                   className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-center font-bold"
                                 />
