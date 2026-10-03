@@ -3962,7 +3962,6 @@ export default function Page() {
           branch_id: student?.classroom || currentUser?.classroom || '',
           comment: text,
           body: text,
-          content: text,
           message: text,
           sender_name: currentUser?.name || '',
           created_at: createdAt,
