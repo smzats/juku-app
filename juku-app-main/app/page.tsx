@@ -3940,8 +3940,8 @@ export default function Page() {
 
   const handleSendStudentMessages = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    const body = messageDraft.trim();
-    if (!body) {
+    const text = messageDraft.trim();
+    if (!text) {
       alert('送信するコメントを入力してください。');
       return;
     }
@@ -3950,43 +3950,71 @@ export default function Page() {
       return;
     }
 
+    const teacherId = String(currentUser?.id || '').trim();
     const sentAt = formatMessageTimestamp();
     const createdAt = new Date().toISOString();
-    const senderId = currentUser?.id || 'system';
-    const senderName = currentUser?.name || 'お知らせ';
-    const created: StudentMessage[] = selectedStudentIds.map((userId, index) => ({
-      id: `msg_${Date.now()}_${index}_${userId}`,
-      user_id: userId,
-      sender_id: senderId,
-      sender_name: senderName,
-      body,
-      sent_at: sentAt,
-      read_at: null,
-    }));
-
-    setMessages((prev) => [...created, ...prev]);
-    writeLocalMessages([...created, ...readLocalMessages()]);
-    setMessageDraft('');
-    setSelectedStudentIds([]);
-
-    const saved = await insertCommentBatch(supabase, selectedStudentIds.map((userId) => ({
-      user_id: userId,
-      student_id: userId,
-      sender_id: senderId,
-      sender_name: senderName,
-      body,
-      comment: body,
-      message: body,
-      content: body,
-      sent_at: sentAt,
-      created_at: createdAt,
-      read_at: null,
-    })));
-    if (!saved) return;
-    const remote = await fetchStudentMessages();
-    setMessages(remote);
-    writeLocalMessages(remote);
-  }, [currentUser, messageDraft, selectedStudentIds, supabase, fetchStudentMessages]);
+    try {
+      const rows = selectedStudentIds.map((studentId) => {
+        const student = users.find((user) => user.id === studentId);
+        return {
+          teacher_id: teacherId,
+          student_id: studentId,
+          branch_id: student?.classroom || currentUser?.classroom || '',
+          comment: text,
+          body: text,
+          content: text,
+          message: text,
+          sender_name: currentUser?.name || '',
+          created_at: createdAt,
+        };
+      });
+      let inserted = false;
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 16 && rows.some((row) => Object.keys(row).length > 0); attempt += 1) {
+        const result = await supabase.from('comments').insert(rows);
+        if (!result.error) {
+          inserted = true;
+          break;
+        }
+        lastError = result.error;
+        const message = String(result.error.message || '');
+        const missing = missingMaterialsColumn(message);
+        if (missing && rows.some((row) => Object.prototype.hasOwnProperty.call(row, missing))) {
+          rows.forEach((row) => {
+            delete row[missing];
+          });
+          continue;
+        }
+        if (/invalid input syntax for type uuid/i.test(message) && rows.some((row) => 'branch_id' in row)) {
+          rows.forEach((row) => {
+            delete row.branch_id;
+          });
+          continue;
+        }
+        console.error('comments insert failed', result.error);
+        break;
+      }
+      if (!inserted) {
+        console.error('comments insert failed', lastError);
+        return;
+      }
+      const created: StudentMessage[] = selectedStudentIds.map((studentId, index) => ({
+        id: `msg_${Date.now()}_${index}_${studentId}`,
+        user_id: studentId,
+        sender_id: teacherId,
+        sender_name: currentUser?.name || 'お知らせ',
+        body: text,
+        sent_at: sentAt,
+        read_at: null,
+      }));
+      setMessages((prev) => [...created, ...prev]);
+      writeLocalMessages([...created, ...readLocalMessages()]);
+      setMessageDraft('');
+      setSelectedStudentIds([]);
+    } catch (error) {
+      console.error('comments insert failed', error);
+    }
+  }, [currentUser, messageDraft, selectedStudentIds, supabase, users]);
 
   const markMessageAsRead = useCallback(async (message: StudentMessage) => {
     if (message.read_at) return;
