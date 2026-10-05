@@ -591,7 +591,6 @@ export interface User {
   japanese: string;
   classicJp: string;
   physics: string;
-  studentCode?: string;
   chemistry: string;
   biology: string;
   japaneseHistory: string;
@@ -3541,17 +3540,17 @@ export default function Page() {
       }];
     });
     const studentUsers = (students.data || []).flatMap((row: any) => {
-      const id = textCell(row?.id).trim() || textCell(row?.student_code).trim();
+      const id = textCell(row?.id).trim();
       if (!id) return [];
       return [{
         ...emptyStudentProfile(),
         id,
-        studentCode: textCell(row?.student_code),
         name: textCell(row?.name) || '名前未設定',
         role: 'student' as const,
         classroom: textCell(row?.branch_id),
         password: textCell(row?.password),
         grade: textCell(row?.grade),
+        highSchool: textCell(row?.high_school),
         english: textCell(row?.english),
         math: textCell(row?.math),
         japanese: textCell(row?.modern_jp),
@@ -3820,8 +3819,8 @@ export default function Page() {
 
     const studentRow = {
       id: normalized.id,
-      student_code: normalized.studentCode || normalized.id,
       name: normalized.name,
+      high_school: normalized.highSchool ?? '',
       grade: normalized.grade ?? '',
       branch_id: normalized.classroom ?? '',
       password: normalized.password ?? '',
@@ -4212,7 +4211,7 @@ export default function Page() {
     }
 
     const inputKey = inputIdClean.toLowerCase();
-    const matched = users.find((u) => u.id.toLowerCase() === inputKey || (u.studentCode || '').toLowerCase() === inputKey || (u.email || '').toLowerCase() === inputKey);
+    const matched = users.find((u) => u.id.toLowerCase() === inputKey || (u.email || '').toLowerCase() === inputKey);
     if (matched) {
       if (!acceptsLoginPassword(matched.id, matched.password || '', inputPassword)) {
         setLoginError('IDまたはパスワードが違います');
@@ -5200,9 +5199,9 @@ export default function Page() {
 
   const downloadStudentCsvTemplate = useCallback(() => {
     const csvBody = [
-      'id,student_code,name,grade,branch_id,password,math,english,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual',
-      'ext001,ext001,川越 太郎,高2,本川越校,ext001,標準,選抜,標準,,基礎,標準,基礎,日本史A,,個別A',
-      'ext002,ext002,山手 花子,高1,本川越校,1234,選抜,標準,標準,,,生物A,,世界史B,個別B',
+      'id,name,high_school,grade,branch_id,password,math,english,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual',
+      'ext001,川越 太郎,川越高校,高2,本川越校,ext001,標準,選抜,標準,,基礎,標準,基礎,日本史A,,個別A',
+      'ext002,山手 花子,山手高校,高1,本川越校,1234,選抜,標準,標準,,,生物A,,世界史B,個別B',
     ].join('\n');
     const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -5279,8 +5278,8 @@ export default function Page() {
                   role: 'student',
                   classroom: rawClassroom,
                   password: rawPassword || existingUser?.password || '',
-                  studentCode: csvCell(row, 'student_code') || rawId,
                   grade: csvCell(row, 'grade'),
+                  highSchool: csvCell(row, 'high_school'),
                   english: csvCell(row, 'english'),
                   math: csvCell(row, 'math'),
                   japanese: csvCell(row, 'modern_jp') || csvCell(row, 'japanese'),
@@ -7627,7 +7626,7 @@ export default function Page() {
             </div>
             <div className="p-6 space-y-4">
               <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-2xl text-xs text-emerald-950 space-y-2">
-                <p className="font-extrabold break-all">📄 CSVヘッダー仕様: id,password,name,role,classroom,grade,high_school,english,math,japanese,physics,chemistry,biology,japanese_history,world_history,individual</p>
+                <p className="font-extrabold break-all">📄 CSVヘッダー仕様: id,name,high_school,grade,branch_id,password,math,english,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual</p>
                 <button
                   type="button"
                   onClick={downloadStudentCsvTemplate}
