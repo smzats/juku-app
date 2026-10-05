@@ -256,6 +256,24 @@ function materialsForSubject(list: Material[], subject: SubjectType): Material[]
   return byDisplayOrder(list.filter((item) => item.subject === subject));
 }
 
+function bySubjectThenOrder(list: readonly Material[]): Material[] {
+  const rank = new Map(SUBJECT_NAMES.map((name, index) => [name, index]));
+  return list
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const subjectDiff = (rank.get(a.item.subject) ?? SUBJECT_NAMES.length) - (rank.get(b.item.subject) ?? SUBJECT_NAMES.length);
+      if (subjectDiff !== 0) return subjectDiff;
+      const ao = a.item.display_order;
+      const bo = b.item.display_order;
+      if (ao == null && bo == null) return a.index - b.index;
+      if (ao == null) return 1;
+      if (bo == null) return -1;
+      if (ao !== bo) return ao - bo;
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
+}
+
 function mergeMaterialRecord(
   existing: Material | undefined,
   incoming: {
@@ -295,23 +313,16 @@ function mergeMaterialRecord(
 
 function materialWritePayload(
   saved: Material,
-  options: { includeImage: boolean; includeDescription: boolean },
+  _options?: { includeImage: boolean; includeDescription: boolean },
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     title: saved.title,
     subject: saved.subject,
-    category: saved.subject,
-    created_by: saved.created_by,
-    color: saved.color || SUBJECT_COLOR_MAP[saved.subject].hexCode,
-    difficulty: saved.difficulty || 'standard',
+    description: saved.description ?? null,
+    is_custom: saved.is_custom === true,
+    owner_student_id: saved.owner_student_id ?? null,
   };
-  if (saved.display_order != null) {
-    payload.display_order = saved.display_order;
-    payload.order_index = saved.display_order;
-    payload.sort_order = saved.display_order;
-  }
-  if (options.includeImage) payload.image_url = saved.image_url || null;
-  if (options.includeDescription) payload.description = saved.description ?? null;
+  if (saved.display_order != null) payload.order_index = saved.display_order;
   return payload;
 }
 
@@ -335,10 +346,8 @@ async function writeMaterialRow(
 ): Promise<string | null> {
   const body: Record<string, unknown> = { ...payload };
   const modes: Array<'upsert' | 'insert' | 'update'> = ['upsert', 'insert', 'update'];
-  let modeIndex = 0;
   let lastMessage = '';
-  for (let attempt = 0; attempt < 24 && modeIndex < modes.length; attempt += 1) {
-    const mode = modes[modeIndex];
+  for (const mode of modes) {
     const result = mode === 'update'
       ? await supabase.from('materials').update(body).eq('id', id)
       : mode === 'insert'
@@ -346,114 +355,23 @@ async function writeMaterialRow(
         : await supabase.from('materials').upsert([{ id, ...body }], { onConflict: 'id' });
     if (!result.error) return null;
     lastMessage = result.error.message || lastMessage;
-    const missing = missingMaterialsColumn(lastMessage);
-    if (missing && Object.prototype.hasOwnProperty.call(body, missing)) {
-      delete body[missing];
-      continue;
-    }
-    modeIndex += 1;
   }
   return lastMessage || '教材の保存に失敗しました';
 }
 
 async function updateMaterialOrder(supabase: any, id: string, order: number): Promise<string | null> {
-  const body: Record<string, unknown> = {
-    order_index: order,
-    sort_order: order,
-    display_order: order,
-  };
-  let lastMessage = '';
-  for (let attempt = 0; attempt < 8 && Object.keys(body).length > 0; attempt += 1) {
-    const result = await supabase.from('materials').update(body).eq('id', id);
-    if (!result.error) return null;
-    lastMessage = result.error.message || lastMessage;
-    const missing = missingMaterialsColumn(lastMessage);
-    if (missing && Object.prototype.hasOwnProperty.call(body, missing)) {
-      delete body[missing];
-      continue;
-    }
-    return lastMessage || '表示順の保存に失敗しました';
-  }
-  return lastMessage || '表示順の保存に失敗しました';
+  const result = await supabase.from('materials').update({ order_index: order }).eq('id', id);
+  if (!result.error) return null;
+  return result.error.message || '表示順の保存に失敗しました';
 }
 
-const LEGACY_MATERIAL_CACHE_KEY = 'juku_materials_cache';
-let legacyMaterialMigration: Promise<void> | null = null;
+const MATERIAL_COLUMNS = 'id, title, subject, description, order_index, is_custom, owner_student_id';
 
-async function migrateLegacyMaterialCache(supabase: any): Promise<void> {
-  if (typeof window === 'undefined') return;
-  if (!legacyMaterialMigration) {
-    legacyMaterialMigration = (async () => {
-      const raw = window.localStorage.getItem(LEGACY_MATERIAL_CACHE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      const records = Array.isArray(parsed) ? parsed : Object.values(parsed || {});
-      for (const item of records) {
-        const row = item as Record<string, unknown>;
-        const id = String(row?.id ?? '').trim();
-        const title = String(row?.title ?? '').trim();
-        if (!id || !title) continue;
-        const subject = subjectFromInput(row?.subject);
-        const order = readDisplayOrder(row?.display_order ?? row?.order_index ?? row?.sort_order);
-        const payload: Record<string, unknown> = { title };
-        if (subject) {
-          payload.subject = subject;
-          payload.category = subject;
-        }
-        if (row?.description) payload.description = String(row.description);
-        if (row?.image_url) payload.image_url = String(row.image_url);
-        if (row?.difficulty) payload.difficulty = row.difficulty;
-        if (row?.color) payload.color = row.color;
-        if (row?.created_by) payload.created_by = String(row.created_by);
-        if (order != null && order < 1000000000) {
-          payload.display_order = order;
-          payload.order_index = order;
-          payload.sort_order = order;
-        }
-        const failure = await writeMaterialRow(supabase, id, payload);
-        if (failure) throw new Error(failure);
-      }
-      window.localStorage.removeItem(LEGACY_MATERIAL_CACHE_KEY);
-    })().catch((error) => {
-      legacyMaterialMigration = null;
-      throw error;
-    });
-  }
-  await legacyMaterialMigration;
-}
-
-function materialOrderFromRow(row: any): number | null {
-  for (const key of ['order_index', 'sort_order', 'display_order']) {
-    const order = readDisplayOrder(row?.[key]);
-    if (order != null) return order;
-  }
-  return null;
-}
-
-function isMissingFavoriteStore(message: string): boolean {
-  return /user_favorites/i.test(message) && /does not exist|schema cache|Could not find the table|not found/i.test(message);
-}
-
-function reportMaterialError(error: unknown, fallback: string) {
-  const message = error instanceof Error
-    ? error.message
-    : String((error as { message?: string } | null)?.message || fallback);
-  console.error(message, error);
-  alert(message || fallback);
-}
-
-async function readMaterialPages(
-  supabase: { from: (table: string) => any },
-  orderColumn: string,
-  favoriteFirst: boolean,
-): Promise<{ data: any[]; error: { message?: string } | null }> {
+async function selectMaterialMaster(supabase: { from: (table: string) => any }): Promise<{ data: any[]; error: { message?: string } | null }> {
   const pageSize = 1000;
   const rows: any[] = [];
   for (let from = 0; from < 20000; from += pageSize) {
-    let query = supabase.from('materials').select('*');
-    if (favoriteFirst) query = query.order('is_favorite', { ascending: false });
-    query = query.order(orderColumn, { ascending: true });
-    const result = await query.range(from, from + pageSize - 1);
+    const result = await supabase.from('materials').select(MATERIAL_COLUMNS).order('subject', { ascending: true }).order('order_index', { ascending: true }).range(from, from + pageSize - 1);
     if (result.error) return { data: [], error: result.error };
     const chunk = result.data || [];
     rows.push(...chunk);
@@ -462,87 +380,36 @@ async function readMaterialPages(
   return { data: rows, error: null };
 }
 
-async function selectMaterialsOrdered(
-  supabase: { from: (table: string) => any },
-  studentView: boolean,
-): Promise<{ data: any[]; error: { message?: string } | null }> {
-  const orderColumns = ['order_index', 'sort_order', 'display_order'];
-  let lastError: { message?: string } | null = null;
-  for (const column of orderColumns) {
-    const ordered = await readMaterialPages(supabase, column, studentView);
-    if (!ordered.error) return ordered;
-    lastError = ordered.error;
-    const missing = missingMaterialsColumn(ordered.error.message || '');
-    if (studentView && (missing === 'is_favorite' || /is_favorite/i.test(ordered.error.message || ''))) {
-      const plain = await readMaterialPages(supabase, column, false);
-      if (!plain.error) return plain;
-      lastError = plain.error;
-      if (missingMaterialsColumn(plain.error.message || '') === column) continue;
-      return plain;
+async function selectStudentFavoriteIds(supabase: { from: (table: string) => any }, studentId: string): Promise<{ ids: Set<string> | null; error: { message?: string } | null }> {
+  const pageSize = 1000;
+  const ids = new Set<string>();
+  for (let from = 0; from < 20000; from += pageSize) {
+    const result = await supabase.from('student_favorites').select('student_id, material_id').eq('student_id', studentId).range(from, from + pageSize - 1);
+    if (result.error) return { ids: null, error: result.error };
+    for (const row of result.data || []) {
+      const materialId = String(row?.material_id ?? '').trim();
+      if (materialId) ids.add(materialId);
     }
-    if (missing === column) continue;
-    return ordered;
+    if ((result.data || []).length < pageSize) break;
   }
-  return { data: [], error: lastError };
+  return { ids, error: null };
 }
 
-async function readUserFavoriteIds(
-  supabase: { from: (table: string) => any },
-  userId: string,
-): Promise<Set<string> | null> {
-  let lastError: { message?: string } | null = null;
-  for (const column of ['user_id', 'student_id']) {
-    const result = await supabase.from('user_favorites').select('*').eq(column, userId);
-    if (!result.error) {
-      const ids = (result.data || []).flatMap((row: any) => {
-        const materialId = String(row?.material_id ?? row?.materialId ?? '').trim();
-        return materialId ? [materialId] : [];
-      });
-      return new Set(ids);
-    }
-    lastError = result.error;
-    const missing = missingMaterialsColumn(result.error.message || '');
-    if (missing === column) continue;
-    if (isMissingFavoriteStore(result.error.message || '')) return null;
-    reportMaterialError(result.error, 'お気に入りの取得に失敗しました');
-    return null;
-  }
-  if (lastError && !isMissingFavoriteStore(lastError.message || '')) {
-    reportMaterialError(lastError, 'お気に入りの取得に失敗しました');
-  }
-  return null;
+async function saveStudentFavorite(supabase: { from: (table: string) => any }, studentId: string, materialId: string, nextFavorite: boolean): Promise<void> {
+  const result = nextFavorite
+    ? await supabase.from('student_favorites').insert([{ student_id: studentId, material_id: materialId }])
+    : await supabase.from('student_favorites').delete().eq('student_id', studentId).eq('material_id', materialId);
+  if (!result.error || /duplicate key|already exists/i.test(result.error.message || '')) return;
+  throw result.error;
 }
 
-async function saveMaterialFavorite(
-  supabase: { from: (table: string) => any },
-  userId: string,
-  materialId: string,
-  next: boolean,
-): Promise<void> {
-  const messages: string[] = [];
-  let saved = false;
-  for (const column of ['user_id', 'student_id']) {
-    const result = next
-      ? await supabase.from('user_favorites').insert([{ [column]: userId, material_id: materialId }])
-      : await supabase.from('user_favorites').delete().eq(column, userId).eq('material_id', materialId);
-    if (!result.error || /duplicate key|already exists/i.test(result.error.message || '')) {
-      saved = true;
-      break;
-    }
-    const missing = missingMaterialsColumn(result.error.message || '');
-    if (missing === column) continue;
-    if (isMissingFavoriteStore(result.error.message || '')) break;
-    messages.push(result.error.message || 'お気に入りの保存に失敗しました');
-    break;
-  }
-  const updated = await supabase.from('materials').update({ is_favorite: next }).eq('id', materialId);
-  if (!updated.error) {
-    saved = true;
-  } else if (missingMaterialsColumn(updated.error.message || '') !== 'is_favorite') {
-    messages.push(updated.error.message || 'お気に入りの保存に失敗しました');
-  }
-  if (messages.length > 0) throw new Error(messages[0]);
-  if (!saved) throw new Error('お気に入りの保存に失敗しました');
+function reportMaterialError(error: unknown, fallback: string) {
+  const detail = error instanceof Error
+    ? error.message
+    : String((error as { message?: string } | null)?.message || fallback);
+  const message = `通信エラー: ${detail || fallback}`;
+  console.error(message, error);
+  alert(message);
 }
 
 async function selectAllRows(
@@ -623,12 +490,13 @@ const STUDENT_PROFILE_FIELDS = [
   { key: 'highSchool', label: '高校', column: 'high_school' },
   { key: 'english', label: '英語', column: 'subject_english' },
   { key: 'math', label: '数学', column: 'subject_math' },
-  { key: 'japanese', label: '国語', column: 'subject_japanese' },
+  { key: 'japanese', label: '国語', column: 'modern_jp' },
+  { key: 'classicJp', label: '古典', column: 'classic_jp' },
   { key: 'physics', label: '物理', column: 'subject_physics' },
   { key: 'chemistry', label: '化学', column: 'subject_chemistry' },
   { key: 'biology', label: '生物', column: 'subject_biology' },
-  { key: 'japaneseHistory', label: '日本史', column: 'subject_japanese_history' },
-  { key: 'worldHistory', label: '世界史', column: 'subject_world_history' },
+  { key: 'japaneseHistory', label: '日本史', column: 'jp_history' },
+  { key: 'worldHistory', label: '世界史', column: 'world_history' },
   { key: 'individual', label: '個別', column: 'individual' },
 ] as const;
 
@@ -643,6 +511,7 @@ const STUDENT_LIST_COLUMNS = [
   { key: 'english', label: '英語' },
   { key: 'math', label: '数学' },
   { key: 'japanese', label: '国語' },
+  { key: 'classicJp', label: '古典' },
   { key: 'physics', label: '物理' },
   { key: 'chemistry', label: '化学' },
   { key: 'biology', label: '生物' },
@@ -700,6 +569,7 @@ function emptyStudentProfile(): StudentProfile {
     english: '',
     math: '',
     japanese: '',
+    classicJp: '',
     physics: '',
     chemistry: '',
     biology: '',
@@ -719,7 +589,9 @@ export interface User {
   english: string;
   math: string;
   japanese: string;
+  classicJp: string;
   physics: string;
+  studentCode?: string;
   chemistry: string;
   biology: string;
   japaneseHistory: string;
@@ -818,10 +690,12 @@ function saveLocalPassword(userId: string, password: string) {
   writeLocalJson(USER_PASSWORD_STORAGE_KEY, all);
 }
 
+function textCell(value: unknown): string {
+  return value == null ? '' : String(value);
+}
+
 function passwordFromRow(row: any): string {
-  const local = readLocalPasswords()[String(row?.id || '')] || '';
-  const remote = row?.password == null ? '' : String(row.password).trim();
-  return remote || local;
+  return textCell(row?.password).trim();
 }
 
 function acceptsLoginPassword(userId: string, storedPassword: string, inputPassword: string): boolean {
@@ -981,6 +855,8 @@ export interface Material {
   created_by: string;
   display_order: number | null;
   is_favorite?: boolean;
+  is_custom?: boolean;
+  owner_student_id?: string | null;
 }
 
 export interface StudyLog {
@@ -993,6 +869,19 @@ export interface StudyLog {
   is_mission_completed: boolean;
   comment?: string;
   created_at?: string;
+}
+
+function studyLogRemoteRow(log: StudyLog, subject = ''): Record<string, unknown> {
+  return {
+    id: log.id,
+    student_id: log.user_id,
+    material_id: log.material_id,
+    subject: subject || '',
+    duration_minutes: log.time_spent_minutes ?? 0,
+    study_date: log.created_at || new Date().toISOString(),
+    memo: log.comment ?? '',
+    is_mission_completed: log.is_mission_completed === true,
+  };
 }
 
 export type WeekdayId = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
@@ -3536,6 +3425,7 @@ export default function Page() {
     english: 'ALL',
     math: 'ALL',
     japanese: 'ALL',
+    classicJp: 'ALL',
     physics: 'ALL',
     chemistry: 'ALL',
     biology: 'ALL',
@@ -3621,25 +3511,60 @@ export default function Page() {
   // ---------------------------------------------------------------------------
 
   const fetchUsers = useCallback(async (): Promise<User[]> => {
-    const loaded = await selectAllRows(supabase, 'users');
-    if (loaded.error) throw new Error(`ユーザーデータの取得失敗: ${loaded.error.message || '取得に失敗しました'}`);
-    return loaded.data.flatMap((row: any) => {
-      const id = String(row.id ?? row.user_id ?? '').trim();
+    const [teachers, students] = await Promise.all([
+      selectAllRows(supabase, 'teachers'),
+      selectAllRows(supabase, 'students'),
+    ]);
+    if (teachers.error) {
+      console.error(teachers.error);
+      alert('通信エラー: ' + (teachers.error.message || '教師の取得に失敗しました'));
+    }
+    if (students.error) {
+      console.error(students.error);
+      alert('通信エラー: ' + (students.error.message || '生徒の取得に失敗しました'));
+    }
+    if (teachers.error && students.error) {
+      throw new Error(teachers.error.message || students.error.message || 'ユーザーデータの取得失敗');
+    }
+    const teacherUsers = (teachers.data || []).flatMap((row: any) => {
+      const id = textCell(row?.id).trim();
       if (!id) return [];
-      const email = String(row.email ?? row.mail ?? row.login_id ?? '').trim();
-      const rawRole = row.role ?? row.user_role ?? row.type ?? row.user_type ?? row.authority ?? row.account_type;
-      const role = resolveAppRole(rawRole, id, email);
-      if (String(rawRole ?? '').trim() || isKnownAdminIdentity(id, email)) rememberUserRole(id, role);
+      const role = resolveAppRole(row?.role, id);
+      if (textCell(row?.role).trim() || isKnownAdminIdentity(id)) rememberUserRole(id, role);
       return [{
+        ...emptyStudentProfile(),
         id,
-        name: row.name || '名前未設定',
+        name: textCell(row?.name) || '名前未設定',
         role,
-        classroom: row.classroom || '本川越校',
-        password: passwordFromRow(row),
-        email: email || undefined,
-        ...profileFromRow(row),
+        classroom: textCell(row?.branch_id),
+        password: textCell(row?.password),
       }];
-    }) as User[];
+    });
+    const studentUsers = (students.data || []).flatMap((row: any) => {
+      const id = textCell(row?.id).trim() || textCell(row?.student_code).trim();
+      if (!id) return [];
+      return [{
+        ...emptyStudentProfile(),
+        id,
+        studentCode: textCell(row?.student_code),
+        name: textCell(row?.name) || '名前未設定',
+        role: 'student' as const,
+        classroom: textCell(row?.branch_id),
+        password: textCell(row?.password),
+        grade: textCell(row?.grade),
+        english: textCell(row?.english),
+        math: textCell(row?.math),
+        japanese: textCell(row?.modern_jp),
+        classicJp: textCell(row?.classic_jp),
+        physics: textCell(row?.physics),
+        chemistry: textCell(row?.chemistry),
+        biology: textCell(row?.biology),
+        japaneseHistory: textCell(row?.jp_history),
+        worldHistory: textCell(row?.world_history),
+        individual: textCell(row?.individual),
+      }];
+    });
+    return [...teacherUsers, ...studentUsers];
   }, [supabase]);
 
   const materialViewerRef = useRef<User | null>(null);
@@ -3649,43 +3574,43 @@ export default function Page() {
     const viewer = materialViewerRef.current || readAppSession();
     const studentView = Boolean(viewer && resolveAppRole(viewer.role, viewer.id, viewer.email) === 'student');
     try {
-      try {
-        await migrateLegacyMaterialCache(supabase);
-      } catch (error) {
-        reportMaterialError(error, 'ローカル教材の移行に失敗しました');
-      }
-      const loaded = await selectMaterialsOrdered(supabase, studentView);
+      const loaded = await selectMaterialMaster(supabase);
       if (loaded.error) {
         reportMaterialError(loaded.error, '教材の取得に失敗しました');
         return [];
       }
-      const favoriteIds = studentView && viewer ? await readUserFavoriteIds(supabase, viewer.id) : null;
+      let favoriteIds = new Set<string>();
+      if (studentView && viewer) {
+        const favorites = await selectStudentFavoriteIds(supabase, viewer.id);
+        if (favorites.error) {
+          reportMaterialError(favorites.error, 'お気に入りの取得に失敗しました');
+        } else if (favorites.ids) {
+          favoriteIds = favorites.ids;
+        }
+      }
       const list: Material[] = [];
       loaded.data.forEach((row: any) => {
-        const id = String(row.id ?? row.material_id ?? '').trim();
-        const title = String(row.title ?? row.name ?? row.material_name ?? row.material_title ?? '').trim();
+        const id = String(row.id ?? '').trim();
+        const title = String(row.title ?? '').trim();
         if (!id || !title) return;
-        const storedSubject = exactSubjectFromRecord(row);
-        const hasSubjectValue = ['subject', 'category', '教科', 'subject_name', 'kamoku'].some((key) => {
-          const value = row?.[key];
-          return value != null && String(value).trim() !== '';
-        });
-        const subject = storedSubject || (hasSubjectValue ? 'その他' : (subjectFromMaterialTitle(title) || 'その他'));
-        const storedFavorite = row?.is_favorite === true || row?.is_favorite === 1 || row?.is_favorite === 'true' || row?.is_favorite === 't';
+        const ownerId = textCell(row?.owner_student_id).trim();
+        const custom = row?.is_custom === true;
+        if (studentView && viewer && custom && ownerId !== viewer.id) return;
+        const subject = subjectFromInput(row.subject) || 'その他';
         list.push({
           id,
           title,
           subject,
-          difficulty: row?.difficulty || 'standard',
-          created_by: String(row?.created_by || ''),
-          image_url: row?.image_url || null,
-          description: row?.description || undefined,
+          created_by: '',
+          description: row.description == null ? undefined : String(row.description),
           color: SUBJECT_COLOR_MAP[subject].hexCode,
-          display_order: materialOrderFromRow(row),
-          is_favorite: favoriteIds ? favoriteIds.has(id) : storedFavorite,
+          display_order: readDisplayOrder(row.order_index),
+          is_favorite: favoriteIds.has(id),
+          is_custom: custom,
+          owner_student_id: ownerId || null,
         });
       });
-      if (!studentView) return list;
+      if (!studentView) return bySubjectThenOrder(list);
       return [...list].sort((a, b) => {
         const fav = Number(Boolean(b.is_favorite)) - Number(Boolean(a.is_favorite));
         if (fav !== 0) return fav;
@@ -3747,33 +3672,29 @@ export default function Page() {
   }, [supabase]);
 
   const fetchLogs = useCallback(async (): Promise<StudyLog[]> => {
-    const { data, error } = await supabase.from('study_logs').select('*');
-    if (error) throw new Error(`学習ログの取得失敗: ${error.message}`);
-    const remote = (data || []).map((row: any) => {
-      const minutes = Number(row.time_spent_minutes ?? row.time_spent);
-      return {
-        id: row.id,
-        user_id: row.user_id,
-        material_id: row.material_id,
-        score: Number(row.score ?? 0),
-        max_score: Number(row.max_score ?? 100),
+    const { data, error } = await supabase.from('study_logs').select('id, student_id, material_id, subject, duration_minutes, study_date, memo, is_mission_completed');
+    if (error) {
+      console.error(error);
+      alert('通信エラー: ' + (error.message || '学習ログの取得に失敗しました'));
+      throw new Error(error.message || '学習ログの取得失敗');
+    }
+    return (data || []).flatMap((row: any) => {
+      const id = textCell(row?.id).trim();
+      const userId = textCell(row?.student_id).trim();
+      if (!id || !userId) return [];
+      const minutes = Number(row?.duration_minutes ?? 0);
+      return [{
+        id,
+        user_id: userId,
+        material_id: textCell(row?.material_id),
+        score: 0,
+        max_score: 100,
         time_spent_minutes: Number.isFinite(minutes) ? minutes : 0,
-        is_mission_completed: row.is_mission_completed === true,
-        comment: row.comment || null,
-        created_at: row.created_at ? String(row.created_at) : undefined,
-      };
-    }) as StudyLog[];
-    const remoteIds = new Set(remote.map((log) => log.id));
-    const deletedIds = readDeletedStudyLogIds();
-    const deletedSet = new Set(deletedIds);
-    const pending = readPendingStudyLogs().filter((log) => log.id && !remoteIds.has(log.id) && !deletedSet.has(log.id));
-    const overrides = readStudyLogOverrides();
-    const seen = new Set<string>();
-    return [...pending, ...remote].filter((log) => {
-      if (!log.id || seen.has(log.id) || deletedSet.has(log.id)) return false;
-      seen.add(log.id);
-      return true;
-    }).map((log) => (overrides[log.id] ? { ...log, ...overrides[log.id] } : log));
+        is_mission_completed: row?.is_mission_completed === true,
+        comment: row?.memo == null ? '' : String(row.memo),
+        created_at: row?.study_date ? String(row.study_date) : undefined,
+      }];
+    });
   }, [supabase]);
 
   const fetchAllData = useCallback(async (options?: { silent?: boolean }) => {
@@ -3897,38 +3818,36 @@ export default function Page() {
     };
     if (!normalized.id || !normalized.name) return '独自IDと氏名は必須です。';
 
-    saveLocalProfile(normalized.id, profile);
-    saveLocalPassword(normalized.id, normalized.password);
-    setUsers((prev) => {
-      const index = prev.findIndex((item) => item.id === normalized.id);
-      if (index === -1) return [...prev, normalized];
-      const next = [...prev];
-      next[index] = normalized;
-      return next;
-    });
-
-    const body: Record<string, unknown> = {
+    const studentRow = {
+      id: normalized.id,
+      student_code: normalized.studentCode || normalized.id,
+      name: normalized.name,
+      grade: normalized.grade ?? '',
+      branch_id: normalized.classroom ?? '',
+      password: normalized.password ?? '',
+      math: normalized.math ?? '',
+      english: normalized.english ?? '',
+      modern_jp: normalized.japanese ?? '',
+      classic_jp: normalized.classicJp ?? '',
+      physics: normalized.physics ?? '',
+      chemistry: normalized.chemistry ?? '',
+      biology: normalized.biology ?? '',
+      jp_history: normalized.japaneseHistory ?? '',
+      world_history: normalized.worldHistory ?? '',
+      individual: normalized.individual ?? '',
+    };
+    const teacherRow = {
       id: normalized.id,
       name: normalized.name,
+      branch_id: normalized.classroom ?? '',
       role: normalized.role,
-      classroom: normalized.classroom,
-      password: normalized.password,
-      ...profileToDbColumns(profile),
+      password: normalized.password ?? '',
     };
     try {
-      let lastMessage = '';
-      for (let attempt = 0; attempt < 16; attempt += 1) {
-        const result = await supabase.from('users').upsert([body], { onConflict: 'id' });
-        if (!result.error) return null;
-        lastMessage = result.error.message || lastMessage;
-        const missing = missingMaterialsColumn(lastMessage);
-        if (missing && Object.prototype.hasOwnProperty.call(body, missing) && missing !== 'id' && missing !== 'name') {
-          delete body[missing];
-          continue;
-        }
-        break;
-      }
-      return lastMessage || 'データベース保存に失敗しました';
+      const table = normalized.role === 'student' ? 'students' : 'teachers';
+      const result = await supabase.from(table).upsert([normalized.role === 'student' ? studentRow : teacherRow], { onConflict: 'id' });
+      if (result.error) return result.error.message || 'データベース保存に失敗しました';
+      return null;
     } catch (err: any) {
       return err?.message || '保存処理でエラーが発生しました';
     }
@@ -3954,12 +3873,12 @@ export default function Page() {
 
     try {
       const dbError = await saveUserWithProfile({ ...newUserForm, id: requestedId });
-      addNotification(
-        dbError ? 'warning' : 'success',
-        dbError
-          ? `「${newUserForm.name}」は一覧へ反映しました。データベース保存は未完了です。`
-          : `新規ユーザー「${newUserForm.name}（${newUserForm.role}）」を追加登録いたしました！`
-      );
+      if (dbError) {
+        console.error(dbError);
+        alert('通信エラー: ' + dbError);
+        return;
+      }
+      addNotification('success', `新規ユーザー「${newUserForm.name}（${newUserForm.role}）」を追加登録いたしました！`);
       setIsUserModalOpen(false);
       setNewUserForm(blankUserForm());
       if (!dbError) await fetchAllData({ silent: true });
@@ -4023,26 +3942,16 @@ export default function Page() {
 
     try {
       const dbError = await saveUserWithProfile(saved);
+      if (dbError) {
+        console.error(dbError);
+        alert('通信エラー: ' + dbError);
+        return;
+      }
       if (editingStudentOriginalId && editingStudentOriginalId !== nextId) {
-        await supabase.from('users').delete().eq('id', editingStudentOriginalId);
-        const profiles = readLocalProfiles();
-        if (profiles[editingStudentOriginalId]) {
-          profiles[nextId] = profiles[editingStudentOriginalId];
-          delete profiles[editingStudentOriginalId];
-          writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, profiles);
-        }
-        const passwords = readLocalPasswords();
-        if (!passwords[nextId] && passwords[editingStudentOriginalId]) passwords[nextId] = passwords[editingStudentOriginalId];
-        delete passwords[editingStudentOriginalId];
-        writeLocalJson(USER_PASSWORD_STORAGE_KEY, passwords);
+        await supabase.from('teachers').delete().eq('id', editingStudentOriginalId);
       }
       replaceEditedUser(editingStudentOriginalId, saved);
-      addNotification(
-        dbError ? 'warning' : 'success',
-        dbError
-          ? `「${saved.name}」の変更は一覧へ反映しました。データベース保存は未完了です。`
-          : `教師「${saved.name}」の情報を更新いたしました。`
-      );
+      addNotification('success', `教師「${saved.name}」の情報を更新いたしました。`);
       setIsTeacherEditModalOpen(false);
     } catch (err: any) {
       replaceEditedUser(editingStudentOriginalId, saved);
@@ -4060,9 +3969,10 @@ export default function Page() {
     const passwords = readLocalPasswords();
     delete passwords[teacher.id];
     writeLocalJson(USER_PASSWORD_STORAGE_KEY, passwords);
-    const { error } = await supabase.from('users').delete().eq('id', teacher.id);
+    const { error } = await supabase.from('teachers').delete().eq('id', teacher.id);
     if (error) {
-      addNotification('warning', `「${teacher.name}」は一覧から削除しました。データベースの削除は未完了の可能性があります。`);
+      console.error(error);
+      alert('通信エラー: ' + error.message);
       return;
     }
     addNotification('success', `「${teacher.name}」を削除いたしました。`);
@@ -4082,9 +3992,14 @@ export default function Page() {
     }
 
     try {
-      const dbError = await saveUserWithProfile({ ...studentEditForm, id: nextId, role: studentEditForm.role, password: studentEditForm.password.trim() });
+      const dbError = await saveUserWithProfile({ ...studentEditForm, id: nextId, role: 'student', password: studentEditForm.password.trim() });
+      if (dbError) {
+        console.error(dbError);
+        alert('通信エラー: ' + dbError);
+        return;
+      }
       if (editingStudentOriginalId && editingStudentOriginalId !== nextId) {
-        await supabase.from('users').delete().eq('id', editingStudentOriginalId);
+        await supabase.from('students').delete().eq('id', editingStudentOriginalId);
         const profiles = readLocalProfiles();
         delete profiles[editingStudentOriginalId];
         writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, profiles);
@@ -4103,12 +4018,7 @@ export default function Page() {
         setSelectedStudentIds((prev) => prev.map((id) => (id === editingStudentOriginalId ? nextId : id)));
         setUsers((prev) => prev.filter((user) => user.id !== editingStudentOriginalId));
       }
-      addNotification(
-        dbError ? 'warning' : 'success',
-        dbError
-          ? `「${studentEditForm.name}」の変更は一覧へ反映しました。データベース保存は未完了です。`
-          : `生徒「${studentEditForm.name}」の情報を更新いたしました。`
-      );
+      addNotification('success', `生徒「${studentEditForm.name}」の情報を更新いたしました。`);
       setIsStudentEditModalOpen(false);
       setIsTeacherEditModalOpen(false);
       if (!dbError) await fetchAllData({ silent: true });
@@ -4134,10 +4044,11 @@ export default function Page() {
     writeLocalMessages(readLocalMessages().filter((message) => message.user_id !== student.id));
     setMessages((prev) => prev.filter((message) => message.user_id !== student.id));
 
-    const { error } = await supabase.from('users').delete().eq('id', student.id);
+    const { error } = await supabase.from('students').delete().eq('id', student.id);
     await supabase.from('student_messages').delete().eq('user_id', student.id);
     if (error) {
-      addNotification('warning', `「${student.name}」は一覧から削除しました。データベースの削除は未完了の可能性があります。`);
+      console.error(error);
+      alert('通信エラー: ' + error.message);
       return;
     }
     addNotification('success', `「${student.name}」を削除いたしました。`);
@@ -4301,7 +4212,7 @@ export default function Page() {
     }
 
     const inputKey = inputIdClean.toLowerCase();
-    const matched = users.find((u) => u.id.toLowerCase() === inputKey || (u.email || '').toLowerCase() === inputKey);
+    const matched = users.find((u) => u.id.toLowerCase() === inputKey || (u.studentCode || '').toLowerCase() === inputKey || (u.email || '').toLowerCase() === inputKey);
     if (matched) {
       if (!acceptsLoginPassword(matched.id, matched.password || '', inputPassword)) {
         setLoginError('IDまたはパスワードが違います');
@@ -4854,7 +4765,7 @@ export default function Page() {
       const matchesSearch = searchQuery === '' || m.title.includes(searchQuery) || m.id.includes(searchQuery);
       return matchesSubject && matchesSearch;
     });
-    return byDisplayOrder(matched);
+    return bySubjectThenOrder(matched);
   }, [materials, subjectFilter, searchQuery]);
 
   const logSubjectChoices = SUBJECT_NAMES;
@@ -5010,7 +4921,6 @@ export default function Page() {
     const signedIn = currentUser;
     if (!signedIn || isStaffRole(signedIn.role, signedIn.id, signedIn.email) || resolveAppRole(signedIn.role, signedIn.id, signedIn.email) !== 'student') return;
     setActiveTab('schedule_planner');
-    setMyMaterials(readMyMaterials(signedIn.id));
     setLogSlots(readLogSlots());
     const storedPlans = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {})[signedIn.id];
     const plans = readWeekPlans(signedIn.id);
@@ -5024,6 +4934,14 @@ export default function Page() {
     if (storedHasSeed) writeWeekPlans(signedIn.id, plans);
     setNewLogForm((prev) => (prev.user_id === signedIn.id ? prev : { ...prev, user_id: signedIn.id }));
   }, [currentUser?.id, currentUser?.role]);
+
+  useEffect(() => {
+    if (!currentUser || resolveAppRole(currentUser.role, currentUser.id, currentUser.email) !== 'student') return;
+    setMyMaterials(materials.flatMap((item) => {
+      if (item.is_custom !== true || item.owner_student_id !== currentUser.id || !isSubjectType(item.subject)) return [];
+      return [{ id: item.id, title: item.title, subject: item.subject, addedAt: '' }];
+    }));
+  }, [materials, currentUser?.id, currentUser?.role, currentUser?.email]);
 
   useEffect(() => {
     const signedIn = currentUser;
@@ -5282,9 +5200,9 @@ export default function Page() {
 
   const downloadStudentCsvTemplate = useCallback(() => {
     const csvBody = [
-      'id,password,name,role,classroom,grade,high_school,english,math,japanese,physics,chemistry,biology,japanese_history,world_history,individual',
-      'ext001,ext001,川越 太郎,student,本川越校,高2,川越高校,選抜,標準,標準,基礎,標準,基礎,日本史A,,個別A',
-      'ext002,1234,山手 花子,student,本川越校,高1,山手高校,標準,選抜,標準,,,生物A,,世界史B,個別B',
+      'id,student_code,name,grade,branch_id,password,math,english,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual',
+      'ext001,ext001,川越 太郎,高2,本川越校,ext001,標準,選抜,標準,,基礎,標準,基礎,日本史A,,個別A',
+      'ext002,ext002,山手 花子,高1,本川越校,1234,選抜,標準,標準,,,生物A,,世界史B,個別B',
     ].join('\n');
     const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -5299,9 +5217,9 @@ export default function Page() {
 
   const downloadTeacherCsvTemplate = useCallback(() => {
     const csvBody = [
-      'id,password,name,role,classroom',
-      'teacher01,teacher01,佐藤 講師,teacher,本川越校',
-      'teacher02,1234,鈴木 講師,teacher,川越校',
+      'id,name,branch_id,role,password',
+      'teacher01,佐藤 講師,本川越校,teacher,teacher01',
+      'teacher02,鈴木 講師,川越校,teacher,1234',
     ].join('\n');
     const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -5343,7 +5261,7 @@ export default function Page() {
             const rawPassword = csvCell(row, 'password');
             const rawName = csvCell(row, 'name');
             const rawRole = csvCell(row, 'role').toLowerCase();
-            const rawClassroom = csvCell(row, 'classroom') || '本川越校';
+            const rawClassroom = csvCell(row, 'branch_id') || csvCell(row, 'classroom');
 
             if (!rawId) errors.push({ rowNumber: rowNum, field: 'id', message: '独自ID (id) が指定されていません。' });
             if (!rawName) errors.push({ rowNumber: rowNum, field: 'name', message: '氏名 (name) が空欄です。' });
@@ -5361,15 +5279,16 @@ export default function Page() {
                   role: 'student',
                   classroom: rawClassroom,
                   password: rawPassword || existingUser?.password || '',
+                  studentCode: csvCell(row, 'student_code') || rawId,
                   grade: csvCell(row, 'grade'),
-                  highSchool: csvCell(row, 'high_school'),
                   english: csvCell(row, 'english'),
                   math: csvCell(row, 'math'),
-                  japanese: csvCell(row, 'japanese'),
+                  japanese: csvCell(row, 'modern_jp') || csvCell(row, 'japanese'),
+                  classicJp: csvCell(row, 'classic_jp'),
                   physics: csvCell(row, 'physics'),
                   chemistry: csvCell(row, 'chemistry'),
                   biology: csvCell(row, 'biology'),
-                  japaneseHistory: csvCell(row, 'japanese_history'),
+                  japaneseHistory: csvCell(row, 'jp_history') || csvCell(row, 'japanese_history'),
                   worldHistory: csvCell(row, 'world_history'),
                   individual: csvCell(row, 'individual'),
                 });
@@ -5436,12 +5355,15 @@ export default function Page() {
         const result = await saveUserWithProfile(row);
         if (result) dbError = result;
       }
-      setCsvStatusMessage({
-        type: dbError ? 'error' : 'success',
-        text: dbError ? `一覧へ反映しました。データベース保存は未完了です: ${dbError}` : '登録が完了いたしました！',
-      });
-      addNotification(dbError ? 'warning' : 'success', `${csvParsedPreview.length} 名の${csvImportKind === 'student' ? '生徒' : '教師'}データを登録いたしました。`);
-      if (!dbError) await fetchAllData({ silent: true });
+      if (dbError) {
+        console.error(dbError);
+        alert('通信エラー: ' + dbError);
+        setCsvStatusMessage({ type: 'error', text: dbError });
+        return;
+      }
+      setCsvStatusMessage({ type: 'success', text: '登録が完了いたしました！' });
+      addNotification('success', `${csvParsedPreview.length} 名の${csvImportKind === 'student' ? '生徒' : '教師'}データを登録いたしました。`);
+      await fetchAllData({ silent: true });
       setTimeout(() => {
         setIsStudentCsvModalOpen(false);
         setIsTeacherCsvModalOpen(false);
@@ -5590,17 +5512,26 @@ export default function Page() {
     const index = ordered.findIndex((item) => item.id === material.id);
     const target = index + direction;
     if (index < 0 || target < 0 || target >= ordered.length) return;
-    const next = [...ordered];
-    const [moved] = next.splice(index, 1);
-    next.splice(target, 0, moved);
-    const orders = ordered.map((item) => item.display_order);
-    const unique = orders.every((order) => order != null) && new Set(orders).size === orders.length;
-    const updates: Array<{ id: string; order: number }> = unique
-      ? [
-          { id: ordered[index].id, order: ordered[target].display_order as number },
-          { id: ordered[target].id, order: ordered[index].display_order as number },
-        ]
-      : next.flatMap((item, itemIndex) => (item.display_order === itemIndex + 1 ? [] : [{ id: item.id, order: itemIndex + 1 }]));
+    let movingOrder = ordered[index].display_order;
+    let otherOrder = ordered[target].display_order;
+    if (movingOrder == null || otherOrder == null || movingOrder === otherOrder) {
+      const base = Math.min(index, target) + 1;
+      if (direction < 0) {
+        movingOrder = base;
+        otherOrder = base + 1;
+      } else {
+        otherOrder = base;
+        movingOrder = base + 1;
+      }
+    } else {
+      const swap = movingOrder;
+      movingOrder = otherOrder;
+      otherOrder = swap;
+    }
+    const updates = [
+      { id: ordered[index].id, order: movingOrder },
+      { id: ordered[target].id, order: otherOrder },
+    ];
     try {
       for (const update of updates) {
         const failure = await updateMaterialOrder(supabase, update.id, update.order);
@@ -5614,10 +5545,10 @@ export default function Page() {
 
   const downloadMaterialCsvTemplate = useCallback(() => {
     const csvBody = [
-      'title,subject,description',
-      '英語長文マスター,英語,長文読解の基礎から演習まで',
-      'チャート式数学,数学,計算問題と標準問題の演習',
-      '学校配布プリントまとめ,高校の予習,授業で配られたプリントの保管',
+      'id,title,subject,description,order_index,is_custom,owner_student_id',
+      ',英語長文マスター,英語,長文読解の基礎から演習まで,1,false,',
+      ',チャート式数学,数学,計算問題と標準問題の演習,1,false,',
+      ',学校配布プリントまとめ,高校の予習,授業で配られたプリントの保管,1,false,',
     ].join('\n');
     const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -5660,6 +5591,10 @@ export default function Page() {
             const title = row.title ? String(row.title).trim() : '';
             const subjectRaw = row.subject ? String(row.subject).trim().replace(/（/g, '(').replace(/）/g, ')') : '';
             const description = row.description ? String(row.description).trim() : '';
+            const rawId = row.id ? String(row.id).trim() : '';
+            const order = readDisplayOrder(row.order_index);
+            const custom = String(row.is_custom ?? '').trim().toLowerCase() === 'true';
+            const ownerId = row.owner_student_id ? String(row.owner_student_id).trim() : '';
 
             if (!title) {
               errors.push({ rowNumber: rowNum, field: 'title', message: '教材タイトル (title) が空欄です。' });
@@ -5670,14 +5605,16 @@ export default function Page() {
 
             if (title && isSubjectType(subjectRaw)) {
               parsedRows.push({
-                id: `mat_${batchStamp + index}`,
+                id: rawId || `mat_${batchStamp + index}`,
                 title,
                 subject: subjectRaw,
                 description: description || undefined,
                 color: SUBJECT_COLOR_MAP[subjectRaw].hexCode,
                 created_by: createdBy,
                 difficulty: 'standard',
-                display_order: 0,
+                display_order: order,
+                is_custom: custom,
+                owner_student_id: ownerId || null,
               });
             }
           });
@@ -5722,17 +5659,21 @@ export default function Page() {
         const subject = subjectFromInput(row.subject);
         if (!subject) return;
         const existing = findMaterialByTitle(next, row.title);
-        const saved = mergeMaterialRecord(existing, {
-          id: existing?.id || row.id,
-          title: row.title,
-          subject,
-          description: row.description,
-          image_url: null,
-          difficulty: row.difficulty || existing?.difficulty || 'standard',
-          created_by: row.created_by || currentUser?.id || existing?.created_by || '',
-          display_order: allocateDisplayOrder(subject, existing),
-          overwriteBlanks: false,
-        });
+        const saved = {
+          ...mergeMaterialRecord(existing, {
+            id: existing?.id || row.id,
+            title: row.title,
+            subject,
+            description: row.description,
+            image_url: null,
+            difficulty: row.difficulty || existing?.difficulty || 'standard',
+            created_by: row.created_by || currentUser?.id || existing?.created_by || '',
+            display_order: row.display_order ?? allocateDisplayOrder(subject, existing),
+            overwriteBlanks: false,
+          }),
+          is_custom: row.is_custom === true,
+          owner_student_id: row.owner_student_id ?? null,
+        };
         next = upsertMaterialList(next, saved);
         applied.push({ material: saved, includeDescription: Boolean(row.description?.trim()) });
       });
@@ -5787,31 +5728,19 @@ export default function Page() {
       created_at: new Date().toISOString(),
     };
 
-    rememberPendingStudyLog(payload);
-    setLogs((prev) => [payload, ...prev.filter((log) => log.id !== payload.id)]);
-    addNotification('success', newLogForm.is_mission_completed ? '👑 ミッション完了！学習ログを記録いたしました！' : '学習ログを記録いたしました！');
-    setIsLogModalOpen(false);
-    setNewLogForm({ user_id: '', subject: '', material_id: '', score: 0, max_score: 100, time_spent_minutes: 0, is_mission_completed: false, comment: '' });
-
     try {
-      const insertPayload = { ...payload, comment: payload.comment || null };
-      let { error } = await supabase.from('study_logs').insert([insertPayload]);
-      if (error) {
-        const retry = await supabase.from('study_logs').insert([{
-          id: payload.id,
-          user_id: payload.user_id,
-          material_id: payload.material_id,
-          score: payload.score,
-          is_mission_completed: payload.is_mission_completed,
-          comment: payload.comment || null,
-        }]);
-        error = retry.error;
-      }
-      if (error) addNotification('warning', '学習ログは画面へ反映済みです。データベースへの保存は未完了のため、この端末の記録として保持しています。');
+      const subject = materials.find((item) => item.id === payload.material_id)?.subject || newLogForm.subject || '';
+      const { error } = await supabase.from('study_logs').insert([studyLogRemoteRow(payload, subject)]);
+      if (error) throw error;
+      setLogs((prev) => [payload, ...prev.filter((log) => log.id !== payload.id)]);
+      addNotification('success', newLogForm.is_mission_completed ? '👑 ミッション完了！学習ログを記録いたしました！' : '学習ログを記録いたしました！');
+      setIsLogModalOpen(false);
+      setNewLogForm({ user_id: '', subject: '', material_id: '', score: 0, max_score: 100, time_spent_minutes: 0, is_mission_completed: false, comment: '' });
     } catch (err: any) {
-      addNotification('warning', `学習ログは画面へ反映済みです。${err.message || ''}`);
+      console.error(err);
+      alert('通信エラー: ' + (err?.message || '学習ログの保存に失敗しました'));
     }
-  }, [newLogForm, supabase, addNotification]);
+  }, [newLogForm, materials, supabase, addNotification]);
 
   const saveStudentMinutes = useCallback(async (
     minutes: number,
@@ -5854,7 +5783,13 @@ export default function Page() {
       writeLogSlot(payload.id, { date: slot.date, ...range });
       setLogSlots(readLogSlots());
     }
-    rememberPendingStudyLog(payload);
+    const subjectName = materials.find((item) => item.id === materialId)?.subject || '';
+    const { error: logError } = await supabase.from('study_logs').insert([studyLogRemoteRow(payload, subjectName)]);
+    if (logError) {
+      console.error(logError);
+      alert('通信エラー: ' + logError.message);
+      return false;
+    }
     setLogs((prev) => [payload, ...prev.filter((log) => log.id !== payload.id)]);
     if (mission) {
       setCrownBurst(`${title}のミッション完了！`);
@@ -5868,24 +5803,6 @@ export default function Page() {
     setCountdownRunning(false);
     setCountdownFinished(false);
     setNewLogForm((prev) => ({ ...prev, comment: '' }));
-    try {
-      const insertPayload = { ...payload, comment: payload.comment || null };
-      let { error } = await supabase.from('study_logs').insert([insertPayload]);
-      if (error) {
-        const retry = await supabase.from('study_logs').insert([{
-          id: payload.id,
-          user_id: payload.user_id,
-          material_id: payload.material_id,
-          score: payload.score,
-          is_mission_completed: payload.is_mission_completed,
-          comment: payload.comment || null,
-        }]);
-        error = retry.error;
-      }
-      if (error) addNotification('warning', '学習ログは画面へ反映済みです。データベースへの保存は未完了のため、この端末の記録として保持しています。');
-    } catch (err: any) {
-      addNotification('warning', `学習ログは画面へ反映済みです。${err.message || ''}`);
-    }
     return true;
   }, [currentUser, materials, supabase, addNotification]);
 
@@ -5902,27 +5819,36 @@ export default function Page() {
     addNotification('success', 'タイムアタック終了！');
   }, [countdownRunning, countdownRemainingSec, countdownStartedAt, addNotification]);
 
-  const appendMyMaterial = (title: string, subject: SubjectType) => {
+  const appendMyMaterial = async (title: string, subject: SubjectType) => {
     if (!currentUser || currentUser.role !== 'student') return;
     const trimmed = title.trim();
     if (!trimmed) {
       addNotification('warning', '教材名を入力してください。');
       return;
     }
-    const exists = myMaterials.some((item) => materialTitleKey(item.title) === materialTitleKey(trimmed) && item.subject === subject);
+    const exists = materials.some((item) => item.is_custom === true && item.owner_student_id === currentUser.id && materialTitleKey(item.title) === materialTitleKey(trimmed) && item.subject === subject);
     if (exists) {
       addNotification('info', `「${trimmed}」はすでにマイ教材にあります。`);
       return;
     }
-    const next = [...myMaterials, {
+    const saved: Material = {
       id: `mym_${Date.now()}`,
       title: trimmed,
       subject,
-      addedAt: new Date().toISOString(),
-    }];
-    writeMyMaterials(currentUser.id, next);
-    setMyMaterials(next);
-    addNotification('success', `「${trimmed}」をマイ教材に追加しました。`);
+      created_by: currentUser.id,
+      color: SUBJECT_COLOR_MAP[subject].hexCode,
+      display_order: null,
+      is_custom: true,
+      owner_student_id: currentUser.id,
+    };
+    try {
+      const failure = await writeMaterialRow(supabase, saved.id, materialWritePayload(saved));
+      if (failure) throw new Error(failure);
+      await reloadMaterials();
+      addNotification('success', `「${trimmed}」をマイ教材に追加しました。`);
+    } catch (error) {
+      reportMaterialError(error, 'マイ教材の保存に失敗しました');
+    }
   };
 
   const handleManualMyMaterial = (event: React.FormEvent) => {
@@ -5941,18 +5867,22 @@ export default function Page() {
     appendMyMaterial(parsed.title, parsed.subject);
   };
 
-  const removeMyMaterial = (id: string) => {
+  const removeMyMaterial = async (id: string) => {
     if (!currentUser || currentUser.role !== 'student') return;
-    const next = myMaterials.filter((item) => item.id !== id);
-    writeMyMaterials(currentUser.id, next);
-    setMyMaterials(next);
+    const { error } = await supabase.from('materials').delete().eq('id', id).eq('owner_student_id', currentUser.id);
+    if (error) {
+      console.error(error);
+      alert('通信エラー: ' + error.message);
+      return;
+    }
+    await reloadMaterials();
   };
 
   const toggleFavoriteMaterial = async (materialId: string) => {
     if (!currentUser || currentUser.role !== 'student') return;
     const next = !favoriteMaterialIds.includes(materialId);
     try {
-      await saveMaterialFavorite(supabase, currentUser.id, materialId, next);
+      await saveStudentFavorite(supabase, currentUser.id, materialId, next);
       await reloadMaterials();
     } catch (error) {
       reportMaterialError(error, 'お気に入りの保存に失敗しました');
@@ -6020,36 +5950,21 @@ export default function Page() {
     writeStudyLogOverrides(overrides);
     setEditingLog(null);
     try {
-      let { error } = await supabase.from('study_logs').update({
-        material_id: next.material_id,
-        time_spent_minutes: next.time_spent_minutes,
-        is_mission_completed: next.is_mission_completed,
-        comment: next.comment || null,
-        score: next.score,
-        max_score: next.max_score,
-        created_at: next.created_at,
-      }).eq('id', next.id);
+      const subjectName = materials.find((item) => item.id === next.material_id)?.subject || '';
+      const remote = studyLogRemoteRow(next, subjectName);
+      delete remote.id;
+      const { error } = await supabase.from('study_logs').update(remote).eq('id', next.id);
       if (error) {
-        const retry = await supabase.from('study_logs').update({
-          material_id: next.material_id,
-          score: next.score,
-          is_mission_completed: next.is_mission_completed,
-          comment: next.comment || null,
-        }).eq('id', next.id);
-        error = retry.error;
-      }
-      if (!error) {
-        const current = readStudyLogOverrides();
-        delete current[next.id];
-        writeStudyLogOverrides(current);
-        addNotification('success', '学習記録を更新しました。');
+        console.error(error);
+        alert('通信エラー: ' + error.message);
       } else {
-        addNotification('warning', '画面上の記録は更新済みです。データベースへの反映は未完了のため、この端末の修正として保持しています。');
+        addNotification('success', '学習記録を更新しました。');
       }
     } catch (err: any) {
-      addNotification('warning', `画面上の記録は更新済みです。${err.message || ''}`);
+      console.error(err);
+      alert('通信エラー: ' + (err?.message || '学習記録の更新に失敗しました'));
     }
-  }, [editingLog, editMaterialId, editRange, editComment, editMission, supabase, addNotification]);
+  }, [editingLog, editMaterialId, editRange, editComment, editMission, materials, supabase, addNotification]);
 
   const deleteStudentLog = useCallback(async (log: StudyLog) => {
     const title = materials.find((item) => item.id === log.material_id)?.title || 'この記録';
@@ -6066,7 +5981,8 @@ export default function Page() {
     setEditingLog(null);
     const { error } = await supabase.from('study_logs').delete().eq('id', log.id);
     if (error) {
-      addNotification('warning', '画面上から削除しました。データベースへの反映は未完了のため、この端末では非表示のまま保持しています。');
+      console.error(error);
+      alert('通信エラー: ' + error.message);
       return;
     }
     writeDeletedStudyLogIds(readDeletedStudyLogIds().filter((id) => id !== log.id));
