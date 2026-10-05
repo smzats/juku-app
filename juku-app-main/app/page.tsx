@@ -1869,6 +1869,10 @@ async function saveGlobalScheduleTemplate(
   return true;
 }
 
+function scheduleStudentKey(studentId: unknown): string {
+  return String(studentId ?? '').trim();
+}
+
 function studentTemplateFromRow(row: { template_name?: unknown; schedule_data?: unknown }): MyScheduleFolderItem | null {
   const name = String(row?.template_name || '').trim();
   if (!name) return null;
@@ -1877,7 +1881,8 @@ function studentTemplateFromRow(row: { template_name?: unknown; schedule_data?: 
     return { id: `my_${name}`, name, slots: parseScheduleSlots(raw) };
   }
   if (!raw || typeof raw !== 'object') return { id: `my_${name}`, name, slots: [] };
-  const record = raw as { id?: unknown; hinaSlot?: unknown; slots?: unknown };
+  const record = raw as { id?: unknown; hinaSlot?: unknown; slots?: unknown; templates?: unknown };
+  if (Array.isArray(record.templates)) return null;
   const hinaSlot = typeof record.hinaSlot === 'number' ? record.hinaSlot : undefined;
   return {
     id: typeof record.id === 'string' && record.id ? record.id : `my_${name}`,
@@ -1887,19 +1892,38 @@ function studentTemplateFromRow(row: { template_name?: unknown; schedule_data?: 
   };
 }
 
+function studentTemplatesFromRow(row: { template_name?: unknown; schedule_data?: unknown }): MyScheduleFolderItem[] {
+  const raw = unwrapScheduleJson(row.schedule_data);
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && Array.isArray((raw as { templates?: unknown }).templates)) {
+    return (raw as { templates: unknown[] }).templates.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const record = item as { id?: unknown; name?: unknown; hinaSlot?: unknown; slots?: unknown };
+      const name = String(record.name || '').trim();
+      if (!name) return [];
+      return [{
+        id: typeof record.id === 'string' && record.id ? record.id : `my_${name}`,
+        name,
+        hinaSlot: typeof record.hinaSlot === 'number' ? record.hinaSlot : undefined,
+        slots: parseScheduleSlots(record.slots),
+      }];
+    });
+  }
+  const single = studentTemplateFromRow(row);
+  return single ? [single] : [];
+}
+
 async function fetchStudentScheduleTemplates(
   supabase: { from: (table: string) => any },
   studentId: string,
 ): Promise<MyScheduleFolderItem[] | null> {
-  const result = await supabase.from('student_schedule_templates').select('student_id, template_name, schedule_data').eq('student_id', studentId);
+  const studentKey = scheduleStudentKey(studentId);
+  if (!studentKey) return [];
+  const result = await supabase.from('student_schedule_templates').select('student_id, template_name, schedule_data').eq('student_id', studentKey);
   if (result.error) {
     alertScheduleError(result.error);
     return null;
   }
-  return (result.data || []).flatMap((row: { template_name?: unknown; schedule_data?: unknown }) => {
-    const item = studentTemplateFromRow(row);
-    return item ? [item] : [];
-  });
+  return (result.data || []).flatMap((row: { template_name?: unknown; schedule_data?: unknown }) => studentTemplatesFromRow(row));
 }
 
 async function saveStudentScheduleTemplates(
@@ -1907,25 +1931,40 @@ async function saveStudentScheduleTemplates(
   studentId: string,
   items: MyScheduleFolderItem[],
 ): Promise<void> {
-  for (const item of items) {
+  const studentKey = scheduleStudentKey(studentId);
+  if (!studentKey) {
+    alertScheduleError({ message: '生徒IDが空です' });
+    return;
+  }
+  const listed = items.flatMap((item) => {
+    const templateName = String(item.name || '').trim();
+    if (!templateName) return [];
+    return [{ ...item, name: templateName }];
+  });
+  const existing = await supabase.from('student_schedule_templates').select('template_name').eq('student_id', studentKey);
+  if (existing.error) {
+    alertScheduleError(existing.error);
+    return;
+  }
+  const existingNames = new Set(
+    (existing.data || []).map((row: { template_name?: unknown }) => String(row?.template_name || '').trim()).filter(Boolean),
+  );
+  const pending = listed.filter((item) => !existingNames.has(item.name));
+  const current = listed.filter((item) => existingNames.has(item.name));
+  for (const item of [...pending, ...current]) {
     const scheduleData = { id: item.id, hinaSlot: item.hinaSlot ?? null, slots: item.slots };
-    const existing = await supabase.from('student_schedule_templates').select('template_name').eq('student_id', studentId).eq('template_name', item.name).limit(1);
-    if (existing.error) {
-      alertScheduleError(existing.error);
-      return;
-    }
-    const saved = existing.data && existing.data.length > 0
-      ? await supabase.from('student_schedule_templates').update({ schedule_data: scheduleData }).eq('student_id', studentId).eq('template_name', item.name)
-      : await supabase.from('student_schedule_templates').insert([{ student_id: studentId, template_name: item.name, schedule_data: scheduleData }]);
+    const saved = existingNames.has(item.name)
+      ? await supabase.from('student_schedule_templates').update({ schedule_data: scheduleData }).eq('student_id', studentKey).eq('template_name', item.name)
+      : await supabase.from('student_schedule_templates').insert([{ student_id: studentKey, template_name: item.name, schedule_data: scheduleData }]);
     if (saved.error) {
       alertScheduleError(saved.error);
       return;
     }
   }
-  const names = items.map((item) => item.name);
+  const names = listed.map((item) => item.name);
   const removal = names.length === 0
-    ? await supabase.from('student_schedule_templates').delete().eq('student_id', studentId)
-    : await supabase.from('student_schedule_templates').delete().eq('student_id', studentId).not('template_name', 'in', postgrestQuotedList(names));
+    ? await supabase.from('student_schedule_templates').delete().eq('student_id', studentKey)
+    : await supabase.from('student_schedule_templates').delete().eq('student_id', studentKey).not('template_name', 'in', postgrestQuotedList(names));
   if (removal.error) alertScheduleError(removal.error);
 }
 
@@ -1933,7 +1972,9 @@ async function fetchWeeklySchedules(
   supabase: { from: (table: string) => any },
   studentId: string,
 ): Promise<Record<string, WeekPlanRecord> | null> {
-  const result = await supabase.from('weekly_schedules').select('student_id, week_start_date, schedule_data').eq('student_id', studentId);
+  const studentKey = scheduleStudentKey(studentId);
+  if (!studentKey) return {};
+  const result = await supabase.from('weekly_schedules').select('student_id, week_start_date, schedule_data').eq('student_id', studentKey);
   if (result.error) {
     alertScheduleError(result.error);
     return null;
@@ -1954,24 +1995,30 @@ async function saveWeeklySchedules(
   studentId: string,
   plans: Record<string, WeekPlanRecord>,
 ): Promise<boolean> {
+  const studentKey = scheduleStudentKey(studentId);
+  if (!studentKey) {
+    alertScheduleError({ message: '生徒IDが空です' });
+    return false;
+  }
   for (const [weekStart, plan] of Object.entries(plans)) {
-    const existing = await supabase.from('weekly_schedules').select('week_start_date').eq('student_id', studentId).eq('week_start_date', weekStart).limit(1);
+    const weekKey = String(weekStart || '').trim();
+    const existing = await supabase.from('weekly_schedules').select('week_start_date').eq('student_id', studentKey).eq('week_start_date', weekKey).limit(1);
     if (existing.error) {
       alertScheduleError(existing.error);
       return false;
     }
     const saved = existing.data && existing.data.length > 0
-      ? await supabase.from('weekly_schedules').update({ schedule_data: plan }).eq('student_id', studentId).eq('week_start_date', weekStart)
-      : await supabase.from('weekly_schedules').insert([{ student_id: studentId, week_start_date: weekStart, schedule_data: plan }]);
+      ? await supabase.from('weekly_schedules').update({ schedule_data: plan }).eq('student_id', studentKey).eq('week_start_date', weekKey)
+      : await supabase.from('weekly_schedules').insert([{ student_id: studentKey, week_start_date: weekKey, schedule_data: plan }]);
     if (saved.error) {
       alertScheduleError(saved.error);
       return false;
     }
   }
-  const keys = Object.keys(plans);
+  const keys = Object.keys(plans).map((key) => String(key).trim()).filter(Boolean);
   const removal = keys.length === 0
-    ? await supabase.from('weekly_schedules').delete().eq('student_id', studentId)
-    : await supabase.from('weekly_schedules').delete().eq('student_id', studentId).not('week_start_date', 'in', postgrestQuotedList(keys));
+    ? await supabase.from('weekly_schedules').delete().eq('student_id', studentKey)
+    : await supabase.from('weekly_schedules').delete().eq('student_id', studentKey).not('week_start_date', 'in', postgrestQuotedList(keys));
   if (removal.error) {
     alertScheduleError(removal.error);
     return false;
