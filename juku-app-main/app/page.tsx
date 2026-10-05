@@ -1011,8 +1011,6 @@ export interface NotificationState {
 // SECTION 2. スケジュール（週間タイムテーブル）
 // =============================================================================
 
-const SCHEDULE_TEMPLATE_STORAGE_KEY = 'juku_schedule_templates';
-const MY_SCHEDULE_STORAGE_KEY = 'juku_my_schedules';
 const WEEKLY_GOAL_STORAGE_KEY = 'juku_weekly_goals';
 const PENDING_STUDY_LOGS_KEY = 'juku_pending_study_logs';
 const STUDY_LOG_OVERRIDES_KEY = 'juku_study_log_overrides';
@@ -1691,7 +1689,6 @@ function removeLogSlot(logId: string) {
   writeStudyRecordJson(LOG_SLOT_STORAGE_KEY, all);
 }
 
-const WEEK_PLAN_KEY = 'juku_week_plans';
 const HINA_BASES: { id: StaffScheduleTemplateId; label: string }[] = [
   { id: 'plain', label: 'プレーン' },
   { id: 'high_school', label: '高校のみ' },
@@ -1760,43 +1757,6 @@ function sanitizeWeekPlan(plan: WeekPlanRecord): WeekPlanRecord | null {
   return { ...plan, slots, dateSnapshots: snapshots };
 }
 
-function readWeekPlans(userId: string): Record<string, WeekPlanRecord> {
-  const stored = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {});
-  const plans = stored[userId];
-  if (!plans || typeof plans !== 'object') return {};
-  const cleaned: Record<string, WeekPlanRecord> = {};
-  Object.entries(plans).forEach(([weekStart, plan]) => {
-    const next = sanitizeWeekPlan(plan);
-    if (next) cleaned[weekStart] = next;
-  });
-  return cleaned;
-}
-
-function writeWeekPlans(userId: string, plans: Record<string, WeekPlanRecord>) {
-  const stored = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {});
-  stored[userId] = plans;
-  writeLocalJson(WEEK_PLAN_KEY, stored);
-}
-
-const WEEK_PLAN_UPDATED_AT_KEY = 'juku_week_plans_updated_at';
-
-type WeekPlanRemoteMode = 'doc-user' | 'doc-id' | 'rows' | 'user-column';
-
-let rememberedWeekPlanMode: WeekPlanRemoteMode | null = null;
-let weekPlanRemoteUnavailable = false;
-
-function readWeekPlanUpdatedAt(userId: string): string {
-  const stored = readLocalJson<Record<string, string>>(WEEK_PLAN_UPDATED_AT_KEY, {});
-  const value = stored[userId];
-  return typeof value === 'string' ? value : '';
-}
-
-function writeWeekPlanUpdatedAt(userId: string, updatedAt: string) {
-  const stored = readLocalJson<Record<string, string>>(WEEK_PLAN_UPDATED_AT_KEY, {});
-  stored[userId] = updatedAt;
-  writeLocalJson(WEEK_PLAN_UPDATED_AT_KEY, stored);
-}
-
 function coerceWeekPlan(value: unknown): WeekPlanRecord | null {
   if (!value || typeof value !== 'object') return null;
   const plan = value as Partial<WeekPlanRecord>;
@@ -1810,227 +1770,207 @@ function coerceWeekPlan(value: unknown): WeekPlanRecord | null {
   });
 }
 
-function parseWeekPlanMap(value: unknown): Record<string, WeekPlanRecord> {
-  let source: unknown = value;
-  if (typeof value === 'string') {
-    try {
-      source = JSON.parse(value);
-    } catch {
-      return {};
-    }
-  }
-  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
-  const cleaned: Record<string, WeekPlanRecord> = {};
-  Object.entries(source as Record<string, unknown>).forEach(([weekStart, plan]) => {
-    const next = coerceWeekPlan(plan);
-    if (next) cleaned[weekStart] = next;
-  });
-  return cleaned;
+function alertScheduleError(error: { message?: string } | null | undefined) {
+  console.error(error);
+  alert('スケジュール通信エラー: ' + (error?.message || ''));
 }
 
-function weekPlanTableMissing(message: string): boolean {
-  return /Could not find the table|relation .* does not exist/i.test(message);
-}
-
-function weekPlanSchemaMissing(message: string): boolean {
-  return weekPlanTableMissing(message) || /schema cache|Could not find the '|column .* does not exist/i.test(message);
-}
-
-function remoteWeekPlanStamp(row: { updated_at?: unknown; week_plans_updated_at?: unknown } | null | undefined): string {
-  const value = row?.updated_at || row?.week_plans_updated_at || '';
-  return typeof value === 'string' ? value : '';
-}
-
-function plansFromWeekPlanRows(rows: any[]): { plans: Record<string, WeekPlanRecord>; updatedAt: string; mode: WeekPlanRemoteMode | null } {
-  const plans: Record<string, WeekPlanRecord> = {};
-  let updatedAt = '';
-  let mode: WeekPlanRemoteMode | null = null;
-  rows.forEach((row) => {
-    if (!row || typeof row !== 'object') return;
-    const stamp = remoteWeekPlanStamp(row);
-    if (stamp > updatedAt) updatedAt = stamp;
-    if (row.week_start && Array.isArray(row.slots)) {
-      mode = 'rows';
-      const next = coerceWeekPlan({
-        templateId: row.template_id || row.templateId,
-        templateName: row.template_name || row.templateName || '',
-        slots: row.slots,
-        dateSnapshots: row.date_snapshots || row.dateSnapshots,
-        is_customized: row.is_customized,
-      });
-      if (next) plans[String(row.week_start)] = next;
-      return;
-    }
-    if (row.plans != null) {
-      mode = row.user_id ? 'doc-user' : 'doc-id';
-      Object.assign(plans, parseWeekPlanMap(row.plans));
-    }
-  });
-  return { plans, updatedAt, mode };
-}
-
-function mergeWeekPlanSnapshot(
-  local: Record<string, WeekPlanRecord>,
-  localUpdatedAt: string,
-  remote: Record<string, WeekPlanRecord>,
-  remoteUpdatedAt: string,
-): { plans: Record<string, WeekPlanRecord>; updatedAt: string; push: boolean } {
-  const localTime = Date.parse(localUpdatedAt) || 0;
-  const remoteTime = Date.parse(remoteUpdatedAt) || 0;
-  const localCount = Object.keys(local).length;
-  const remoteCount = Object.keys(remote).length;
-  if (remoteCount === 0 && remoteTime === 0) {
-    return {
-      plans: local,
-      updatedAt: localUpdatedAt || new Date().toISOString(),
-      push: localCount > 0,
-    };
-  }
-  if (localTime > remoteTime) {
-    return { plans: local, updatedAt: localUpdatedAt, push: true };
-  }
-  if (remoteTime > localTime) {
-    return { plans: remote, updatedAt: remoteUpdatedAt, push: false };
-  }
-  const plans = { ...local, ...remote };
-  const push = Object.keys(local).some((key) => {
-    const right = remote[key];
-    if (!right) return true;
-    const left = local[key];
-    return left.templateName !== right.templateName
-      || left.templateId !== right.templateId
-      || Boolean(left.is_customized) !== Boolean(right.is_customized)
-      || !scheduleSlotsMatch(left.slots, right.slots);
-  });
-  return {
-    plans,
-    updatedAt: remoteUpdatedAt || localUpdatedAt || new Date().toISOString(),
-    push,
-  };
-}
-
-async function selectRemoteWeekPlans(
-  supabase: { from: (table: string) => any },
-  userId: string,
-): Promise<{ plans: Record<string, WeekPlanRecord>; updatedAt: string } | null> {
-  if (weekPlanRemoteUnavailable) return null;
-  if (rememberedWeekPlanMode !== 'user-column') {
-    const tableResult = await supabase.from('week_plans').select('*').eq('user_id', userId);
-    if (!tableResult.error) {
-      const parsed = plansFromWeekPlanRows(tableResult.data || []);
-      if (parsed.mode) rememberedWeekPlanMode = parsed.mode;
-      return { plans: parsed.plans, updatedAt: parsed.updatedAt };
-    }
-    const tableMessage = String(tableResult.error.message || '');
-    if (!weekPlanTableMissing(tableMessage)) return null;
-  }
-  const userResult = await supabase.from('users').select('week_plans, week_plans_updated_at').eq('id', userId).maybeSingle();
-  if (userResult.error) {
-    const message = String(userResult.error.message || '');
-    if (weekPlanSchemaMissing(message) && /week_plans_updated_at/i.test(message)) {
-      const retry = await supabase.from('users').select('week_plans').eq('id', userId).maybeSingle();
-      if (!retry.error && retry.data && 'week_plans' in retry.data) {
-        rememberedWeekPlanMode = 'user-column';
-        return {
-          plans: parseWeekPlanMap(retry.data.week_plans),
-          updatedAt: '',
-        };
-      }
-    }
+function unwrapScheduleJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
     return null;
   }
-  if (!userResult.data) return { plans: {}, updatedAt: '' };
-  if (userResult.data.week_plans == null && !('week_plans' in userResult.data)) return null;
-  rememberedWeekPlanMode = 'user-column';
+}
+
+function isScheduleCategory(value: unknown): value is ScheduleCategoryId {
+  return value === 'high_school' || value === 'club' || value === 'activity' || value === 'juku' || value === 'other';
+}
+
+function parseScheduleSlots(value: unknown): ScheduleSlot[] {
+  const source = unwrapScheduleJson(value);
+  if (!Array.isArray(source)) return [];
+  return source.flatMap((slot) => {
+    if (!slot || typeof slot !== 'object') return [];
+    const row = slot as Partial<ScheduleSlot>;
+    if (row.day !== 'mon' && row.day !== 'tue' && row.day !== 'wed' && row.day !== 'thu' && row.day !== 'fri' && row.day !== 'sat' && row.day !== 'sun') return [];
+    if (typeof row.startHour !== 'number' || typeof row.endHour !== 'number') return [];
+    if (!isScheduleCategory(row.category)) return [];
+    return [{
+      id: typeof row.id === 'string' && row.id ? row.id : `slot_${row.day}_${row.startHour}`,
+      day: row.day,
+      startHour: row.startHour,
+      endHour: row.endHour,
+      startMinute: typeof row.startMinute === 'number' ? row.startMinute : 0,
+      endMinute: typeof row.endMinute === 'number' ? row.endMinute : 0,
+      category: row.category,
+      title: typeof row.title === 'string' ? row.title : '',
+    }];
+  });
+}
+
+function postgrestQuotedList(values: string[]): string {
+  return `(${values.map((value) => `"${value.replace(/"/g, '')}"`).join(',')})`;
+}
+
+const EMPTY_STAFF_TEMPLATES: Record<StaffScheduleTemplateId, ScheduleSlot[]> = {
+  plain: [],
+  high_school: [],
+  high_school_club: [],
+};
+
+const GLOBAL_TEMPLATE_NAME: Record<string, StaffScheduleTemplateId> = {
+  plain: 'plain',
+  high_school: 'high_school',
+  high_school_club: 'high_school_club',
+  'プレーン(何も設定されていない)': 'plain',
+  '「高校」のみのパターン': 'high_school',
+  '「高校」・「部活」パターン': 'high_school_club',
+  'プレーン': 'plain',
+  '高校のみ': 'high_school',
+  '高校＋部活': 'high_school_club',
+};
+
+async function fetchGlobalScheduleTemplates(
+  supabase: { from: (table: string) => any },
+): Promise<Record<StaffScheduleTemplateId, ScheduleSlot[]> | null> {
+  const result = await supabase.from('global_schedule_templates').select('template_name, description, schedule_data');
+  if (result.error) {
+    alertScheduleError(result.error);
+    return null;
+  }
+  const next: Record<StaffScheduleTemplateId, ScheduleSlot[]> = { plain: [], high_school: [], high_school_club: [] };
+  (result.data || []).forEach((row: { template_name?: unknown; description?: unknown; schedule_data?: unknown }) => {
+    const key = GLOBAL_TEMPLATE_NAME[String(row?.template_name || '')] || GLOBAL_TEMPLATE_NAME[String(row?.description || '')];
+    if (!key) return;
+    next[key] = parseScheduleSlots(row.schedule_data);
+  });
+  return next;
+}
+
+async function saveGlobalScheduleTemplate(
+  supabase: { from: (table: string) => any },
+  templateId: StaffScheduleTemplateId,
+  slots: ScheduleSlot[],
+): Promise<boolean> {
+  const description = STAFF_SCHEDULE_TEMPLATES.find((item) => item.id === templateId)?.name || templateId;
+  const result = await supabase.from('global_schedule_templates').upsert(
+    [{ template_name: templateId, description, schedule_data: slots }],
+    { onConflict: 'template_name' },
+  );
+  if (result.error) {
+    alertScheduleError(result.error);
+    return false;
+  }
+  return true;
+}
+
+function studentTemplateFromRow(row: { template_name?: unknown; schedule_data?: unknown }): MyScheduleFolderItem | null {
+  const name = String(row?.template_name || '').trim();
+  if (!name) return null;
+  const raw = unwrapScheduleJson(row.schedule_data);
+  if (Array.isArray(raw)) {
+    return { id: `my_${name}`, name, slots: parseScheduleSlots(raw) };
+  }
+  if (!raw || typeof raw !== 'object') return { id: `my_${name}`, name, slots: [] };
+  const record = raw as { id?: unknown; hinaSlot?: unknown; slots?: unknown };
+  const hinaSlot = typeof record.hinaSlot === 'number' ? record.hinaSlot : undefined;
   return {
-    plans: parseWeekPlanMap(userResult.data.week_plans),
-    updatedAt: remoteWeekPlanStamp(userResult.data),
+    id: typeof record.id === 'string' && record.id ? record.id : `my_${name}`,
+    name,
+    hinaSlot,
+    slots: parseScheduleSlots(record.slots),
   };
 }
 
-async function writeWeekPlanMode(
+async function fetchStudentScheduleTemplates(
   supabase: { from: (table: string) => any },
-  mode: WeekPlanRemoteMode,
-  userId: string,
-  plans: Record<string, WeekPlanRecord>,
-  updatedAt: string,
-): Promise<string | null> {
-  if (mode === 'doc-user') {
-    const result = await supabase.from('week_plans').upsert(
-      [{ user_id: userId, plans, updated_at: updatedAt }],
-      { onConflict: 'user_id' },
-    );
-    return result.error ? String(result.error.message || 'upsert failed') : null;
+  studentId: string,
+): Promise<MyScheduleFolderItem[] | null> {
+  const result = await supabase.from('student_schedule_templates').select('student_id, template_name, schedule_data').eq('student_id', studentId);
+  if (result.error) {
+    alertScheduleError(result.error);
+    return null;
   }
-  if (mode === 'doc-id') {
-    const result = await supabase.from('week_plans').upsert(
-      [{ id: userId, user_id: userId, plans, updated_at: updatedAt }],
-      { onConflict: 'id' },
+  return (result.data || []).flatMap((row: { template_name?: unknown; schedule_data?: unknown }) => {
+    const item = studentTemplateFromRow(row);
+    return item ? [item] : [];
+  });
+}
+
+async function saveStudentScheduleTemplates(
+  supabase: { from: (table: string) => any },
+  studentId: string,
+  items: MyScheduleFolderItem[],
+): Promise<void> {
+  if (items.length > 0) {
+    const saved = await supabase.from('student_schedule_templates').upsert(
+      items.map((item) => ({
+        student_id: studentId,
+        template_name: item.name,
+        schedule_data: { id: item.id, hinaSlot: item.hinaSlot ?? null, slots: item.slots },
+      })),
+      { onConflict: 'student_id,template_name' },
     );
-    return result.error ? String(result.error.message || 'upsert failed') : null;
-  }
-  if (mode === 'user-column') {
-    let result = await supabase.from('users').update({
-      week_plans: plans,
-      week_plans_updated_at: updatedAt,
-    }).eq('id', userId);
-    if (result.error && /week_plans_updated_at/i.test(String(result.error.message || ''))) {
-      result = await supabase.from('users').update({ week_plans: plans }).eq('id', userId);
+    if (saved.error) {
+      alertScheduleError(saved.error);
+      return;
     }
-    return result.error ? String(result.error.message || 'update failed') : null;
   }
+  const names = items.map((item) => item.name);
+  const removal = names.length === 0
+    ? await supabase.from('student_schedule_templates').delete().eq('student_id', studentId)
+    : await supabase.from('student_schedule_templates').delete().eq('student_id', studentId).not('template_name', 'in', postgrestQuotedList(names));
+  if (removal.error) alertScheduleError(removal.error);
+}
+
+async function fetchWeeklySchedules(
+  supabase: { from: (table: string) => any },
+  studentId: string,
+): Promise<Record<string, WeekPlanRecord> | null> {
+  const result = await supabase.from('weekly_schedules').select('student_id, week_start_date, schedule_data').eq('student_id', studentId);
+  if (result.error) {
+    alertScheduleError(result.error);
+    return null;
+  }
+  const plans: Record<string, WeekPlanRecord> = {};
+  (result.data || []).forEach((row: { week_start_date?: unknown; schedule_data?: unknown }) => {
+    const weekStart = String(row?.week_start_date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) return;
+    const raw = unwrapScheduleJson(row.schedule_data);
+    const plan = coerceWeekPlan(raw) || (Array.isArray(raw) ? coerceWeekPlan({ templateName: '', slots: raw }) : null);
+    if (plan) plans[weekStart] = plan;
+  });
+  return plans;
+}
+
+async function saveWeeklySchedules(
+  supabase: { from: (table: string) => any },
+  studentId: string,
+  plans: Record<string, WeekPlanRecord>,
+): Promise<boolean> {
   const rows = Object.entries(plans).map(([weekStart, plan]) => ({
-    id: `${userId}__${weekStart}`,
-    user_id: userId,
-    week_start: weekStart,
-    template_id: plan.templateId || null,
-    template_name: plan.templateName || '',
-    slots: plan.slots,
-    date_snapshots: plan.dateSnapshots || null,
-    is_customized: Boolean(plan.is_customized),
-    updated_at: updatedAt,
+    student_id: studentId,
+    week_start_date: weekStart,
+    schedule_data: plan,
   }));
   if (rows.length > 0) {
-    const saved = await supabase.from('week_plans').upsert(rows, { onConflict: 'id' });
-    if (saved.error) return String(saved.error.message || 'upsert failed');
+    const saved = await supabase.from('weekly_schedules').upsert(rows, { onConflict: 'student_id,week_start_date' });
+    if (saved.error) {
+      alertScheduleError(saved.error);
+      return false;
+    }
   }
   const keys = Object.keys(plans);
   const removal = keys.length === 0
-    ? await supabase.from('week_plans').delete().eq('user_id', userId)
-    : await supabase.from('week_plans').delete().eq('user_id', userId).not('week_start', 'in', `(${keys.map((key) => `"${key}"`).join(',')})`);
-  if (removal.error && !weekPlanSchemaMissing(String(removal.error.message || ''))) {
-    return String(removal.error.message || 'delete failed');
+    ? await supabase.from('weekly_schedules').delete().eq('student_id', studentId)
+    : await supabase.from('weekly_schedules').delete().eq('student_id', studentId).not('week_start_date', 'in', postgrestQuotedList(keys));
+  if (removal.error) {
+    alertScheduleError(removal.error);
+    return false;
   }
-  return null;
-}
-
-async function upsertRemoteWeekPlans(
-  supabase: { from: (table: string) => any },
-  userId: string,
-  plans: Record<string, WeekPlanRecord>,
-  updatedAt: string,
-): Promise<void> {
-  if (weekPlanRemoteUnavailable) return;
-  const order: WeekPlanRemoteMode[] = ['doc-user', 'doc-id', 'rows', 'user-column'];
-  const attempts = rememberedWeekPlanMode
-    ? [rememberedWeekPlanMode, ...order.filter((mode) => mode !== rememberedWeekPlanMode)]
-    : order;
-  let schemaFailures = 0;
-  for (const mode of attempts) {
-    const error = await writeWeekPlanMode(supabase, mode, userId, plans, updatedAt);
-    if (!error) {
-      rememberedWeekPlanMode = mode;
-      weekPlanRemoteUnavailable = false;
-      return;
-    }
-    if (weekPlanSchemaMissing(error) || /ON CONFLICT|42P10|unique or exclusion/i.test(error)) {
-      schemaFailures += 1;
-      rememberedWeekPlanMode = null;
-      continue;
-    }
-    return;
-  }
-  if (schemaFailures >= attempts.length) weekPlanRemoteUnavailable = true;
+  return true;
 }
 
 function findMyHina(items: MyScheduleFolderItem[], slotNumber: number): MyScheduleFolderItem | undefined {
@@ -2506,66 +2446,11 @@ function copyScheduleSlotsWithNewIds(slots: ScheduleSlot[]): ScheduleSlot[] {
   }));
 }
 
-function baseScheduleSlot(
-  day: WeekdayId,
-  startHour: number,
-  endHour: number,
-  category: ScheduleCategoryId,
-): ScheduleSlot {
-  return {
-    id: `base_${category}_${day}_${startHour}`,
-    day,
-    startHour,
-    startMinute: 0,
-    endHour,
-    endMinute: 0,
-    category,
-    title: SHORT_CATEGORY_LABEL[category],
-  };
-}
-
-const HINA_SCHOOL_DAYS: WeekdayId[] = ['mon', 'tue', 'wed', 'thu', 'fri'];
-
-function buildDefaultStaffTemplates(): Record<StaffScheduleTemplateId, ScheduleSlot[]> {
-  const school = HINA_SCHOOL_DAYS.map((day) => baseScheduleSlot(day, 8, 16, 'high_school'));
-  const club = [
-    ...HINA_SCHOOL_DAYS.map((day) => baseScheduleSlot(day, 16, 19, 'club')),
-    baseScheduleSlot('sat', 8, 12, 'club'),
-  ];
-  return {
-    plain: [],
-    high_school: school,
-    high_school_club: [
-      ...school.map((slot) => ({ ...slot, id: `${slot.id}_with_club` })),
-      ...club,
-    ],
-  };
-}
-
-function isStaffScheduleTemplates(value: unknown): value is Record<StaffScheduleTemplateId, ScheduleSlot[]> {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return Array.isArray(record.plain) && Array.isArray(record.high_school) && Array.isArray(record.high_school_club);
-}
-
 function slotsForHinaBase(
   templateId: StaffScheduleTemplateId,
   stored: Record<StaffScheduleTemplateId, ScheduleSlot[]>,
 ): ScheduleSlot[] {
-  const builtin = buildDefaultStaffTemplates()[templateId];
-  const custom = stored?.[templateId];
-  if (templateId !== 'plain' && (!custom || custom.length === 0)) return builtin;
-  return custom && custom.length > 0 ? custom : builtin;
-}
-
-function resolveStaffTemplates(stored: unknown): Record<StaffScheduleTemplateId, ScheduleSlot[]> {
-  const builtin = buildDefaultStaffTemplates();
-  if (!isStaffScheduleTemplates(stored)) return builtin;
-  return {
-    plain: stored.plain,
-    high_school: stored.high_school.length > 0 ? stored.high_school : builtin.high_school,
-    high_school_club: stored.high_school_club.length > 0 ? stored.high_school_club : builtin.high_school_club,
-  };
+  return stored[templateId] || [];
 }
 
 function WeeklyTimetable({
@@ -3384,7 +3269,7 @@ export default function Page() {
   const [messages, setMessages] = useState<StudentMessage[]>([]);
 
   // スケジュール（週間タイムテーブル）
-  const [staffTemplates, setStaffTemplates] = useState<Record<StaffScheduleTemplateId, ScheduleSlot[]>>(buildDefaultStaffTemplates);
+  const [staffTemplates, setStaffTemplates] = useState<Record<StaffScheduleTemplateId, ScheduleSlot[]>>(EMPTY_STAFF_TEMPLATES);
   const [selectedStaffTemplateId, setSelectedStaffTemplateId] = useState<StaffScheduleTemplateId>('plain');
   const [mySchedules, setMySchedules] = useState<MyScheduleFolderItem[]>([]);
   const [selectedMyScheduleId, setSelectedMyScheduleId] = useState<string | null>(null);
@@ -3433,7 +3318,7 @@ export default function Page() {
   const [composerDateKey, setComposerDateKey] = useState<string>(() => todayDateKey());
   const [weekPlans, setWeekPlans] = useState<Record<string, WeekPlanRecord>>({});
   const [weekPlansResolved, setWeekPlansResolved] = useState(false);
-  const [weekPlanRevision, setWeekPlanRevision] = useState(0);
+  const [viewedWeekPlans, setViewedWeekPlans] = useState<Record<string, WeekPlanRecord>>({});
   const [openHinaSlot, setOpenHinaSlot] = useState<number | null>(null);
   const [hinaDraftSlots, setHinaDraftSlots] = useState<ScheduleSlot[]>([]);
   const [hinaDraftTitle, setHinaDraftTitle] = useState('');
@@ -3853,27 +3738,37 @@ export default function Page() {
   }, [currentUser, newUserForm.role]);
 
   useEffect(() => {
-    const storedTemplates = readLocalJson<unknown>(SCHEDULE_TEMPLATE_STORAGE_KEY, null);
-    const templates = resolveStaffTemplates(storedTemplates);
-    setStaffTemplates(templates);
-
-    if (!currentUser) return;
-    const role = resolveAppRole(currentUser.role, currentUser.id);
-    const staff = role === 'admin' || role === 'teacher';
-    if (staff) {
-      setMySchedules([]);
-      setSelectedMyScheduleId(null);
-      setSelectedStaffTemplateId('plain');
-      setScheduleSlots(cloneScheduleSlots(templates.plain));
-      return;
-    }
-    const all = readLocalJson<Record<string, MyScheduleFolderItem[]>>(MY_SCHEDULE_STORAGE_KEY, {});
-    setMySchedules(Array.isArray(all[currentUser.id]) ? all[currentUser.id] : []);
-    setSelectedMyScheduleId(null);
-    setScheduleSlots([]);
-    setWeeklyGoalMinutes(readWeeklyGoalMinutes(currentUser.id));
-    setNoticesExpanded(false);
-  }, [currentUser]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const templates = await fetchGlobalScheduleTemplates(supabase);
+        if (cancelled || !templates) return;
+        setStaffTemplates(templates);
+        if (!currentUser) return;
+        const role = resolveAppRole(currentUser.role, currentUser.id);
+        const staff = role === 'admin' || role === 'teacher';
+        if (staff) {
+          setMySchedules([]);
+          setSelectedMyScheduleId(null);
+          setSelectedStaffTemplateId('plain');
+          setScheduleSlots(cloneScheduleSlots(templates.plain));
+          return;
+        }
+        const mine = await fetchStudentScheduleTemplates(supabase, currentUser.id);
+        if (cancelled || !mine) return;
+        setMySchedules(mine);
+        setSelectedMyScheduleId(null);
+        setScheduleSlots([]);
+        setWeeklyGoalMinutes(readWeeklyGoalMinutes(currentUser.id));
+        setNoticesExpanded(false);
+      } catch (error: any) {
+        if (!cancelled) alertScheduleError(error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser, supabase]);
 
   const saveUserWithProfile = useCallback(async (user: User): Promise<string | null> => {
     const profile = pickStudentProfile(user);
@@ -4383,60 +4278,47 @@ export default function Page() {
 
   const weekPlanSaveChain = useRef(Promise.resolve());
   const weekPlanWriteVersion = useRef<Record<string, number>>({});
+  const weekPlanPending = useRef<Record<string, { version: number; plans: Record<string, WeekPlanRecord> }>>({});
   const loadedWeekPlanUser = useRef('');
+  const viewedWeekPlanUser = useRef('');
 
   const persistWeekPlans = useCallback((userId: string, plans: Record<string, WeekPlanRecord>) => {
-    const updatedAt = new Date().toISOString();
-    weekPlanWriteVersion.current[userId] = (weekPlanWriteVersion.current[userId] || 0) + 1;
-    writeWeekPlans(userId, plans);
-    writeWeekPlanUpdatedAt(userId, updatedAt);
+    const version = (weekPlanWriteVersion.current[userId] || 0) + 1;
+    weekPlanWriteVersion.current[userId] = version;
+    weekPlanPending.current[userId] = { version, plans };
     setWeekPlans(plans);
     setWeekPlansResolved(true);
-    setWeekPlanRevision((value) => value + 1);
     weekPlanSaveChain.current = weekPlanSaveChain.current
-      .then(() => upsertRemoteWeekPlans(supabase, userId, plans, updatedAt))
-      .catch(() => undefined);
+      .then(async () => {
+        const saved = await saveWeeklySchedules(supabase, userId, plans);
+        const pending = weekPlanPending.current[userId];
+        if (saved && pending?.version === version) delete weekPlanPending.current[userId];
+      })
+      .catch((error) => alertScheduleError(error));
   }, [supabase]);
 
   const refreshWeekPlans = useCallback(async (userId: string, applyToScreen: boolean) => {
-    const local = readWeekPlans(userId);
-    const localUpdatedAt = readWeekPlanUpdatedAt(userId);
-    const seenVersion = weekPlanWriteVersion.current[userId] || 0;
-    if (applyToScreen && Object.keys(local).length > 0) {
-      setWeekPlans(local);
-      setWeekPlansResolved(true);
-    }
-    const remote = await selectRemoteWeekPlans(supabase, userId);
-    if ((weekPlanWriteVersion.current[userId] || 0) !== seenVersion) return;
-    if (!remote) {
+    try {
+      const seenVersion = weekPlanWriteVersion.current[userId] || 0;
+      const remote = await fetchWeeklySchedules(supabase, userId);
+      if ((weekPlanWriteVersion.current[userId] || 0) !== seenVersion) return;
+      const plans = weekPlanPending.current[userId]?.plans ?? remote;
+      if (!plans) return;
       if (applyToScreen) {
-        setWeekPlans(local);
+        setWeekPlans(plans);
         setWeekPlansResolved(true);
+        return;
       }
-      return;
+      if (viewedWeekPlanUser.current !== userId) return;
+      setViewedWeekPlans(plans);
+    } catch (error: any) {
+      alertScheduleError(error);
     }
-    const merged = mergeWeekPlanSnapshot(local, localUpdatedAt, remote.plans, remote.updatedAt);
-    if ((weekPlanWriteVersion.current[userId] || 0) !== seenVersion) return;
-    writeWeekPlans(userId, merged.plans);
-    writeWeekPlanUpdatedAt(userId, merged.updatedAt);
-    if (applyToScreen) {
-      setWeekPlans(merged.plans);
-      setWeekPlansResolved(true);
-    }
-    setWeekPlanRevision((value) => value + 1);
-    if (!merged.push) return;
-    const pushedAt = merged.updatedAt || new Date().toISOString();
-    writeWeekPlanUpdatedAt(userId, pushedAt);
-    weekPlanSaveChain.current = weekPlanSaveChain.current
-      .then(() => upsertRemoteWeekPlans(supabase, userId, merged.plans, pushedAt))
-      .catch(() => undefined);
   }, [supabase]);
 
   const persistMySchedules = (userId: string, items: MyScheduleFolderItem[]) => {
-    const all = readLocalJson<Record<string, MyScheduleFolderItem[]>>(MY_SCHEDULE_STORAGE_KEY, {});
-    all[userId] = items;
-    writeLocalJson(MY_SCHEDULE_STORAGE_KEY, all);
     setMySchedules(items);
+    void saveStudentScheduleTemplates(supabase, userId, items);
   };
 
   const handleSelectStaffTemplate = (templateId: StaffScheduleTemplateId) => {
@@ -4450,9 +4332,11 @@ export default function Page() {
       [selectedStaffTemplateId]: cloneScheduleSlots(scheduleSlots),
     };
     setStaffTemplates(next);
-    writeLocalJson(SCHEDULE_TEMPLATE_STORAGE_KEY, next);
+    const savedSlots = next[selectedStaffTemplateId];
     const name = STAFF_SCHEDULE_TEMPLATES.find((item) => item.id === selectedStaffTemplateId)?.name || 'ひな形';
-    addNotification('success', `全体ひな形「${name}」を保存しました。`);
+    void saveGlobalScheduleTemplate(supabase, selectedStaffTemplateId, savedSlots).then((saved) => {
+      if (saved) addNotification('success', `全体ひな形「${name}」を保存しました。`);
+    });
   };
 
   const handleLoadTemplateForStudent = (templateId: StaffScheduleTemplateId) => {
@@ -4733,14 +4617,14 @@ export default function Page() {
     const describe = (log: StudyLog) => meetingMaterialInfo(log.material_id, meetingStudentId, materials);
     return {
       studentLogs,
-      plans: meetingStudentId ? readWeekPlans(meetingStudentId) : {},
+      plans: meetingStudentId ? viewedWeekPlans : {},
       weekLogs,
       week: buildStudyStacks(weekLogs, describe),
       month: buildStudyStacks(monthLogs, describe),
       monthLabel: `${year}年${month}月`,
       weekLabel: formatWeekRange(meetingWeekStart),
     };
-  }, [logs, meetingStudentId, meetingWeekStart, logSlots, materials, weekPlanRevision]);
+  }, [logs, meetingStudentId, meetingWeekStart, logSlots, materials, viewedWeekPlans]);
 
   const progressBoard = useMemo(() => {
     const viewerRole = currentUser ? resolveAppRole(currentUser.role, currentUser.id, currentUser.email) : 'student';
@@ -5023,16 +4907,9 @@ export default function Page() {
     if (!signedIn || isStaffRole(signedIn.role, signedIn.id, signedIn.email) || resolveAppRole(signedIn.role, signedIn.id, signedIn.email) !== 'student') return;
     setActiveTab('schedule_planner');
     setLogSlots(readLogSlots());
-    const storedPlans = readLocalJson<Record<string, Record<string, WeekPlanRecord>>>(WEEK_PLAN_KEY, {})[signedIn.id];
-    const plans = readWeekPlans(signedIn.id);
-    setWeekPlans(plans);
-    setWeekPlansResolved(Object.keys(plans).length > 0);
+    setWeekPlans({});
+    setWeekPlansResolved(false);
     loadedWeekPlanUser.current = signedIn.id;
-    const storedHasSeed = Boolean(storedPlans && Object.values(storedPlans).some((plan) => (
-      (plan?.slots || []).some((slot) => SEEDED_JUKU_SLOT_IDS.has(String(slot.id)))
-      || Object.values(plan?.dateSnapshots || {}).some((list) => (list || []).some((slot) => SEEDED_JUKU_SLOT_IDS.has(String(slot.id))))
-    )));
-    if (storedHasSeed) writeWeekPlans(signedIn.id, plans);
     setNewLogForm((prev) => (prev.user_id === signedIn.id ? prev : { ...prev, user_id: signedIn.id }));
   }, [currentUser?.id, currentUser?.role]);
 
@@ -5050,15 +4927,16 @@ export default function Page() {
     const userChanged = loadedWeekPlanUser.current !== signedIn.id;
     if (userChanged) {
       loadedWeekPlanUser.current = signedIn.id;
-      const local = readWeekPlans(signedIn.id);
-      setWeekPlans(local);
-      setWeekPlansResolved(Object.keys(local).length > 0);
+      setWeekPlans({});
+      setWeekPlansResolved(false);
     }
     void refreshWeekPlans(signedIn.id, true);
   }, [activeTab, currentUser?.id, currentUser?.role, refreshWeekPlans]);
 
   useEffect(() => {
     if (!currentUser || !isStaffRole(currentUser.role, currentUser.id, currentUser.email) || !meetingStudentId) return;
+    viewedWeekPlanUser.current = meetingStudentId;
+    setViewedWeekPlans({});
     void refreshWeekPlans(meetingStudentId, false);
   }, [meetingStudentId, currentUser?.id, currentUser?.role, refreshWeekPlans]);
 
