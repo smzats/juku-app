@@ -3400,7 +3400,7 @@ export default function Page() {
   );
   const [myMaterials, setMyMaterials] = useState<MyMaterialItem[]>([]);
   const [myMaterialTitle, setMyMaterialTitle] = useState('');
-  const [myMaterialSubject, setMyMaterialSubject] = useState<SubjectType>('英語');
+  const [myMaterialSubject, setMyMaterialSubject] = useState<SubjectCode>('english');
   const [qrScanOpen, setQrScanOpen] = useState(false);
   const [logSummaryPeriod, setLogSummaryPeriod] = useState<LogSummaryPeriod>('today');
   const [pastWeekStart, setPastWeekStart] = useState<string | null>(null);
@@ -5920,14 +5920,22 @@ export default function Page() {
     addNotification('success', 'タイムアタック終了！');
   }, [countdownRunning, countdownRemainingSec, countdownStartedAt, addNotification]);
 
-  const appendMyMaterial = async (title: string, subject: SubjectType) => {
+  const appendMyMaterial = async (title: string, subject: SubjectType | SubjectCode) => {
     if (!currentUser || currentUser.role !== 'student') return;
     const trimmed = title.trim();
     if (!trimmed) {
       addNotification('warning', '教材名を入力してください。');
       return;
     }
-    const exists = materials.some((item) => item.is_custom === true && item.owner_student_id === currentUser.id && materialTitleKey(item.title) === materialTitleKey(trimmed) && item.subject === subject);
+    let code: SubjectCode | null = null;
+    let tone: SubjectType;
+    if (isSubjectCode(subject)) {
+      code = subject;
+      tone = SUBJECT_CODE_TONE[subject];
+    } else {
+      tone = subject;
+    }
+    const exists = materials.some((item) => item.is_custom === true && item.owner_student_id === currentUser.id && materialTitleKey(item.title) === materialTitleKey(trimmed) && item.subject === tone);
     if (exists) {
       addNotification('info', `「${trimmed}」はすでにマイ教材にあります。`);
       return;
@@ -5935,13 +5943,14 @@ export default function Page() {
     const saved: Material = {
       id: `mym_${Date.now()}`,
       title: trimmed,
-      subject,
+      subject: tone,
       created_by: currentUser.id,
-      color: subjectSetting(subject).color,
+      color: subjectSetting(code || tone).color,
       display_order: null,
       is_custom: true,
       owner_student_id: currentUser.id,
     };
+    if (code) saved.subject_code = code;
     try {
       const failure = await writeMaterialRow(supabase, saved.id, materialWritePayload(saved));
       if (failure) throw new Error(failure);
@@ -8513,14 +8522,14 @@ export default function Page() {
                       <select
                         value={myMaterialSubject}
                         onChange={(event) => {
-                          const subject = subjectFromInput(event.target.value);
-                          if (subject) setMyMaterialSubject(subject);
+                          if (isSubjectCode(event.target.value)) setMyMaterialSubject(event.target.value);
                         }}
                         className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900 bg-white"
                       >
-                        {SUBJECT_NAMES.map((subject) => (
-                          <option key={subject} value={subject}>{subject}</option>
-                        ))}
+                        {(Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((subjectKey) => {
+                          const setting = SUBJECT_CONFIG[subjectKey] ?? SUBJECT_CONFIG.other;
+                          return <option key={subjectKey} value={subjectKey}>{setting.label}</option>;
+                        })}
                       </select>
                     </label>
                     <button type="submit" className="w-full py-3 rounded-2xl bg-sky-600 text-white text-sm font-black cursor-pointer">
