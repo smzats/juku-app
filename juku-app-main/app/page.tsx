@@ -3335,37 +3335,6 @@ function SubjectTextPicker({
 // SECTION 3. 共通サブコンポーネント群 (ダイアログ ＆ ポップアップ)
 // =============================================================================
 
-function MaterialImagePreviewModal({
-  imageUrl,
-  title,
-  onClose
-}: {
-  imageUrl: string;
-  title: string;
-  onClose: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
-      <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-3xl w-full border border-slate-200 space-y-4">
-        <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-          <h4 className="font-extrabold text-sm text-slate-900">🖼️ 教材写真プレビュー: {title}</h4>
-          <button onClick={onClose} className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold flex items-center justify-center">
-            ✕
-          </button>
-        </div>
-        <div className="w-full h-[420px] bg-slate-950 rounded-2xl overflow-hidden flex items-center justify-center p-2 border border-slate-800 shadow-inner">
-          <img src={imageUrl} alt={title} className="max-w-full max-h-full object-contain rounded-lg" />
-        </div>
-        <div className="text-right">
-          <button onClick={onClose} className="px-5 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs rounded-xl">
-            閉じる
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // =============================================================================
 // SECTION 4. メインアプリケーションコンポーネント (Y Log - 生徒第一統合システム)
 // =============================================================================
@@ -3486,7 +3455,6 @@ export default function Page() {
 
   // 選択中詳細データ
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
-  const [previewImageUrl, setPreviewImageUrl] = useState<{ url: string; title: string } | null>(null);
 
   // モーダル開閉ステート
   const [isUserModalOpen, setIsUserModalOpen] = useState<boolean>(false); // 新規ユーザー(教師/生徒)個別登録モーダル
@@ -3508,7 +3476,6 @@ export default function Page() {
   const [isNoticeListOpen, setIsNoticeListOpen] = useState<boolean>(false);
   const [activeNotice, setActiveNotice] = useState<StudentMessage | null>(null);
   const [editingMaterialId, setEditingMaterialId] = useState<string | null>(null);
-  const [isMaterialImageDragOver, setIsMaterialImageDragOver] = useState<boolean>(false);
 
   // 新規ユーザー(教師・生徒・管理者)個別追加フォーム
   const [newUserForm, setNewUserForm] = useState<User>(blankUserForm());
@@ -3553,13 +3520,12 @@ export default function Page() {
     text: '',
   });
 
-  // 新規教材登録フォーム (教科指定・写真対応)
+  // 新規教材登録フォーム (教科指定)
   const [newMaterialForm, setNewMaterialForm] = useState<{
     id: string;
     title: string;
     subject: SubjectCode | '';
     difficulty: 'basic' | 'standard' | 'advanced';
-    image_url: string;
     description: string;
     created_by: string;
   }>({
@@ -3567,7 +3533,6 @@ export default function Page() {
     title: '',
     subject: '',
     difficulty: 'standard',
-    image_url: '',
     description: '',
     created_by: '',
   });
@@ -5515,13 +5480,11 @@ export default function Page() {
 
   const resetMaterialForm = useCallback(() => {
     setEditingMaterialId(null);
-    setIsMaterialImageDragOver(false);
     setNewMaterialForm({
       id: '',
       title: '',
       subject: '',
       difficulty: 'standard',
-      image_url: '',
       description: '',
       created_by: currentUser?.id || '',
     });
@@ -5534,32 +5497,15 @@ export default function Page() {
 
   const openEditMaterialModal = useCallback((material: Material) => {
     setEditingMaterialId(material.id);
-    setIsMaterialImageDragOver(false);
     setNewMaterialForm({
       id: material.id,
       title: material.title,
       subject: subjectCodeFromInput(material.subject_code || material.subject) || '',
       difficulty: material.difficulty || 'standard',
-      image_url: material.image_url || '',
       description: material.description || '',
       created_by: material.created_by,
     });
     setIsMaterialModalOpen(true);
-  }, []);
-
-  const applyMaterialImageFile = useCallback((file: File | undefined) => {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      alert('画像ファイルを選択してください。');
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setNewMaterialForm((prev) => ({ ...prev, image_url: reader.result as string }));
-      }
-    };
-    reader.readAsDataURL(file);
   }, []);
 
   const handleCreateMaterial = useCallback(async (e: React.FormEvent) => {
@@ -5589,7 +5535,6 @@ export default function Page() {
       title: newMaterialForm.title.trim(),
       subject,
       description: newMaterialForm.description,
-      image_url: newMaterialForm.image_url.trim() || null,
       difficulty: newMaterialForm.difficulty,
       created_by: creatorId,
       overwriteBlanks,
@@ -5602,7 +5547,7 @@ export default function Page() {
         supabase,
         saved.id,
         materialWritePayload(saved, {
-          includeImage: overwriteBlanks || Boolean(newMaterialForm.image_url.trim()),
+          includeImage: false,
           includeDescription: overwriteBlanks || Boolean(newMaterialForm.description.trim()),
         }),
       );
@@ -7040,13 +6985,12 @@ export default function Page() {
                 </div>
 
                 <div className="overflow-x-auto border border-slate-200 rounded-2xl">
-                  <table className="w-full text-left border-collapse text-xs font-medium min-w-[880px]">
+                  <table className="w-full text-left border-collapse text-xs font-medium">
                     <thead>
                       <tr className="bg-slate-100 text-slate-900 border-b border-slate-200">
                         <th className="p-3 font-black w-40">表示順序</th>
                         <th className="p-3 font-black w-36">教科</th>
                         <th className="p-3 font-black">教材タイトル</th>
-                        <th className="p-3 font-black w-24">写真</th>
                         <th className="p-3 font-black">説明</th>
                         <th className="p-3 font-black w-44">操作</th>
                       </tr>
@@ -7095,20 +7039,7 @@ export default function Page() {
                               </span>
                             </td>
                             <td className="p-3 font-extrabold text-slate-900">{m.title}</td>
-                            <td className="p-3">
-                              {m.image_url ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setPreviewImageUrl({ url: m.image_url as string, title: m.title })}
-                                  className="block w-14 h-14 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 cursor-pointer"
-                                >
-                                  <img src={m.image_url} alt={m.title} className="w-full h-full object-cover" />
-                                </button>
-                              ) : (
-                                <div className="w-14 h-14 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center text-[10px] font-bold text-slate-400">なし</div>
-                              )}
-                            </td>
-                            <td className="p-3 text-slate-600 max-w-xs">{m.description || ''}</td>
+                            <td className="p-3 text-slate-600">{m.description || ''}</td>
                             <td className="p-3">
                               <div className="flex gap-2">
                                 <button onClick={() => openEditMaterialModal(m)} className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 font-bold text-xs rounded-xl border border-slate-200 cursor-pointer">
@@ -7392,8 +7323,6 @@ export default function Page() {
       </main>
 
       {/* モーダル群 */}
-      {previewImageUrl && <MaterialImagePreviewModal imageUrl={previewImageUrl.url} title={previewImageUrl.title} onClose={() => setPreviewImageUrl(null)} />}
-
       {/* モーダル: 教師・生徒個別手動登録モーダル */}
       {isUserModalOpen && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
@@ -7948,48 +7877,6 @@ export default function Page() {
                     </span>
                   </div>
                 )}
-              </div>
-
-              <div>
-                <label className="block text-slate-600 mb-1">教材写真</label>
-                <div
-                  onDragOver={(e) => { e.preventDefault(); setIsMaterialImageDragOver(true); }}
-                  onDragLeave={() => setIsMaterialImageDragOver(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setIsMaterialImageDragOver(false);
-                    applyMaterialImageFile(e.dataTransfer.files?.[0]);
-                  }}
-                  className={`rounded-2xl border-2 border-dashed p-4 text-center space-y-3 ${isMaterialImageDragOver ? 'border-purple-500 bg-purple-50' : 'border-slate-300 bg-slate-50'}`}
-                >
-                  <p className="text-[11px] text-slate-500 font-bold">画像ファイルをドラッグ＆ドロップ</p>
-                  <label className="inline-flex px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl cursor-pointer">
-                    画像ファイルを選択
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        applyMaterialImageFile(e.target.files?.[0]);
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
-                  {newMaterialForm.image_url ? (
-                    <div className="space-y-2">
-                      <img src={newMaterialForm.image_url} alt="教材写真プレビュー" className="mx-auto max-h-40 rounded-xl object-contain border border-slate-200 bg-white" />
-                      <button
-                        type="button"
-                        onClick={() => setNewMaterialForm({ ...newMaterialForm, image_url: '' })}
-                        className="text-[11px] text-slate-500 underline cursor-pointer"
-                      >
-                        選択した写真を外す
-                      </button>
-                    </div>
-                  ) : (
-                    <p className="text-[11px] text-slate-400">写真は未選択です</p>
-                  )}
-                </div>
               </div>
 
               <div>
@@ -8683,8 +8570,6 @@ export default function Page() {
       </main>
 
       {/* モーダル群 */}
-      {previewImageUrl && <MaterialImagePreviewModal imageUrl={previewImageUrl.url} title={previewImageUrl.title} onClose={() => setPreviewImageUrl(null)} />}
-
       {/* モーダル: 教師・生徒個別手動登録モーダル */}
       
 
