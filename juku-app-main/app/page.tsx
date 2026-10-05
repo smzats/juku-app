@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef, createContext
 import { createPortal } from 'react-dom';
 import Papa from 'papaparse';
 import { createClient } from '@supabase/supabase-js';
-import { SUBJECT_CODES, SUBJECT_MAP, isSubjectCode, subjectCodeFromInput, subjectLabel, subjectSetting, type SubjectCode } from '@/constants/subjects';
+import { SUBJECT_CODES, SUBJECT_CONFIG, SUBJECT_MAP, isSubjectCode, subjectCodeFromInput, subjectLabel, subjectSetting, type SubjectCode } from '@/constants/subjects';
 
 function supabaseEnvConfigured(): boolean {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -6467,11 +6467,11 @@ export default function Page() {
                 <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
                   <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">教科テーマカラー ＆ 正しい修正科目定義</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-                    {SUBJECT_NAMES.map((subj) => {
-                      const setting = subjectSetting(subj);
+                    {(Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((subjectKey) => {
+                      const setting = SUBJECT_CONFIG[subjectKey] ?? SUBJECT_CONFIG.other;
                       return (
-                        <div key={subj} className="p-3 rounded-2xl border space-y-1" style={{ backgroundColor: setting.bgColor, color: setting.color, borderColor: setting.color }}>
-                          <div className="font-black text-xs">{subj}</div>
+                        <div key={subjectKey} className="p-3 rounded-2xl border space-y-1" style={{ backgroundColor: setting.bgColor, color: setting.color, borderColor: setting.color }}>
+                          <div className="font-black text-xs">{setting.label}</div>
                           <div className="text-[9px] font-mono text-slate-500">HEX: {setting.color}</div>
                         </div>
                       );
