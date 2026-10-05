@@ -1853,10 +1853,15 @@ async function saveGlobalScheduleTemplate(
   slots: ScheduleSlot[],
 ): Promise<boolean> {
   const description = STAFF_SCHEDULE_TEMPLATES.find((item) => item.id === templateId)?.name || templateId;
-  const result = await supabase.from('global_schedule_templates').upsert(
-    [{ template_name: templateId, description, schedule_data: slots }],
-    { onConflict: 'template_name' },
-  );
+  const existing = await supabase.from('global_schedule_templates').select('template_name').eq('template_name', templateId).limit(1);
+  if (existing.error) {
+    alertScheduleError(existing.error);
+    return false;
+  }
+  const payload = { description, schedule_data: slots };
+  const result = existing.data && existing.data.length > 0
+    ? await supabase.from('global_schedule_templates').update(payload).eq('template_name', templateId)
+    : await supabase.from('global_schedule_templates').insert([{ template_name: templateId, ...payload }]);
   if (result.error) {
     alertScheduleError(result.error);
     return false;
@@ -1902,15 +1907,16 @@ async function saveStudentScheduleTemplates(
   studentId: string,
   items: MyScheduleFolderItem[],
 ): Promise<void> {
-  if (items.length > 0) {
-    const saved = await supabase.from('student_schedule_templates').upsert(
-      items.map((item) => ({
-        student_id: studentId,
-        template_name: item.name,
-        schedule_data: { id: item.id, hinaSlot: item.hinaSlot ?? null, slots: item.slots },
-      })),
-      { onConflict: 'student_id,template_name' },
-    );
+  for (const item of items) {
+    const scheduleData = { id: item.id, hinaSlot: item.hinaSlot ?? null, slots: item.slots };
+    const existing = await supabase.from('student_schedule_templates').select('template_name').eq('student_id', studentId).eq('template_name', item.name).limit(1);
+    if (existing.error) {
+      alertScheduleError(existing.error);
+      return;
+    }
+    const saved = existing.data && existing.data.length > 0
+      ? await supabase.from('student_schedule_templates').update({ schedule_data: scheduleData }).eq('student_id', studentId).eq('template_name', item.name)
+      : await supabase.from('student_schedule_templates').insert([{ student_id: studentId, template_name: item.name, schedule_data: scheduleData }]);
     if (saved.error) {
       alertScheduleError(saved.error);
       return;
@@ -1948,13 +1954,15 @@ async function saveWeeklySchedules(
   studentId: string,
   plans: Record<string, WeekPlanRecord>,
 ): Promise<boolean> {
-  const rows = Object.entries(plans).map(([weekStart, plan]) => ({
-    student_id: studentId,
-    week_start_date: weekStart,
-    schedule_data: plan,
-  }));
-  if (rows.length > 0) {
-    const saved = await supabase.from('weekly_schedules').upsert(rows, { onConflict: 'student_id,week_start_date' });
+  for (const [weekStart, plan] of Object.entries(plans)) {
+    const existing = await supabase.from('weekly_schedules').select('week_start_date').eq('student_id', studentId).eq('week_start_date', weekStart).limit(1);
+    if (existing.error) {
+      alertScheduleError(existing.error);
+      return false;
+    }
+    const saved = existing.data && existing.data.length > 0
+      ? await supabase.from('weekly_schedules').update({ schedule_data: plan }).eq('student_id', studentId).eq('week_start_date', weekStart)
+      : await supabase.from('weekly_schedules').insert([{ student_id: studentId, week_start_date: weekStart, schedule_data: plan }]);
     if (saved.error) {
       alertScheduleError(saved.error);
       return false;
