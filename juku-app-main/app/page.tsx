@@ -4,7 +4,9 @@ import React, { useEffect, useState, useCallback, useMemo, useRef, createContext
 import { createPortal } from 'react-dom';
 import Papa from 'papaparse';
 import { createClient } from '@supabase/supabase-js';
+import { SCHEDULE_CATEGORY_MAP, scheduleCategoryFromInput, scheduleCategorySetting, type ScheduleCategoryId } from '@/constants/schedule';
 import { SUBJECT_CODES, SUBJECT_CONFIG, SUBJECT_MAP, isSubjectCode, subjectCodeFromInput, subjectLabel, subjectSetting, type SubjectCode } from '@/constants/subjects';
+export type { ScheduleCategoryId };
 
 function supabaseEnvConfigured(): boolean {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -951,7 +953,6 @@ function studyLogRemoteRow(log: StudyLog, subject = ''): Record<string, unknown>
 }
 
 export type WeekdayId = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
-export type ScheduleCategoryId = 'high_school' | 'club' | 'activity' | 'juku' | 'other';
 export type StaffScheduleTemplateId = 'plain' | 'high_school' | 'high_school_club';
 
 export interface ScheduleSlot {
@@ -1033,14 +1034,6 @@ const WEEKDAYS: { id: WeekdayId; label: string }[] = [
 
 const SCHEDULE_HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 const SCHEDULE_MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
-
-const SCHEDULE_CATEGORIES: { id: ScheduleCategoryId; label: string; color: string; border: string }[] = [
-  { id: 'high_school', label: '高校', color: '#EBF8FF', border: '#90CDF4' },
-  { id: 'club', label: '部活', color: '#FFFAF0', border: '#F6AD55' },
-  { id: 'activity', label: '活動(生徒会・実行委員・習い事など)', color: '#FAF5FF', border: '#D6BCFA' },
-  { id: 'juku', label: '塾・予備校', color: '#F0FFF4', border: '#9AE6B4' },
-  { id: 'other', label: '他', color: '#F7FAFC', border: '#A0AEC0' },
-];
 
 const STAFF_SCHEDULE_TEMPLATES: { id: StaffScheduleTemplateId; name: string }[] = [
   { id: 'plain', name: 'プレーン(何も設定されていない)' },
@@ -1694,14 +1687,7 @@ const HINA_BASES: { id: StaffScheduleTemplateId; label: string }[] = [
   { id: 'high_school', label: '高校のみ' },
   { id: 'high_school_club', label: '高校＋部活' },
 ];
-const SHORT_CATEGORY_LABEL: Record<ScheduleCategoryId, string> = {
-  high_school: '高校',
-  club: '部活',
-  activity: '活動',
-  juku: '塾',
-  other: '他',
-};
-const CATEGORY_CYCLE: (ScheduleCategoryId | null)[] = [null, 'high_school', 'club', 'activity', 'juku', 'other'];
+const CATEGORY_CYCLE: (ScheduleCategoryId | null)[] = [null, 'school', 'club', 'activity', 'cram_school', 'other'];
 
 interface WeekPlanRecord {
   templateId?: string;
@@ -1747,10 +1733,25 @@ function withoutSeededScheduleSlots(slots: ScheduleSlot[] | undefined): Schedule
   return (slots || []).filter((slot) => !SEEDED_JUKU_SLOT_IDS.has(String(slot.id)));
 }
 
+function withScheduleCategory(slot: ScheduleSlot): ScheduleSlot | null {
+  const raw = slot as ScheduleSlot & { type?: unknown };
+  const category = scheduleCategoryFromInput(raw.category) || scheduleCategoryFromInput(raw.type);
+  if (!category) return null;
+  const { type: _droppedType, ...rest } = raw;
+  return { ...rest, category };
+}
+
+function normalizeScheduleSlots(slots: ScheduleSlot[] | undefined): ScheduleSlot[] {
+  return withoutSeededScheduleSlots(slots).flatMap((slot) => {
+    const next = withScheduleCategory(slot);
+    return next ? [next] : [];
+  });
+}
+
 function sanitizeWeekPlan(plan: WeekPlanRecord): WeekPlanRecord | null {
-  const slots = withoutSeededScheduleSlots(plan.slots);
+  const slots = normalizeScheduleSlots(plan.slots);
   const snapshots = plan.dateSnapshots
-    ? Object.fromEntries(Object.entries(plan.dateSnapshots).map(([dateKey, list]) => [dateKey, withoutSeededScheduleSlots(list)]))
+    ? Object.fromEntries(Object.entries(plan.dateSnapshots).map(([dateKey, list]) => [dateKey, normalizeScheduleSlots(list)]))
     : undefined;
   const snapshotSlots = snapshots ? Object.values(snapshots) : [];
   if (slots.length === 0 && snapshotSlots.every((list) => list.length === 0)) return null;
@@ -1784,19 +1785,16 @@ function unwrapScheduleJson(value: unknown): unknown {
   }
 }
 
-function isScheduleCategory(value: unknown): value is ScheduleCategoryId {
-  return value === 'high_school' || value === 'club' || value === 'activity' || value === 'juku' || value === 'other';
-}
-
 function parseScheduleSlots(value: unknown): ScheduleSlot[] {
   const source = unwrapScheduleJson(value);
   if (!Array.isArray(source)) return [];
   return source.flatMap((slot) => {
     if (!slot || typeof slot !== 'object') return [];
-    const row = slot as Partial<ScheduleSlot>;
+    const row = slot as Partial<ScheduleSlot> & { type?: unknown };
     if (row.day !== 'mon' && row.day !== 'tue' && row.day !== 'wed' && row.day !== 'thu' && row.day !== 'fri' && row.day !== 'sat' && row.day !== 'sun') return [];
     if (typeof row.startHour !== 'number' || typeof row.endHour !== 'number') return [];
-    if (!isScheduleCategory(row.category)) return [];
+    const category = scheduleCategoryFromInput(row.category) || scheduleCategoryFromInput(row.type);
+    if (!category) return [];
     return [{
       id: typeof row.id === 'string' && row.id ? row.id : `slot_${row.day}_${row.startHour}`,
       day: row.day,
@@ -1804,7 +1802,7 @@ function parseScheduleSlots(value: unknown): ScheduleSlot[] {
       endHour: row.endHour,
       startMinute: typeof row.startMinute === 'number' ? row.startMinute : 0,
       endMinute: typeof row.endMinute === 'number' ? row.endMinute : 0,
-      category: row.category,
+      category,
       title: typeof row.title === 'string' ? row.title : '',
     }];
   });
@@ -2056,7 +2054,7 @@ function weekJukuMinutes(plan: WeekPlanRecord | undefined, weekStart: string): n
   for (let offset = 0; offset < 7; offset += 1) {
     const dateKey = shiftDateKey(weekStart, offset);
     const daySlots = planSlotsForDate(plan, dateKey);
-    total += categoryMinutesOnDay(daySlots, weekdayIdFromDateKey(dateKey), 'juku');
+    total += categoryMinutesOnDay(daySlots, weekdayIdFromDateKey(dateKey), 'cram_school');
   }
   return total;
 }
@@ -2187,7 +2185,7 @@ function paintHourCategory(slots: ScheduleSlot[], day: WeekdayId, hour: number, 
       endHour: hour,
       endMinute: 0,
       category,
-      title: SHORT_CATEGORY_LABEL[category],
+      title: scheduleCategorySetting(category).label,
     }, hourStart, hourEnd));
   }
   return mergeTouchingSlots(kept);
@@ -2218,21 +2216,21 @@ function updateSlotClock(
   kept.push(slotWithRange({
     ...target,
     category: next.category,
-    title: target.category === next.category ? target.title : SHORT_CATEGORY_LABEL[next.category],
+    title: target.category === next.category ? target.title : scheduleCategorySetting(next.category).label,
   }, next.start, next.end));
   return mergeTouchingSlots(kept);
 }
 
 function categoryMeta(id: ScheduleCategoryId) {
-  return SCHEDULE_CATEGORIES.find((category) => category.id === id) || SCHEDULE_CATEGORIES[4];
+  const setting = SCHEDULE_CATEGORY_MAP[id] ?? SCHEDULE_CATEGORY_MAP.other;
+  return { label: setting.label, color: setting.color, bgColor: setting.bgColor };
 }
 
 function slotDisplayName(slot: ScheduleSlot): string {
   const trimmed = slot.title.trim();
-  const meta = categoryMeta(slot.category);
-  if (!trimmed || trimmed === meta.label || trimmed === SHORT_CATEGORY_LABEL[slot.category]) {
-    return SHORT_CATEGORY_LABEL[slot.category];
-  }
+  const setting = scheduleCategorySetting(slot.category);
+  const titledCategory = scheduleCategoryFromInput(trimmed);
+  if (!trimmed || titledCategory === (scheduleCategoryFromInput(slot.category) || 'other')) return setting.label;
   return trimmed;
 }
 
@@ -2248,7 +2246,7 @@ function slotCaptionHour(slot: ScheduleSlot): number {
   return fallback;
 }
 
-function planBandsForHour(slots: ScheduleSlot[], day: WeekdayId, hour: number): { key: string; slotId: string; color: string; label?: string; slice: HourSlice }[] {
+function planBandsForHour(slots: ScheduleSlot[], day: WeekdayId, hour: number): { key: string; slotId: string; color: string; bgColor: string; label?: string; slice: HourSlice }[] {
   return slots.flatMap((slot) => {
     if (slot.day !== day) return [];
     const slice = sliceInHour(hour, studyRangeFromSlot(slot));
@@ -2257,7 +2255,7 @@ function planBandsForHour(slots: ScheduleSlot[], day: WeekdayId, hour: number): 
     const label = hour === slotCaptionHour(slot)
       ? `${formatScheduleRange(slot)} ${slotDisplayName(slot)}`
       : undefined;
-    return [{ key: `${slot.id}-${hour}`, slotId: slot.id, color: meta.color, label, slice }];
+    return [{ key: `${slot.id}-${hour}`, slotId: slot.id, color: meta.color, bgColor: meta.bgColor, label, slice }];
   });
 }
 
@@ -2272,7 +2270,7 @@ function HourCategoryGrid({
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftRange, setDraftRange] = useState<StudyClockRange>({ startHour: 19, startMinute: 45, endHour: 21, endMinute: 50 });
-  const [draftCategory, setDraftCategory] = useState<ScheduleCategoryId>('juku');
+  const [draftCategory, setDraftCategory] = useState<ScheduleCategoryId>('cram_school');
   const editing = slots.find((slot) => slot.id === editingId) || null;
   const dayOrigin = 6 * 60;
   const daySpan = 19 * 60;
@@ -2337,8 +2335,8 @@ function HourCategoryGrid({
                           style={{
                             top: `${slice.top}%`,
                             height: `${slice.height}%`,
-                            backgroundColor: meta.color,
-                            boxShadow: `inset 0 0 0 1px ${meta.border}`,
+                            backgroundColor: meta.bgColor,
+                            boxShadow: `inset 0 0 0 1px ${meta.color}`,
                           }}
                         />
                       )];
@@ -2371,7 +2369,7 @@ function HourCategoryGrid({
                     }}
                   >
                     <span className="block break-all text-[7px] font-black text-slate-800">{timeLabel}</span>
-                    <span className="block truncate text-[7px] font-black text-slate-600">{name}</span>
+                    <span className="block truncate text-[7px] font-black" style={{ color: categoryMeta(slot.category).color }}>{name}</span>
                   </button>
                 );
               })}
@@ -2404,9 +2402,10 @@ function HourCategoryGrid({
                   onChange={(event) => setDraftCategory(event.target.value as ScheduleCategoryId)}
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-2 text-sm font-black"
                 >
-                  {SCHEDULE_CATEGORIES.map((category) => (
-                    <option key={category.id} value={category.id}>{SHORT_CATEGORY_LABEL[category.id]}</option>
-                  ))}
+                  {(Object.keys(SCHEDULE_CATEGORY_MAP) as ScheduleCategoryId[]).map((categoryId) => {
+                    const setting = SCHEDULE_CATEGORY_MAP[categoryId] ?? SCHEDULE_CATEGORY_MAP.other;
+                    return <option key={categoryId} value={categoryId}>{setting.label}</option>;
+                  })}
                 </select>
               </label>
               <StudyTimeRangeFields value={draftRange} onChange={setDraftRange} totalLabel="合計" />
@@ -2500,8 +2499,7 @@ function WeeklyTimetable({
               {slots.filter((slot) => slot.day === day.id).map((slot) => {
                 const meta = categoryMeta(slot.category);
                 const range = slotRangeMinutes(slot);
-                const trimmedTitle = slot.title.trim();
-                const heading = trimmedTitle && trimmedTitle !== meta.label ? trimmedTitle : meta.label;
+                const heading = slotDisplayName(slot);
                 const timeRange = formatScheduleRange(slot);
                 return (
                   <button
@@ -2513,11 +2511,12 @@ function WeeklyTimetable({
                     style={{
                       top: (range.start / 60) * SCHEDULE_HOUR_HEIGHT + 1,
                       height: Math.max(((range.end - range.start) / 60) * SCHEDULE_HOUR_HEIGHT - 2, 16),
-                      backgroundColor: meta.color,
-                      borderColor: meta.border,
+                      backgroundColor: meta.bgColor,
+                      borderColor: meta.color,
+                      color: meta.color,
                     }}
                   >
-                    <div className="text-[10px] font-black text-slate-800 truncate">{timeRange} {heading}</div>
+                    <div className="text-[10px] font-black truncate">{timeRange} {heading}</div>
                     <div className="text-[10px] font-mono text-slate-500 truncate">{Math.max(range.end - range.start, 0)}分</div>
                   </button>
                 );
@@ -2562,8 +2561,7 @@ function DayTimetable({
         {slots.filter((slot) => slot.day === day).map((slot) => {
           const meta = categoryMeta(slot.category);
           const range = slotRangeMinutes(slot);
-          const trimmedTitle = slot.title.trim();
-          const heading = trimmedTitle && trimmedTitle !== meta.label ? trimmedTitle : meta.label;
+          const heading = slotDisplayName(slot);
           const timeRange = formatScheduleRange(slot);
           return (
             <button
@@ -2575,11 +2573,12 @@ function DayTimetable({
               style={{
                 top: (range.start / 60) * hourHeight + 2,
                 height: Math.max(((range.end - range.start) / 60) * hourHeight - 4, 28),
-                backgroundColor: meta.color,
-                borderColor: meta.border,
+                backgroundColor: meta.bgColor,
+                borderColor: meta.color,
+                color: meta.color,
               }}
             >
-              <div className="text-sm font-black text-slate-800 truncate">{timeRange} {heading}</div>
+              <div className="text-sm font-black truncate">{timeRange} {heading}</div>
               <div className="text-[11px] font-mono text-slate-500 truncate">{Math.max(range.end - range.start, 0)}分</div>
             </button>
           );
@@ -2851,7 +2850,7 @@ function DayHourLane({
   showHourLabel: boolean;
   planColor?: string | null;
   planLabel?: string;
-  planBands?: { key: string; slotId: string; color: string; label?: string; slice: HourSlice }[];
+  planBands?: { key: string; slotId: string; color: string; bgColor?: string; label?: string; slice: HourSlice }[];
   studies: {
     key: string;
     color: string;
@@ -2880,7 +2879,7 @@ function DayHourLane({
           <div
             key={band.key}
             className={`absolute inset-x-0 overflow-hidden ${band.label && onDeleteSlot ? '' : 'pointer-events-none'}`}
-            style={{ top: `${band.slice.top}%`, height: `${band.slice.height}%`, backgroundColor: band.color }}
+            style={{ top: `${band.slice.top}%`, height: `${band.slice.height}%`, backgroundColor: band.bgColor || band.color, color: band.color, boxShadow: band.bgColor ? `inset 0 0 0 1px ${band.color}` : undefined }}
           >
             {band.label && onDeleteSlot ? (
               <button
@@ -2892,11 +2891,11 @@ function DayHourLane({
                 }}
                 className="flex w-full items-start justify-between gap-0.5 px-0.5 text-left cursor-pointer"
               >
-                <span className="min-w-0 text-[8px] font-black leading-tight text-slate-800 break-all">{band.label}</span>
+                <span className="min-w-0 text-[8px] font-black leading-tight break-all">{band.label}</span>
                 <span className="shrink-0 text-[8px] font-black text-red-700">削除</span>
               </button>
             ) : band.label ? (
-              <span className="block px-0.5 text-[8px] font-black leading-tight text-slate-800 break-all" title={band.label}>
+              <span className="block px-0.5 text-[8px] font-black leading-tight break-all" title={band.label}>
                 {band.label}
               </span>
             ) : null}
@@ -4513,7 +4512,7 @@ export default function Page() {
       startMinute: 0,
       endHour: Math.min(startHour + 1, 24),
       endMinute: 0,
-      category: 'high_school',
+      category: 'school',
       title: '',
     });
   };
@@ -6468,15 +6467,18 @@ export default function Page() {
                     </button>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {SCHEDULE_CATEGORIES.map((category) => (
-                      <span
-                        key={category.id}
-                        className="px-2 py-1 rounded-lg border text-[10px] font-bold text-slate-700"
-                        style={{ backgroundColor: category.color, borderColor: category.border }}
-                      >
-                        {category.label}
-                      </span>
-                    ))}
+                    {(Object.keys(SCHEDULE_CATEGORY_MAP) as ScheduleCategoryId[]).map((categoryId) => {
+                      const setting = SCHEDULE_CATEGORY_MAP[categoryId] ?? SCHEDULE_CATEGORY_MAP.other;
+                      return (
+                        <span
+                          key={categoryId}
+                          className="px-2 py-1 rounded-lg border text-[10px] font-bold"
+                          style={{ backgroundColor: setting.bgColor, borderColor: setting.color, color: setting.color }}
+                        >
+                          {setting.label}
+                        </span>
+                      );
+                    })}
                   </div>
                   <div className="md:hidden grid grid-cols-7 gap-1">
                     {WEEKDAYS.map((day) => (
@@ -6527,9 +6529,10 @@ export default function Page() {
                             onChange={(e) => setSlotDraft({ ...slotDraft, category: e.target.value as ScheduleCategoryId })}
                             className="w-full bg-white border border-slate-200 p-2.5 rounded-xl cursor-pointer"
                           >
-                            {SCHEDULE_CATEGORIES.map((category) => (
-                              <option key={category.id} value={category.id}>{category.label}</option>
-                            ))}
+                            {(Object.keys(SCHEDULE_CATEGORY_MAP) as ScheduleCategoryId[]).map((categoryId) => {
+                              const setting = SCHEDULE_CATEGORY_MAP[categoryId] ?? SCHEDULE_CATEGORY_MAP.other;
+                              return <option key={categoryId} value={categoryId}>{setting.label}</option>;
+                            })}
                           </select>
                         </label>
                         <label className="space-y-1">
