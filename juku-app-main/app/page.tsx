@@ -3206,20 +3206,31 @@ function SubjectTextPicker({
   onMaterial,
   onToggleFavorite,
   compact = false,
+  fromConfig = false,
 }: {
-  subject: SubjectType | '';
+  subject: string;
   materialId: string;
   materials: Material[];
   myMaterials?: MyMaterialItem[];
   favoriteIds: string[];
-  onSubject: (subject: SubjectType) => void;
+  onSubject: (subject: string) => void;
   onMaterial: (materialId: string) => void;
   onToggleFavorite: (materialId: string) => void;
   compact?: boolean;
+  fromConfig?: boolean;
 }) {
-  const mine = isSubjectType(subject) ? myMaterials.filter((item) => item.subject === subject && item.title.trim()) : [];
-  const catalog = (isSubjectType(subject)
-    ? materialsForSubject(materials, subject).filter((item) => item.title.trim())
+  const selectedCode = fromConfig ? subjectCodeFromInput(subject) : null;
+  const matchesSelected = (item: { subject: string; subject_code?: string | null; title: string }) => {
+    if (!item.title.trim()) return false;
+    if (selectedCode) {
+      if (item.subject_code) return item.subject_code === selectedCode;
+      return item.subject === SUBJECT_CODE_TONE[selectedCode];
+    }
+    return isSubjectType(subject) && item.subject === subject;
+  };
+  const mine = myMaterials.filter(matchesSelected);
+  const catalog = (selectedCode || isSubjectType(subject)
+    ? materials.filter(matchesSelected)
     : []
   ).slice().sort((a, b) => {
     const fav = Number(favoriteIds.includes(b.id)) - Number(favoriteIds.includes(a.id));
@@ -3234,7 +3245,23 @@ function SubjectTextPicker({
     <div className={compact ? 'space-y-1.5' : 'space-y-3'}>
       <div className="text-[11px] font-black text-slate-500">① 科目</div>
       <div className="flex flex-wrap gap-1">
-        {SUBJECT_NAMES.map((name) => {
+        {fromConfig ? (Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((subjectKey) => {
+          const setting = SUBJECT_CONFIG[subjectKey] ?? SUBJECT_CONFIG.other;
+          const selected = subject === subjectKey;
+          return (
+            <button
+              key={subjectKey}
+              type="button"
+              onClick={() => onSubject(subjectKey)}
+              className={`rounded-full font-black cursor-pointer border ${compact ? 'px-2 py-1 text-[11px]' : 'px-3 py-2 text-xs'} ${
+                selected ? '' : 'bg-white text-slate-600 border-slate-200'
+              }`}
+              style={selected ? { color: setting.color, backgroundColor: setting.bgColor, borderColor: setting.color } : undefined}
+            >
+              {setting.label}
+            </button>
+          );
+        }) : SUBJECT_NAMES.map((name) => {
           const setting = subjectSetting(name);
           const selected = subject === name;
           return (
@@ -3252,7 +3279,7 @@ function SubjectTextPicker({
           );
         })}
       </div>
-      {isSubjectType(subject) && (
+      {(selectedCode || isSubjectType(subject)) && (
         <div className={compact ? 'space-y-1' : 'space-y-2'}>
           {mine.length > 0 && (
             <div className={compact ? 'space-y-1' : 'space-y-2'}>
@@ -3548,7 +3575,7 @@ export default function Page() {
   // サクサク学習記録フォーム (ミッション完了トグル付)
   const [newLogForm, setNewLogForm] = useState<{
     user_id: string;
-    subject: SubjectType | '';
+    subject: string;
     material_id: string;
     score: number;
     max_score: number;
@@ -5906,7 +5933,8 @@ export default function Page() {
       writeLogSlot(payload.id, { date: slot.date, ...range });
       setLogSlots(readLogSlots());
     }
-    const subjectName = materials.find((item) => item.id === materialId)?.subject || '';
+    const materialRow = materials.find((item) => item.id === materialId);
+    const subjectName = subjectCodeFromInput(newLogForm.subject) || subjectCodeFromInput(materialRow?.subject_code) || subjectCodeFromInput(materialRow?.subject) || '';
     const { error: logError } = await supabase.from('study_logs').insert([studyLogRemoteRow(payload, subjectName)]);
     if (logError) {
       console.error(logError);
@@ -5927,7 +5955,7 @@ export default function Page() {
     setCountdownFinished(false);
     setNewLogForm((prev) => ({ ...prev, comment: '' }));
     return true;
-  }, [currentUser, materials, supabase, addNotification]);
+  }, [currentUser, materials, newLogForm.subject, supabase, addNotification]);
 
   useEffect(() => {
     if (!countdownRunning || countdownRemainingSec !== 0 || !countdownStartedAt) return;
@@ -8746,6 +8774,7 @@ export default function Page() {
             <div className="flex-1 min-h-0 overflow-y-auto px-3 py-1">
               <SubjectTextPicker
                 compact
+                fromConfig
                 subject={newLogForm.subject}
                 materialId={newLogForm.material_id}
                 materials={materials}
@@ -8921,6 +8950,7 @@ export default function Page() {
               myMaterials={myMaterials}
               favoriteIds={favoriteMaterialIds}
               onSubject={(subject) => {
+                if (!isSubjectType(subject)) return;
                 setEditSubject(subject);
                 setEditMaterialId('');
               }}
