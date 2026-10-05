@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef, createContext
 import { createPortal } from 'react-dom';
 import Papa from 'papaparse';
 import { createClient } from '@supabase/supabase-js';
+import { SUBJECT_CODES, SUBJECT_MAP, isSubjectCode, subjectCodeFromInput, subjectLabel, subjectSetting, type SubjectCode } from '@/constants/subjects';
 
 function supabaseEnvConfigured(): boolean {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -144,6 +145,28 @@ const SUBJECT_MATCH_ORDER = Object.freeze(
 function isSubjectType(value: string): value is SubjectType {
   return Object.prototype.hasOwnProperty.call(SUBJECT_COLOR_MAP, value);
 }
+
+const SUBJECT_CODE_TONE: Record<SubjectCode, SubjectType> = {
+  english: '英語',
+  vocab: '英単語',
+  math_school: '数学(学校用)',
+  math_prep: '数学',
+  modern_jp: '現代文',
+  classic_jp: '古典',
+  physics: '物理',
+  chemistry: '化学',
+  biology: '生物',
+  earth_science: '地学',
+  jp_history: '日本史',
+  world_history: '世界史',
+  geography: '地理',
+  politics_economy: '政治経済',
+  ethics: '倫理',
+  civics: '公共',
+  info_tech: '情報',
+  hs_prep: '高校の予習',
+  other: 'その他',
+};
 
 function canonicalizeSubjectLabel(value: unknown): string {
   return typeof value === 'string' ? value.trim().replace(/（/g, '(').replace(/）/g, ')') : '';
@@ -305,7 +328,7 @@ function mergeMaterialRecord(
     difficulty: incoming.difficulty || existing?.difficulty || 'standard',
     image_url: imageUrl,
     description,
-    color: SUBJECT_COLOR_MAP[incoming.subject].hexCode,
+    color: subjectSetting(incoming.subject).color,
     created_by: existing?.created_by || incoming.created_by || '',
     display_order: incoming.display_order ?? existing?.display_order ?? 1,
   };
@@ -317,7 +340,7 @@ function materialWritePayload(
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     title: saved.title,
-    subject: saved.subject,
+    subject: saved.subject_code || saved.subject,
     description: saved.description ?? null,
     is_custom: saved.is_custom === true,
     owner_student_id: saved.owner_student_id ?? null,
@@ -899,6 +922,7 @@ export interface Material {
   is_favorite?: boolean;
   is_custom?: boolean;
   owner_student_id?: string | null;
+  subject_code?: string | null;
 }
 
 export interface StudyLog {
@@ -1116,6 +1140,7 @@ interface MyMaterialItem {
   id: string;
   title: string;
   subject: SubjectType;
+  subject_code?: string | null;
   addedAt: string;
 }
 
@@ -1620,7 +1645,7 @@ function buildStudyStacks(
     const items = Array.from(bucket.values()).filter((item) => item.minutes > 0).sort((a, b) => b.minutes - a.minutes);
     const minutes = items.reduce((sum, item) => sum + item.minutes, 0);
     if (minutes <= 0) return [];
-    const color = SUBJECT_COLOR_MAP[subject].hexCode;
+    const color = subjectSetting(subject).color;
     return [{
       subject,
       minutes,
@@ -2945,6 +2970,7 @@ function DayHourLane({
   studies: {
     key: string;
     color: string;
+    bgColor?: string;
     title: string;
     crown: boolean;
     slice: HourSlice;
@@ -3002,7 +3028,9 @@ function DayHourLane({
             left: 0,
             right: 0,
             zIndex: 2,
-            backgroundColor: study.color,
+            backgroundColor: study.bgColor || study.color,
+            color: study.bgColor ? study.color : '#ffffff',
+            boxShadow: study.bgColor ? `inset 0 0 0 1px ${study.color}` : undefined,
             top: slice.continuesUp ? -1 : `${slice.top}%`,
             height: slice.continuesUp || slice.continuesDown
               ? `calc(${slice.height}% + ${slice.continuesUp && slice.continuesDown ? 2 : 1}px)`
@@ -3015,7 +3043,7 @@ function DayHourLane({
           const body = (
             <>
               {slice.isStart && study.crown ? <span className="shrink-0 text-[10px] leading-none"><MissionCrown /></span> : null}
-              {slice.isStart ? <span className="min-w-0 text-[8px] font-black truncate leading-none text-white">{study.title}</span> : null}
+              {slice.isStart ? <span className="min-w-0 text-[8px] font-black truncate leading-none text-current">{study.title}</span> : null}
             </>
           );
           if (study.onClick) {
@@ -3067,11 +3095,11 @@ function StudyMaterialStack({
       {subjects.length === 0 ? (
         <p className="text-xs font-bold text-slate-400">この期間の記録はまだありません。</p>
       ) : subjects.map((item) => {
-        const color = SUBJECT_COLOR_MAP[item.subject];
+        const setting = subjectSetting(item.subject);
         return (
           <div key={item.subject} className="space-y-1.5">
             <div className="flex justify-between text-xs font-black">
-              <span className={color.textClass}>{item.subject}</span>
+              <span style={{ color: setting.color }}>{item.subject}</span>
               <span className="text-slate-500">{formatStudyDuration(item.minutes)}</span>
             </div>
             <div className="h-4 rounded-full bg-slate-100 overflow-hidden flex">
@@ -3138,9 +3166,11 @@ function MeetingWeekBoard({
                     const slice = sliceInHour(hour, placed);
                     if (!slice) return [];
                     const material = meetingMaterialInfo(log.material_id, userId, catalog);
+                    const setting = subjectSetting(material.subject);
                     return [{
                       key: `${log.id}-${hour}`,
-                      color: isSubjectType(material.subject) ? SUBJECT_COLOR_MAP[material.subject].hexCode : '#64748b',
+                      color: setting.color,
+                      bgColor: setting.bgColor,
                       title: material.title === '学習' ? '教材名未登録' : material.title,
                       crown: Boolean(log.is_mission_completed),
                       slice,
@@ -3205,7 +3235,7 @@ function SubjectTextPicker({
       <div className="text-[11px] font-black text-slate-500">① 科目</div>
       <div className="flex flex-wrap gap-1">
         {SUBJECT_NAMES.map((name) => {
-          const color = SUBJECT_COLOR_MAP[name];
+          const setting = subjectSetting(name);
           const selected = subject === name;
           return (
             <button
@@ -3213,8 +3243,9 @@ function SubjectTextPicker({
               type="button"
               onClick={() => onSubject(name)}
               className={`rounded-full font-black cursor-pointer border ${compact ? 'px-2 py-1 text-[11px]' : 'px-3 py-2 text-xs'} ${
-                selected ? `${color.bgClass} ${color.textClass} ${color.borderClass}` : 'bg-white text-slate-600 border-slate-200'
+                selected ? '' : 'bg-white text-slate-600 border-slate-200'
               }`}
+              style={selected ? { color: setting.color, backgroundColor: setting.bgColor, borderColor: setting.color } : undefined}
             >
               {name}
             </button>
@@ -3499,7 +3530,7 @@ export default function Page() {
   const [newMaterialForm, setNewMaterialForm] = useState<{
     id: string;
     title: string;
-    subject: SubjectType | '';
+    subject: SubjectCode | '';
     difficulty: 'basic' | 'standard' | 'advanced';
     image_url: string;
     description: string;
@@ -3638,14 +3669,16 @@ export default function Page() {
         const ownerId = textCell(row?.owner_student_id).trim();
         const custom = row?.is_custom === true;
         if (studentView && viewer && custom && ownerId !== viewer.id) return;
-        const subject = subjectFromInput(row.subject) || 'その他';
+        const code = isSubjectCode(row?.subject) ? subjectCodeFromInput(row?.subject) : null;
+        const subject = code ? SUBJECT_CODE_TONE[code] : (subjectFromInput(row?.subject) || 'その他');
         list.push({
           id,
           title,
           subject,
+          subject_code: code,
           created_by: '',
           description: row.description == null ? undefined : String(row.description),
-          color: SUBJECT_COLOR_MAP[subject].hexCode,
+          color: subjectSetting(code || subject).color,
           display_order: readDisplayOrder(row.order_index),
           is_favorite: favoriteIds.has(id),
           is_custom: custom,
@@ -4895,7 +4928,7 @@ export default function Page() {
       const items = Array.from(bucket.values()).filter((item) => item.minutes > 0).sort((a, b) => b.minutes - a.minutes);
       const minutes = items.reduce((sum, item) => sum + item.minutes, 0);
       if (minutes <= 0) return [];
-      const color = SUBJECT_COLOR_MAP[subject].hexCode;
+      const color = subjectSetting(subject).color;
       return [{
         subject,
         minutes,
@@ -5010,7 +5043,7 @@ export default function Page() {
     if (!currentUser || resolveAppRole(currentUser.role, currentUser.id, currentUser.email) !== 'student') return;
     setMyMaterials(materials.flatMap((item) => {
       if (item.is_custom !== true || item.owner_student_id !== currentUser.id || !isSubjectType(item.subject)) return [];
-      return [{ id: item.id, title: item.title, subject: item.subject, addedAt: '' }];
+      return [{ id: item.id, title: item.title, subject: item.subject, subject_code: item.subject_code, addedAt: '' }];
     }));
   }, [materials, currentUser?.id, currentUser?.role, currentUser?.email]);
 
@@ -5473,7 +5506,7 @@ export default function Page() {
     setNewMaterialForm({
       id: material.id,
       title: material.title,
-      subject: subjectFromInput(material.subject) || material.subject,
+      subject: subjectCodeFromInput(material.subject_code || material.subject) || '',
       difficulty: material.difficulty || 'standard',
       image_url: material.image_url || '',
       description: material.description || '',
@@ -5503,11 +5536,12 @@ export default function Page() {
       alert('教材タイトルは必須項目です。');
       return;
     }
-    const subject = subjectFromInput(newMaterialForm.subject);
-    if (!subject) {
+    const code = subjectCodeFromInput(newMaterialForm.subject);
+    if (!code) {
       alert('教科を選択してください。');
       return;
     }
+    const subject = SUBJECT_CODE_TONE[code];
     const creatorId = (editingMaterialId ? newMaterialForm.created_by : currentUser?.id) || currentUser?.id || '';
     if (!creatorId) {
       alert('ログイン中のユーザーIDを取得できません。');
@@ -5529,6 +5563,7 @@ export default function Page() {
       overwriteBlanks,
       display_order: allocateDisplayOrder(subject, existing),
     });
+    saved.subject_code = code;
 
     try {
       const failure = await writeMaterialRow(
@@ -5616,10 +5651,11 @@ export default function Page() {
 
   const downloadMaterialCsvTemplate = useCallback(() => {
     const csvBody = [
+      `# subject: ${SUBJECT_CODES.join(', ')}`,
       'id,title,subject,description,order_index,is_custom,owner_student_id',
-      ',英語長文マスター,英語,長文読解の基礎から演習まで,1,false,',
-      ',チャート式数学,数学,計算問題と標準問題の演習,1,false,',
-      ',学校配布プリントまとめ,高校の予習,授業で配られたプリントの保管,1,false,',
+      ',英語長文マスター,english,長文読解の基礎から演習まで,1,false,',
+      ',チャート式数学,math_prep,計算問題と標準問題の演習,1,false,',
+      ',学校配布プリントまとめ,hs_prep,授業で配られたプリントの保管,1,false,',
     ].join('\n');
     const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -5643,6 +5679,7 @@ export default function Page() {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: 'greedy',
+      comments: '#',
       complete: (results) => {
         try {
           if (!results.data || results.data.length === 0) {
@@ -5651,6 +5688,7 @@ export default function Page() {
 
           const parsedRows: Material[] = [];
           const errors: CsvRowError[] = [];
+          const subjectNotes: string[] = [];
           const createdBy = currentUser?.id || '';
           if (!createdBy) {
             throw new Error('ログイン中のユーザーIDを取得できません。');
@@ -5670,17 +5708,22 @@ export default function Page() {
             if (!title) {
               errors.push({ rowNumber: rowNum, field: 'title', message: '教材タイトル (title) が空欄です。' });
             }
-            if (!isSubjectType(subjectRaw)) {
-              errors.push({ rowNumber: rowNum, field: 'subject', message: `科目 (subject)「${subjectRaw || '未入力'}」は登録できません。` });
+            const code = subjectCodeFromInput(subjectRaw);
+            if (!code) {
+              subjectNotes.push(`${rowNum}行目の科目「${subjectRaw || '未入力'}」は登録できないため除外しました。`);
+            } else if (code !== subjectRaw) {
+              subjectNotes.push(`${rowNum}行目の科目を補正しました: ${subjectRaw} -> ${code}`);
             }
 
-            if (title && isSubjectType(subjectRaw)) {
+            if (title && code) {
+              const tone = SUBJECT_CODE_TONE[code];
               parsedRows.push({
                 id: rawId || `mat_${batchStamp + index}`,
                 title,
-                subject: subjectRaw,
+                subject: tone,
+                subject_code: code,
                 description: description || undefined,
-                color: SUBJECT_COLOR_MAP[subjectRaw].hexCode,
+                color: subjectSetting(code).color,
                 created_by: createdBy,
                 difficulty: 'standard',
                 display_order: order,
@@ -5690,8 +5733,15 @@ export default function Page() {
             }
           });
 
+          if (subjectNotes.length > 0) {
+            alert(subjectNotes.join('\n'));
+          }
+
           if (errors.length > 0) {
             setMaterialCsvStatusMessage({ type: 'error', text: `${errors.length} 件のデータ不備が検出されました。` });
+          } else if (parsedRows.length === 0) {
+            setMaterialCsvParsedPreview([]);
+            setMaterialCsvStatusMessage({ type: 'error', text: '登録できる教材がありません。' });
           } else {
             setMaterialCsvParsedPreview(parsedRows);
             setMaterialCsvStatusMessage({ type: 'success', text: `${parsedRows.length} 件の教材を登録可能です。` });
@@ -5714,7 +5764,7 @@ export default function Page() {
   const executeMaterialCsvImport = useCallback(async () => {
     if (materialCsvParsedPreview.length === 0) return;
 
-    const hasInvalidSubject = materialCsvParsedPreview.some((row) => !isSubjectType(row.subject));
+    const hasInvalidSubject = materialCsvParsedPreview.some((row) => !subjectCodeFromInput(row.subject_code));
     if (hasInvalidSubject) {
       setMaterialCsvStatusMessage({ type: 'error', text: '登録できない科目が含まれているため、取り込みを中止しました。' });
       return;
@@ -5727,8 +5777,9 @@ export default function Page() {
       const applied: Array<{ material: Material; includeDescription: boolean }> = [];
       const allocateDisplayOrder = createDisplayOrderAllocator(materials);
       materialCsvParsedPreview.forEach((row) => {
-        const subject = subjectFromInput(row.subject);
-        if (!subject) return;
+        const code = subjectCodeFromInput(row.subject_code);
+        const subject = code ? SUBJECT_CODE_TONE[code] : null;
+        if (!code || !subject) return;
         const existing = findMaterialByTitle(next, row.title);
         const saved = {
           ...mergeMaterialRecord(existing, {
@@ -5742,6 +5793,7 @@ export default function Page() {
             display_order: row.display_order ?? allocateDisplayOrder(subject, existing),
             overwriteBlanks: false,
           }),
+          subject_code: code,
           is_custom: row.is_custom === true,
           owner_student_id: row.owner_student_id ?? null,
         };
@@ -5907,7 +5959,7 @@ export default function Page() {
       title: trimmed,
       subject,
       created_by: currentUser.id,
-      color: SUBJECT_COLOR_MAP[subject].hexCode,
+      color: subjectSetting(subject).color,
       display_order: null,
       is_custom: true,
       owner_student_id: currentUser.id,
@@ -6416,11 +6468,11 @@ export default function Page() {
                   <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">教科テーマカラー ＆ 正しい修正科目定義</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                     {SUBJECT_NAMES.map((subj) => {
-                      const cfg = SUBJECT_COLOR_MAP[subj];
+                      const setting = subjectSetting(subj);
                       return (
-                        <div key={subj} className={`p-3 rounded-2xl border ${cfg.borderClass} ${cfg.bgClass} space-y-1`}>
-                          <div className={`font-black text-xs ${cfg.textClass}`}>{subj}</div>
-                          <div className="text-[9px] font-mono text-slate-500">HEX: {cfg.hexCode} ({cfg.colorName})</div>
+                        <div key={subj} className="p-3 rounded-2xl border space-y-1" style={{ backgroundColor: setting.bgColor, color: setting.color, borderColor: setting.color }}>
+                          <div className="font-black text-xs">{subj}</div>
+                          <div className="text-[9px] font-mono text-slate-500">HEX: {setting.color}</div>
                         </div>
                       );
                     })}
@@ -6867,10 +6919,10 @@ export default function Page() {
                   <h4 className="text-sm font-extrabold text-slate-900">📊 修正教科別成長スコア ＆ 👑ミッション達成数</h4>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                     {selectedStudentSubjectStats.map((st) => {
-                      const cfg = SUBJECT_COLOR_MAP[st.subject];
+                      const setting = subjectSetting(st.subject);
                       return (
-                        <div key={st.subject} className={`p-3.5 rounded-2xl border ${cfg.borderClass} ${cfg.bgClass} space-y-1.5`}>
-                          <div className={`font-black text-xs ${cfg.textClass}`}>{st.subject}</div>
+                        <div key={st.subject} className="p-3.5 rounded-2xl border space-y-1.5" style={{ backgroundColor: setting.bgColor, color: setting.color, borderColor: setting.color }}>
+                          <div className="font-black text-xs">{st.subject}</div>
                           <div className="text-2xl font-black text-slate-900">{st.avgScore} <span className="text-[10px] font-bold text-slate-400">点</span></div>
                           <div className="flex justify-between items-center text-[9px] font-bold text-slate-600 pt-1 border-t border-slate-200/60">
                             <span>学習: {st.totalHours}h</span>
@@ -6944,6 +6996,7 @@ export default function Page() {
                     value={subjectFilter}
                     onChange={(e) => setSubjectFilter(e.target.value)}
                     className="bg-white border border-slate-300 text-xs font-bold text-slate-800 rounded-xl px-3 py-2.5 focus:outline-none cursor-pointer"
+                    style={subjectFilter !== 'ALL' ? { color: subjectSetting(subjectFilter).color, backgroundColor: subjectSetting(subjectFilter).bgColor, borderColor: subjectSetting(subjectFilter).color } : undefined}
                   >
                     <option value="ALL">全教科（教科ごと）</option>
                     {SUBJECT_NAMES.map((subj) => (
@@ -7000,8 +7053,11 @@ export default function Page() {
                               </div>
                             </td>
                             <td className="p-3">
-                              <span className={`inline-block px-2.5 py-1 rounded-lg text-[10px] font-extrabold ${subjectBadgeClass(m.subject)}`}>
-                                {m.subject}
+                              <span
+                                className="inline-block px-2.5 py-1 rounded-lg text-[10px] font-extrabold border"
+                                style={{ color: subjectSetting(m.subject_code || m.subject).color, backgroundColor: subjectSetting(m.subject_code || m.subject).bgColor, borderColor: subjectSetting(m.subject_code || m.subject).color }}
+                              >
+                                {subjectLabel(m.subject_code || m.subject)}
                               </span>
                             </td>
                             <td className="p-3 font-extrabold text-slate-900">{m.title}</td>
@@ -7786,7 +7842,7 @@ export default function Page() {
                     📥 教材用雛形CSVをダウンロード (BOM付きUTF-8)
                   </button>
                 </div>
-                <p>id・作成者・教科カラーは取り込み時に自動で付きます。subject は登録画面と同じ24科目名です。</p>
+                <p>id・作成者・教科カラーは取り込み時に自動で付きます。subject には次の英語キーを入れてください: {SUBJECT_CODES.join(', ')}</p>
               </div>
               <div className="border-2 border-dashed border-slate-300 p-6 rounded-2xl text-center bg-slate-50">
                 <input type="file" accept=".csv" onChange={handleMaterialCsvFileSelect} disabled={materialCsvUploading} className="block w-full text-xs text-slate-500" />
@@ -7837,22 +7893,22 @@ export default function Page() {
                 <label className="block text-slate-600 mb-1">教科</label>
                 <select
                   value={newMaterialForm.subject}
-                  onChange={(e) => setNewMaterialForm({ ...newMaterialForm, subject: e.target.value as SubjectType | '' })}
+                  onChange={(e) => setNewMaterialForm({ ...newMaterialForm, subject: e.target.value as SubjectCode | '' })}
                   className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none cursor-pointer"
                 >
                   <option value=""></option>
-                  {SUBJECT_NAMES.map((subj) => (
-                    <option key={subj} value={subj}>{subj}</option>
+                  {SUBJECT_CODES.map((code) => (
+                    <option key={code} value={code}>{SUBJECT_MAP[code]}</option>
                   ))}
                 </select>
-                {isSubjectType(newMaterialForm.subject) && (
+                {newMaterialForm.subject !== '' && (
                   <div className="mt-2 flex items-center gap-2">
                     <span
                       className="inline-block w-4 h-4 rounded-full border border-slate-200"
-                      style={{ backgroundColor: SUBJECT_COLOR_MAP[newMaterialForm.subject].hexCode }}
+                      style={{ backgroundColor: subjectSetting(newMaterialForm.subject).color }}
                     />
                     <span className="text-[11px] font-bold text-slate-500">
-                      教科カラー自動設定: {SUBJECT_COLOR_MAP[newMaterialForm.subject].colorName}
+                      教科カラー自動設定: {subjectSetting(newMaterialForm.subject).color}
                     </span>
                   </div>
                 )}
@@ -8104,11 +8160,11 @@ export default function Page() {
                     <p className="text-xs font-bold text-slate-400">この期間の記録はまだありません。</p>
                   ) : periodStudy.subjects.map((item) => {
                     const max = Math.max(...periodStudy.subjects.map((stat) => stat.minutes), 1);
-                    const color = SUBJECT_COLOR_MAP[item.subject];
+                    const setting = subjectSetting(item.subject);
                     return (
                       <div key={item.subject} className="space-y-1.5">
                         <div className="flex justify-between text-xs font-black">
-                          <span className={color.textClass}>{item.subject}</span>
+                          <span style={{ color: setting.color }}>{item.subject}</span>
                           <span className="text-slate-500">{formatStudyDuration(item.minutes)}</span>
                         </div>
                         <div className="h-4 rounded-full bg-slate-100 overflow-hidden flex">
@@ -8147,7 +8203,7 @@ export default function Page() {
                             <span className="truncate">{material?.title || '教材'}</span>
                           </div>
                           <div className="text-[11px] font-bold text-slate-400">
-                            {formatLogStamp(log.created_at)} · {material?.subject || ''} · {log.time_spent_minutes}分
+                            {formatLogStamp(log.created_at)} · <span style={{ color: subjectSetting(material?.subject_code || material?.subject).color }}>{subjectLabel(material?.subject_code || material?.subject)}</span> · {log.time_spent_minutes}分
                             {log.comment ? ` · ${log.comment}` : ''}
                           </div>
                         </div>
@@ -8266,10 +8322,11 @@ export default function Page() {
                               if (!slice) return [];
                               const material = materials.find((item) => item.id === log.material_id)
                                 || myMaterials.find((item) => item.id === log.material_id);
-                              const subjectColor = material && isSubjectType(material.subject) ? SUBJECT_COLOR_MAP[material.subject].hexCode : '#64748b';
+                              const setting = subjectSetting(material?.subject_code || material?.subject);
                               return [{
                                 key: `${log.id}-${hour}`,
-                                color: subjectColor,
+                                color: setting.color,
+                                bgColor: setting.bgColor,
                                 title: material?.title || '学習',
                                 crown: Boolean(log.is_mission_completed),
                                 slice,
@@ -8553,11 +8610,11 @@ export default function Page() {
                   {myMaterials.length === 0 ? (
                     <p className="bg-white rounded-3xl border border-slate-200 p-6 text-sm font-bold text-slate-400">追加した教材はまだありません。</p>
                   ) : myMaterials.map((item) => {
-                    const color = SUBJECT_COLOR_MAP[item.subject];
+                    const setting = subjectSetting(item.subject_code || item.subject);
                     return (
                       <article key={item.id} className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 flex items-center gap-3">
                         <div className="min-w-0 flex-1">
-                          <span className={`inline-block text-[10px] font-black px-2 py-0.5 rounded-full ${color.bgClass} ${color.textClass}`}>{item.subject}</span>
+                          <span className="inline-block text-[10px] font-black px-2 py-0.5 rounded-full border" style={{ color: setting.color, backgroundColor: setting.bgColor, borderColor: setting.color }}>{subjectLabel(item.subject_code || item.subject)}</span>
                           <div className="font-black text-slate-900 mt-1 truncate">{item.title}</div>
                         </div>
                         <button
