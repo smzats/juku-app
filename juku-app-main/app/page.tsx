@@ -562,6 +562,48 @@ function clearAppSession() {
   window.localStorage.removeItem(APP_SESSION_KEY);
 }
 
+function readExplicitLogout(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.localStorage.getItem(EXPLICIT_LOGOUT_KEY) === '1';
+}
+
+function writeExplicitLogout() {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(EXPLICIT_LOGOUT_KEY, '1');
+}
+
+function clearExplicitLogout() {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(EXPLICIT_LOGOUT_KEY);
+}
+
+function clearStoredLoginSession() {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(APP_SESSION_KEY);
+  const localKeys: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (key && isAuthStorageKey(key)) localKeys.push(key);
+  }
+  localKeys.forEach((key) => window.localStorage.removeItem(key));
+  const sessionKeys: string[] = [];
+  for (let index = 0; index < window.sessionStorage.length; index += 1) {
+    const key = window.sessionStorage.key(index);
+    if (key && (key === APP_SESSION_KEY || isAuthStorageKey(key))) sessionKeys.push(key);
+  }
+  sessionKeys.forEach((key) => window.sessionStorage.removeItem(key));
+  document.cookie.split(';').forEach((cookie) => {
+    const name = cookie.split('=')[0]?.trim();
+    if (!name || !isAuthStorageKey(name)) return;
+    document.cookie = `${name}=; Max-Age=0; path=/`;
+  });
+}
+
+function isAuthStorageKey(key: string): boolean {
+  const name = key.toLowerCase();
+  return name.startsWith('sb-') || name.includes('supabase.auth') || name.includes('supabase-auth');
+}
+
 function emptyStudentProfile(): StudentProfile {
   return {
     grade: '',
@@ -611,6 +653,7 @@ export interface StudentMessage {
 }
 
 const APP_SESSION_KEY = 'juku_app_session';
+const EXPLICIT_LOGOUT_KEY = 'juku_explicit_logout';
 const STUDENT_PROFILE_STORAGE_KEY = 'juku_student_profiles';
 const STUDENT_MESSAGE_STORAGE_KEY = 'juku_student_messages';
 const USER_PASSWORD_STORAGE_KEY = 'juku_user_passwords';
@@ -3736,6 +3779,11 @@ export default function Page() {
   }, [currentUser?.id, fetchMaterials]);
 
   useEffect(() => {
+    if (readExplicitLogout()) {
+      clearStoredLoginSession();
+      setSessionChecked(true);
+      return;
+    }
     const saved = readAppSession();
     if (saved) {
       setCurrentUser(saved);
@@ -4114,6 +4162,7 @@ export default function Page() {
   }, [markMessageAsRead]);
 
   const rememberSignedIn = (signedIn: User) => {
+    clearExplicitLogout();
     writeAppSession(signedIn);
     setCurrentUser(signedIn);
   };
@@ -4282,6 +4331,29 @@ export default function Page() {
     setLoginPasswordVisible(false);
     void supabase.auth.signOut();
     addNotification('info', 'ログアウトいたしました。');
+  };
+
+  const handleStudentLogout = async () => {
+    if (!window.confirm('ログアウトしますか？')) return;
+    try {
+      writeExplicitLogout();
+      clearStoredLoginSession();
+      clearActiveStudyClock();
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+    } catch (error: any) {
+      console.error(error);
+      alert('ログアウトに失敗しました: ' + (error?.message || String(error)));
+    } finally {
+      setCurrentUser(null);
+      setWeekPlans({});
+      setWeekPlansResolved(false);
+      loadedWeekPlanUser.current = '';
+      setLoginInputId('');
+      setLoginPassword('');
+      setLoginPasswordVisible(false);
+      setLoginError(null);
+    }
   };
 
   const weekPlanSaveChain = useRef(Promise.resolve());
@@ -7909,6 +7981,13 @@ export default function Page() {
             <div className={`flex items-center gap-2 ${activeTab === 'schedule_planner' ? 'px-0.5' : 'px-1'}`}>
               <img src="/logo.png" alt="Y Log" className={`object-contain ${activeTab === 'schedule_planner' ? 'w-7 h-7' : 'w-11 h-11'}`} />
               <p className={`font-black tracking-tight text-slate-900 ${activeTab === 'schedule_planner' ? 'text-sm leading-none' : 'text-xl leading-none'}`}>Y Log</p>
+              <button
+                type="button"
+                onClick={() => { void handleStudentLogout(); }}
+                className="ml-auto shrink-0 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-[11px] font-black text-slate-600 cursor-pointer"
+              >
+                ログアウト
+              </button>
             </div>
             <section className="bg-white rounded-2xl border border-amber-200 shadow-sm overflow-hidden">
               <button
