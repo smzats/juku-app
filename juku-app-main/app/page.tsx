@@ -3405,7 +3405,7 @@ export default function Page() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [selectedClassroom, setSelectedClassroom] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [subjectFilter, setSubjectFilter] = useState<string>('ALL');
+  const [subjectFilter, setSubjectFilter] = useState<string>('');
 
   // メインデータ
   const [users, setUsers] = useState<User[]>([]);
@@ -4892,18 +4892,23 @@ export default function Page() {
 
   const filteredMaterials = useMemo(() => {
     const matched = materials.filter((m) => {
-      const matchesSubject = subjectFilter === 'ALL' || m.subject === subjectFilter;
+      const filterCode = subjectCodeFromInput(subjectFilter);
+      const matchesSubject = !subjectFilter || subjectFilter === 'ALL' || (
+        filterCode
+          ? (m.subject_code ? m.subject_code === filterCode : m.subject === SUBJECT_CODE_TONE[filterCode])
+          : m.subject === subjectFilter
+      );
       const matchesSearch = searchQuery === '' || m.title.includes(searchQuery) || m.id.includes(searchQuery);
       return matchesSubject && matchesSearch;
     });
     return bySubjectThenOrder(matched);
   }, [materials, subjectFilter, searchQuery]);
 
-  const logSubjectChoices = SUBJECT_NAMES;
-
   const logMaterialChoices = useMemo(() => {
-    if (!isSubjectType(newLogForm.subject)) return [];
-    return materialsForSubject(materials, newLogForm.subject);
+    const code = subjectCodeFromInput(newLogForm.subject);
+    if (!code) return [];
+    const tone = SUBJECT_CODE_TONE[code];
+    return byDisplayOrder(materials.filter((item) => (item.subject_code ? item.subject_code === code : item.subject === tone)));
   }, [materials, newLogForm.subject]);
 
   // 全体メトリクス演算
@@ -7024,12 +7029,13 @@ export default function Page() {
                     value={subjectFilter}
                     onChange={(e) => setSubjectFilter(e.target.value)}
                     className="bg-white border border-slate-300 text-xs font-bold text-slate-800 rounded-xl px-3 py-2.5 focus:outline-none cursor-pointer"
-                    style={subjectFilter !== 'ALL' ? { color: subjectSetting(subjectFilter).color, backgroundColor: subjectSetting(subjectFilter).bgColor, borderColor: subjectSetting(subjectFilter).color } : undefined}
+                    style={subjectFilter ? { color: subjectSetting(subjectFilter).color, backgroundColor: subjectSetting(subjectFilter).bgColor, borderColor: subjectSetting(subjectFilter).color } : undefined}
                   >
-                    <option value="ALL">全教科（教科ごと）</option>
-                    {SUBJECT_NAMES.map((subj) => (
-                      <option key={subj} value={subj}>{subj}</option>
-                    ))}
+                    <option value="">全教科（教科ごと）</option>
+                    {(Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((subjectKey) => {
+                      const setting = SUBJECT_CONFIG[subjectKey] ?? SUBJECT_CONFIG.other;
+                      return <option key={subjectKey} value={subjectKey}>{setting.label}</option>;
+                    })}
                   </select>
                 </div>
 
@@ -7712,9 +7718,10 @@ export default function Page() {
                   className="w-full bg-slate-50 border p-2.5 rounded-xl cursor-pointer"
                 >
                   <option value="">教科を選択</option>
-                  {logSubjectChoices.map((subject) => (
-                    <option key={subject} value={subject}>{subject}</option>
-                  ))}
+                  {(Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((subjectKey) => {
+                    const setting = SUBJECT_CONFIG[subjectKey] ?? SUBJECT_CONFIG.other;
+                    return <option key={subjectKey} value={subjectKey}>{setting.label}</option>;
+                  })}
                 </select>
               </div>
               <div>
@@ -7925,9 +7932,10 @@ export default function Page() {
                   className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none cursor-pointer"
                 >
                   <option value=""></option>
-                  {SUBJECT_CODES.map((code) => (
-                    <option key={code} value={code}>{SUBJECT_MAP[code]}</option>
-                  ))}
+                  {(Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((subjectKey) => {
+                    const setting = SUBJECT_CONFIG[subjectKey] ?? SUBJECT_CONFIG.other;
+                    return <option key={subjectKey} value={subjectKey}>{setting.label}</option>;
+                  })}
                 </select>
                 {newMaterialForm.subject !== '' && (
                   <div className="mt-2 flex items-center gap-2">
