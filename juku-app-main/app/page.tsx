@@ -3385,6 +3385,7 @@ export default function Page() {
   const [logSlots, setLogSlots] = useState<Record<string, StudySlotLink>>({});
   const [studyComposer, setStudyComposer] = useState<StudyClockRange | null>(null);
   const [composerMission, setComposerMission] = useState(false);
+  const [missionCheer, setMissionCheer] = useState(0);
   const composerContext = useRef<(StudyClockRange & { date: string; mission: boolean }) | null>(null);
 
   // 非同期通信 ＆ 通知
@@ -4955,6 +4956,12 @@ export default function Page() {
     const timer = window.setTimeout(() => setCrownBurst(null), 2800);
     return () => window.clearTimeout(timer);
   }, [crownBurst]);
+
+  useEffect(() => {
+    if (!missionCheer) return;
+    const timer = window.setTimeout(() => setMissionCheer(0), 1800);
+    return () => window.clearTimeout(timer);
+  }, [missionCheer]);
 
   useEffect(() => {
     const signedIn = currentUser;
@@ -8625,7 +8632,13 @@ export default function Page() {
             </div>
             <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
               <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} />
-              <MissionToggle checked={composerMission} onChange={setComposerMission} />
+              <MissionToggle
+                checked={composerMission}
+                onChange={(next) => {
+                  setComposerMission(next);
+                  if (next) setMissionCheer((value) => value + 1);
+                }}
+              />
               {recordMode === 'timer' && (
                 <div className="flex items-center gap-2">
                   <div className="w-20 text-center text-2xl font-black font-mono">{formatClock(timerElapsedSec)}</div>
@@ -8829,6 +8842,30 @@ export default function Page() {
           ))}
         </nav>
       
+
+      {missionCheer > 0 && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-6 pointer-events-none">
+          <div
+            key={missionCheer}
+            className="pointer-events-auto relative w-full max-w-sm overflow-hidden rounded-[2rem] border border-amber-200 bg-white px-6 py-7 text-center shadow-2xl"
+          >
+            <span className="ylog-crown-glow absolute left-1/2 top-6 h-28 w-28 -translate-x-1/2 rounded-full bg-amber-200" />
+            <span className="ylog-sparkle absolute left-8 top-8 text-2xl">✨</span>
+            <span className="ylog-sparkle absolute right-8 top-10 text-xl" style={{ animationDelay: '0.18s' }}>✨</span>
+            <span className="ylog-sparkle absolute left-16 top-16 text-lg" style={{ animationDelay: '0.32s' }}>✨</span>
+            <span className="ylog-crown-pop relative block text-6xl">👑</span>
+            <p className="relative mt-2 text-xl font-black text-amber-950">👑 ミッション達成！ ✨</p>
+            <p className="relative mt-2 text-sm font-black leading-relaxed text-slate-600">ナイスチャレンジ！この調子で頑張ろう！</p>
+            <button
+              type="button"
+              onClick={() => setMissionCheer(0)}
+              className="relative mt-4 px-5 py-2 rounded-2xl bg-amber-500 text-white text-sm font-black cursor-pointer"
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
 
       {crownBurst && (
         <button
