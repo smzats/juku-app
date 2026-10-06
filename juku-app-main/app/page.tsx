@@ -3385,7 +3385,9 @@ export default function Page() {
   const [logSlots, setLogSlots] = useState<Record<string, StudySlotLink>>({});
   const [studyComposer, setStudyComposer] = useState<StudyClockRange | null>(null);
   const [composerMission, setComposerMission] = useState(false);
-  const [missionCheer, setMissionCheer] = useState(0);
+  const [showMissionEffect, setShowMissionEffect] = useState(false);
+  const [missionEffectToken, setMissionEffectToken] = useState(0);
+  const missionEffectPending = useRef(false);
   const composerContext = useRef<(StudyClockRange & { date: string; mission: boolean }) | null>(null);
 
   // 非同期通信 ＆ 通知
@@ -4958,10 +4960,22 @@ export default function Page() {
   }, [crownBurst]);
 
   useEffect(() => {
-    if (!missionCheer) return;
-    const timer = window.setTimeout(() => setMissionCheer(0), 1800);
+    if (!showMissionEffect) return;
+    const timer = window.setTimeout(() => setShowMissionEffect(false), 1800);
     return () => window.clearTimeout(timer);
-  }, [missionCheer]);
+  }, [showMissionEffect, missionEffectToken]);
+
+  useEffect(() => {
+    if (studyComposer || !missionEffectPending.current) return;
+    missionEffectPending.current = false;
+    if (activeTab !== 'schedule_planner') return;
+    setShowMissionEffect(false);
+    const reveal = window.setTimeout(() => {
+      setMissionEffectToken((token) => token + 1);
+      setShowMissionEffect(true);
+    }, 0);
+    return () => window.clearTimeout(reveal);
+  }, [studyComposer, activeTab]);
 
   useEffect(() => {
     const signedIn = currentUser;
@@ -5832,9 +5846,10 @@ export default function Page() {
     }
     setLogs((prev) => [payload, ...prev.filter((log) => log.id !== payload.id)]);
     if (mission) {
-      setCrownBurst(`${title}のミッション完了！`);
+      missionEffectPending.current = true;
       addNotification('success', `${title}のミッション完了！ 👑`);
     } else {
+      missionEffectPending.current = false;
       addNotification('success', `${title}の学習を記録しました。`);
     }
     clearActiveStudyClock();
@@ -8237,6 +8252,8 @@ export default function Page() {
                                 onEmpty={() => {
                                   const endHour = Math.min(hour + 1, 25);
                                   setComposerDateKey(dateKey);
+                                  missionEffectPending.current = false;
+                                  setShowMissionEffect(false);
                                   setComposerMission(false);
                                   setRecordMode('timer');
                                   setTimerRunning(false);
@@ -8636,7 +8653,7 @@ export default function Page() {
                 checked={composerMission}
                 onChange={(next) => {
                   setComposerMission(next);
-                  if (next) setMissionCheer((value) => value + 1);
+                  missionEffectPending.current = next;
                 }}
               />
               {recordMode === 'timer' && (
@@ -8843,42 +8860,31 @@ export default function Page() {
         </nav>
       
 
-      {missionCheer > 0 && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-6 pointer-events-none">
+      {activeTab === 'schedule_planner' && !studyComposer && showMissionEffect && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-6 pointer-events-none">
           <div
-            key={missionCheer}
-            className="pointer-events-auto relative w-full max-w-sm overflow-hidden rounded-[2rem] border border-amber-200 bg-white px-6 py-7 text-center shadow-2xl"
+            key={missionEffectToken}
+            className="ylog-mission-card pointer-events-auto relative w-full max-w-sm overflow-hidden rounded-[2rem] border-2 border-amber-300 bg-amber-50 px-6 py-8 text-center shadow-2xl"
           >
-            <span className="ylog-crown-glow absolute left-1/2 top-6 h-28 w-28 -translate-x-1/2 rounded-full bg-amber-200" />
-            <span className="ylog-sparkle absolute left-8 top-8 text-2xl">✨</span>
-            <span className="ylog-sparkle absolute right-8 top-10 text-xl" style={{ animationDelay: '0.18s' }}>✨</span>
-            <span className="ylog-sparkle absolute left-16 top-16 text-lg" style={{ animationDelay: '0.32s' }}>✨</span>
-            <span className="ylog-crown-pop relative block text-6xl">👑</span>
-            <p className="relative mt-2 text-xl font-black text-amber-950">👑 ミッション達成！ ✨</p>
-            <p className="relative mt-2 text-sm font-black leading-relaxed text-slate-600">ナイスチャレンジ！この調子で頑張ろう！</p>
+            <span className="ylog-crown-glow absolute left-1/2 top-8 h-36 w-36 -translate-x-1/2 rounded-full bg-amber-300" />
+            <span className="ylog-sparkle absolute left-6 top-7 text-4xl">✨</span>
+            <span className="ylog-sparkle absolute right-6 top-9 text-3xl" style={{ animationDelay: '0.12s' }}>✨</span>
+            <span className="ylog-sparkle absolute left-14 top-16 text-2xl" style={{ animationDelay: '0.24s' }}>✨</span>
+            <span className="ylog-sparkle absolute right-14 top-20 text-3xl" style={{ animationDelay: '0.36s' }}>✨</span>
+            <span className="ylog-sparkle absolute left-1/2 top-4 -translate-x-1/2 text-2xl" style={{ animationDelay: '0.2s' }}>✨</span>
+            <span className="ylog-crown-pop relative block text-8xl leading-none">👑</span>
+            <p className="relative mt-3 text-2xl font-black text-amber-950">ミッション完了！</p>
+            <p className="relative mt-2 text-base font-black leading-relaxed text-amber-800">ナイスチャレンジ！</p>
+            <p className="relative mt-1 text-sm font-black text-slate-600">この調子で頑張ろう！</p>
             <button
               type="button"
-              onClick={() => setMissionCheer(0)}
-              className="relative mt-4 px-5 py-2 rounded-2xl bg-amber-500 text-white text-sm font-black cursor-pointer"
+              onClick={() => setShowMissionEffect(false)}
+              className="relative mt-5 px-6 py-2.5 rounded-2xl bg-amber-500 text-white text-sm font-black cursor-pointer shadow-md"
             >
               閉じる
             </button>
           </div>
         </div>
-      )}
-
-      {crownBurst && (
-        <button
-          type="button"
-          onClick={() => setCrownBurst(null)}
-          className="fixed inset-0 z-[80] bg-slate-950/55 flex items-center justify-center p-6 cursor-pointer"
-        >
-          <span className="relative bg-white rounded-[2rem] px-8 py-10 text-center shadow-2xl max-w-sm w-full">
-            <span className="ylog-crown-glow absolute inset-6 rounded-full bg-amber-200" />
-            <span className="ylog-crown-pop relative block text-7xl">👑</span>
-            <span className="relative block mt-3 text-xl font-black text-amber-900">{crownBurst} 👑</span>
-          </span>
-        </button>
       )}
 
     </div>
