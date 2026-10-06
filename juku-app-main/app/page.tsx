@@ -459,16 +459,17 @@ async function selectAllRows(
 function messageFromStoredRow(row: any): StudentMessage | null {
   const id = String(row?.id ?? '').trim();
   const userId = String(row?.user_id ?? row?.student_id ?? '').trim();
-  const body = String(row?.body ?? row?.comment ?? row?.message ?? row?.content ?? '').trim();
+  const body = String(row?.message_content ?? row?.body ?? row?.comment ?? row?.message ?? row?.content ?? '').trim();
   if (!id || !userId || !body) return null;
+  const read = row?.is_read === true || Boolean(row?.read_at);
   return {
     id,
     user_id: userId,
-    sender_id: String(row?.sender_id ?? ''),
+    sender_id: String(row?.teacher_id ?? row?.sender_id ?? ''),
     sender_name: String(row?.sender_name ?? row?.sender ?? '講師'),
     body,
     sent_at: String(row?.sent_at ?? row?.created_at ?? new Date().toISOString()),
-    read_at: row?.read_at ? String(row.read_at) : null,
+    read_at: read ? String(row?.read_at ?? row?.created_at ?? new Date().toISOString()) : null,
   };
 }
 
@@ -3639,44 +3640,16 @@ export default function Page() {
   }, [fetchMaterials]);
 
   const fetchStudentMessages = useCallback(async (): Promise<StudentMessage[]> => {
-    const local = readLocalMessages();
-    const [comments, legacy] = await Promise.all([
-      selectAllRows(supabase, 'comments'),
-      supabase.from('student_messages').select('*'),
-    ]);
-    const remote: StudentMessage[] = [];
-    if (!comments.error) {
-      comments.data.forEach((row: any) => {
-        const message = messageFromStoredRow(row);
-        if (message) remote.push(message);
-      });
+    const remote = await selectAllRows(supabase, 'teacher_messages');
+    if (remote.error) {
+      console.error(remote.error);
+      alert('通信エラー: ' + (remote.error.message || 'メッセージの取得に失敗しました'));
+      return [];
     }
-    if (!legacy.error) {
-      (legacy.data || []).forEach((row: any) => {
-        const message = messageFromStoredRow(row);
-        if (message) remote.push(message);
-      });
-    }
-    if (comments.error && legacy.error) return local;
-    const sameNotice = (left: StudentMessage, right: StudentMessage) => (
-      left.user_id.trim().toLowerCase() === right.user_id.trim().toLowerCase()
-      && left.body === right.body
-      && left.sender_id === right.sender_id
-    );
-    const merged = new Map<string, StudentMessage>();
-    local.forEach((message) => {
-      const replaced = remote.some((item) => item.id === message.id || (message.id.startsWith('msg_') && sameNotice(message, item)));
-      if (!replaced) merged.set(message.id, message);
+    return (remote.data || []).flatMap((row: any) => {
+      const message = messageFromStoredRow(row);
+      return message ? [message] : [];
     });
-    remote.forEach((message) => {
-      const existing = merged.get(message.id);
-      if (existing?.read_at && !message.read_at) {
-        merged.set(message.id, { ...message, read_at: existing.read_at });
-      } else {
-        merged.set(message.id, message);
-      }
-    });
-    return Array.from(merged.values());
   }, [supabase]);
 
   const fetchLogs = useCallback(async (): Promise<StudyLog[]> => {
@@ -4078,7 +4051,6 @@ export default function Page() {
   }, [currentUser, selectedStudentId, supabase, addNotification]);
 
   const handleSendStudentMessages = useCallback(async () => {
-    alert('ボタンが押されました');
     const text = messageDraft.trim();
     if (!text) {
       alert('送信するコメントを入力してください。');
@@ -4089,33 +4061,28 @@ export default function Page() {
       return;
     }
 
-    const createdAt = new Date().toISOString();
-    const sentAt = formatMessageTimestamp();
     const teacherId = String(currentUser?.id || '').trim();
     try {
       const rows = selectedStudentIds.map((studentId) => ({
         student_id: studentId,
-        message: text,
-        created_at: createdAt,
+        teacher_id: teacherId || null,
+        message_content: text,
+        is_read: false,
       }));
-      const result = await supabase.from('comments').insert(rows);
-      if (result.error) throw result.error;
-      const created: StudentMessage[] = selectedStudentIds.map((studentId, index) => ({
-        id: `msg_${Date.now()}_${index}_${studentId}`,
-        user_id: studentId,
-        sender_id: teacherId,
-        sender_name: currentUser?.name || 'お知らせ',
-        body: text,
-        sent_at: sentAt,
-        read_at: null,
-      }));
-      alert('送信成功');
+      const { data, error } = await supabase
+        .from('teacher_messages')
+        .insert(rows)
+        .select('id, student_id, teacher_id, message_content, is_read, created_at');
+      if (error) throw error;
+      const created = (data || []).flatMap((row: any) => {
+        const message = messageFromStoredRow(row);
+        return message ? [{ ...message, sender_name: currentUser?.name || '講師' }] : [];
+      });
       setMessageDraft('');
       setMessages((prev) => [...created, ...prev]);
-      writeLocalMessages([...created, ...readLocalMessages()]);
     } catch (error: any) {
-      console.error('comments insert failed', error);
-      alert('送信失敗: ' + error.message);
+      console.error(error);
+      alert('送信失敗: ' + (error?.message || 'メッセージの送信に失敗しました'));
     }
   }, [currentUser, messageDraft, selectedStudentIds, supabase]);
 
@@ -4123,14 +4090,41 @@ export default function Page() {
     if (message.read_at) return;
     const readAt = new Date().toISOString();
     setMessages((prev) => prev.map((item) => (item.id === message.id ? { ...item, read_at: readAt } : item)));
-    writeLocalMessages(readLocalMessages().map((item) => (item.id === message.id ? { ...item, read_at: readAt } : item)));
-    const local = readLocalMessages();
-    if (!local.some((item) => item.id === message.id)) {
-      writeLocalMessages([{ ...message, read_at: readAt }, ...local]);
+    const { error } = await supabase.from('teacher_messages').update({ is_read: true }).eq('id', message.id).eq('student_id', message.user_id);
+    if (error) {
+      console.error(error);
+      alert('通信エラー: ' + error.message);
+      setMessages(await fetchStudentMessages());
     }
-    await supabase.from('comments').update({ read_at: readAt }).eq('id', message.id);
-    await supabase.from('student_messages').update({ read_at: readAt }).eq('id', message.id);
-  }, [supabase]);
+  }, [supabase, fetchStudentMessages]);
+
+  const markMyTeacherMessagesRead = useCallback(async () => {
+    if (!currentUser || currentUser.role !== 'student') return;
+    const studentId = currentUser.id.trim();
+    const readAt = new Date().toISOString();
+    setMessages((prev) => prev.map((item) => (
+      item.user_id.trim().toLowerCase() === studentId.toLowerCase() && !item.read_at
+        ? { ...item, read_at: readAt }
+        : item
+    )));
+    const { error } = await supabase.from('teacher_messages').update({ is_read: true }).eq('student_id', studentId).eq('is_read', false);
+    if (error) {
+      console.error(error);
+      alert('通信エラー: ' + error.message);
+      setMessages(await fetchStudentMessages());
+    }
+  }, [currentUser, supabase, fetchStudentMessages]);
+
+  const hideTeacherMessage = useCallback(async (message: StudentMessage) => {
+    setMessages((prev) => prev.filter((item) => item.id !== message.id));
+    setActiveNotice((current) => (current?.id === message.id ? null : current));
+    const { error } = await supabase.from('teacher_messages').delete().eq('id', message.id).eq('student_id', message.user_id);
+    if (error) {
+      console.error(error);
+      alert('通信エラー: ' + error.message);
+      setMessages(await fetchStudentMessages());
+    }
+  }, [supabase, fetchStudentMessages]);
 
   const openNoticeDetail = useCallback((message: StudentMessage) => {
     setActiveNotice({ ...message, read_at: message.read_at || new Date().toISOString() });
@@ -4748,8 +4742,12 @@ export default function Page() {
     if (!currentUser || currentUser.role !== 'student') return [];
     return messages
       .filter((message) => message.user_id.trim().toLowerCase() === currentUser.id.trim().toLowerCase())
+      .map((message) => {
+        const teacher = users.find((user) => user.id === message.sender_id);
+        return teacher?.name ? { ...message, sender_name: teacher.name } : message;
+      })
       .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
-  }, [messages, currentUser]);
+  }, [messages, currentUser, users]);
 
   const unreadNoticeCount = myMessages.filter((message) => !message.read_at).length;
 
@@ -7929,7 +7927,10 @@ export default function Page() {
             <section className="bg-white rounded-2xl border border-amber-200 shadow-sm overflow-hidden">
               <button
                 type="button"
-                onClick={() => setIsNoticeListOpen(true)}
+                onClick={() => {
+                  setIsNoticeListOpen(true);
+                  void markMyTeacherMessagesRead();
+                }}
                 className="w-full text-left px-3 py-2 flex items-center gap-2 cursor-pointer"
               >
                 <span className="relative text-base leading-none">
@@ -7941,7 +7942,7 @@ export default function Page() {
                 <span className="flex-1">
                   <span className="block text-sm font-black text-amber-950">教師からのメッセージ・新着コメント</span>
                   <span className="block text-[11px] font-bold text-amber-800 mt-0.5">
-                    {unreadNoticeCount > 0 ? `未読 ${unreadNoticeCount} 件` : '未読のお知らせはありません'}
+                    {unreadNoticeCount > 0 ? `未読 ${unreadNoticeCount}件` : '未読のお知らせはありません'}
                   </span>
                 </span>
                 {unreadNoticeCount > 0 && (
@@ -8546,19 +8547,32 @@ export default function Page() {
               {myMessages.length === 0 ? (
                 <p className="text-xs text-slate-500 font-bold p-4 text-center">お知らせはまだありません。</p>
               ) : myMessages.map((message) => (
-                <button
+                <article
                   key={message.id}
-                  type="button"
-                  onClick={() => openNoticeDetail(message)}
-                  className={`w-full text-left p-4 rounded-2xl border cursor-pointer ${message.read_at ? 'bg-slate-50 border-slate-200' : 'bg-amber-50 border-amber-200'}`}
+                  className={`p-4 rounded-2xl border ${message.read_at ? 'bg-slate-50 border-slate-200' : 'bg-amber-50 border-amber-200'}`}
                 >
-                  <div className="flex justify-between gap-3 text-[10px] font-bold text-slate-500">
-                    <span>{formatSentAt(message.sent_at)}</span>
-                    <span>{message.read_at ? '既読' : '未読'}</span>
+                  <button
+                    type="button"
+                    onClick={() => openNoticeDetail(message)}
+                    className="w-full text-left cursor-pointer"
+                  >
+                    <div className="flex justify-between gap-3 text-[10px] font-bold text-slate-500">
+                      <span>{formatSentAt(message.sent_at)}</span>
+                      <span>{message.read_at ? '既読' : '未読'}</span>
+                    </div>
+                    <p className="mt-1 text-xs font-extrabold text-slate-900 line-clamp-2">{message.body}</p>
+                    <p className="mt-1 text-[10px] text-slate-500">送信者: {message.sender_name}</p>
+                  </button>
+                  <div className="mt-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => { void hideTeacherMessage(message); }}
+                      className="text-[11px] font-black text-slate-500 underline cursor-pointer"
+                    >
+                      もう表示しない
+                    </button>
                   </div>
-                  <p className="mt-1 text-xs font-extrabold text-slate-900 line-clamp-2">{message.body}</p>
-                  <p className="mt-1 text-[10px] text-slate-500">送信者: {message.sender_name}</p>
-                </button>
+                </article>
               ))}
             </div>
           </div>
@@ -8576,7 +8590,8 @@ export default function Page() {
               <p className="font-bold text-slate-500">送信日時: {formatSentAt(activeNotice.sent_at)}</p>
               <p className="font-bold text-slate-500">送信者: {activeNotice.sender_name}</p>
               <p className="whitespace-pre-wrap text-sm font-bold text-slate-900 leading-relaxed">{activeNotice.body}</p>
-              <div className="text-right">
+              <div className="flex justify-end gap-3">
+                <button type="button" onClick={() => { void hideTeacherMessage(activeNotice); }} className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl font-bold cursor-pointer">もう表示しない</button>
                 <button type="button" onClick={() => setActiveNotice(null)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl font-bold cursor-pointer">閉じる</button>
               </div>
             </div>
