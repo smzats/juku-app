@@ -3709,18 +3709,28 @@ export default function Page() {
     setMaterials(list);
   }, [fetchMaterials]);
 
-  const fetchStudentMessages = useCallback(async (): Promise<StudentMessage[]> => {
+  const fetchStudentMessages = useCallback(async (options?: { silent?: boolean }): Promise<StudentMessage[] | null> => {
     const remote = await selectAllRows(supabase, 'teacher_messages');
     if (remote.error) {
       console.error(remote.error);
-      alert('通信エラー: ' + (remote.error.message || 'メッセージの取得に失敗しました'));
-      return [];
+      if (!options?.silent) alert('通信エラー: ' + (remote.error.message || 'メッセージの取得に失敗しました'));
+      return options?.silent ? null : [];
     }
     return (remote.data || []).flatMap((row: any) => {
       const message = messageFromStoredRow(row);
       return message ? [message] : [];
     });
   }, [supabase]);
+
+  const refreshTeacherMessages = useCallback(async () => {
+    const loaded = await fetchStudentMessages({ silent: true });
+    if (loaded == null) return;
+    setMessages((prev) => loaded.map((message) => {
+      const existing = prev.find((item) => item.id === message.id);
+      if (existing?.read_at && !message.read_at) return { ...message, read_at: existing.read_at };
+      return message;
+    }));
+  }, [fetchStudentMessages]);
 
   const fetchLogs = useCallback(async (): Promise<StudyLog[]> => {
     const { data, error } = await supabase.from('study_logs').select('id, student_id, material_id, subject, duration_minutes, study_date, memo, is_mission_completed');
@@ -3762,7 +3772,8 @@ export default function Page() {
       ]);
       setMaterials(mData);
       setLogs((prev) => (lData.length === 0 && prev.length > 0 ? prev : lData));
-      setMessages(await fetchStudentMessages());
+      const loadedMessages = await fetchStudentMessages();
+      if (loadedMessages) setMessages(loadedMessages);
       setConnectionError(null);
     } catch (err: any) {
       setConnectionError('通信エラーが発生しました');
@@ -3776,6 +3787,50 @@ export default function Page() {
   useEffect(() => {
     void fetchAllData({ silent: true });
   }, [fetchAllData]);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'student') return;
+    let lastRefresh = 0;
+    const refreshOnReturn = () => {
+      const now = Date.now();
+      if (now - lastRefresh < 1000) return;
+      lastRefresh = now;
+      void refreshTeacherMessages();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshOnReturn();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', refreshOnReturn);
+    const timer = window.setInterval(() => { void refreshTeacherMessages(); }, 45000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', refreshOnReturn);
+      window.clearInterval(timer);
+    };
+  }, [currentUser, refreshTeacherMessages]);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'student' || !supabaseEnvConfigured()) return;
+    const studentId = currentUser.id.trim();
+    const applyChange = (row: unknown) => {
+      const message = messageFromStoredRow(row);
+      if (!message || message.user_id.trim().toLowerCase() !== studentId.toLowerCase()) return;
+      setMessages((prev) => {
+        const existing = prev.find((item) => item.id === message.id);
+        const next = existing?.sender_name && message.sender_name === '講師'
+          ? { ...message, sender_name: existing.sender_name }
+          : message;
+        return [next, ...prev.filter((item) => item.id !== message.id)];
+      });
+    };
+    const channel = supabase
+      .channel(`teacher-messages-${studentId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'teacher_messages', filter: `student_id=eq.${studentId}` }, (payload) => applyChange(payload.new))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'teacher_messages', filter: `student_id=eq.${studentId}` }, (payload) => applyChange(payload.new))
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [currentUser, supabase]);
 
   useEffect(() => {
     if (!currentUser?.id) return;
@@ -4164,7 +4219,8 @@ export default function Page() {
     if (error) {
       console.error(error);
       alert('通信エラー: ' + error.message);
-      setMessages(await fetchStudentMessages());
+      const loadedMessages = await fetchStudentMessages();
+      if (loadedMessages) setMessages(loadedMessages);
     }
   }, [supabase, fetchStudentMessages]);
 
@@ -4181,7 +4237,8 @@ export default function Page() {
     if (error) {
       console.error(error);
       alert('通信エラー: ' + error.message);
-      setMessages(await fetchStudentMessages());
+      const loadedMessages = await fetchStudentMessages();
+      if (loadedMessages) setMessages(loadedMessages);
     }
   }, [currentUser, supabase, fetchStudentMessages]);
 
@@ -4192,7 +4249,8 @@ export default function Page() {
     if (error) {
       console.error(error);
       alert('通信エラー: ' + error.message);
-      setMessages(await fetchStudentMessages());
+      const loadedMessages = await fetchStudentMessages();
+      if (loadedMessages) setMessages(loadedMessages);
     }
   }, [supabase, fetchStudentMessages]);
 
