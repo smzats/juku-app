@@ -3387,7 +3387,6 @@ export default function Page() {
   const [composerMission, setComposerMission] = useState(false);
   const [showMissionEffect, setShowMissionEffect] = useState(false);
   const [missionEffectToken, setMissionEffectToken] = useState(0);
-  const missionEffectPending = useRef(false);
   const composerContext = useRef<(StudyClockRange & { date: string; mission: boolean }) | null>(null);
 
   // 非同期通信 ＆ 通知
@@ -4961,21 +4960,9 @@ export default function Page() {
 
   useEffect(() => {
     if (!showMissionEffect) return;
-    const timer = window.setTimeout(() => setShowMissionEffect(false), 1800);
+    const timer = window.setTimeout(() => setShowMissionEffect(false), 5000);
     return () => window.clearTimeout(timer);
   }, [showMissionEffect, missionEffectToken]);
-
-  useEffect(() => {
-    if (studyComposer || !missionEffectPending.current) return;
-    missionEffectPending.current = false;
-    if (activeTab !== 'schedule_planner') return;
-    setShowMissionEffect(false);
-    const reveal = window.setTimeout(() => {
-      setMissionEffectToken((token) => token + 1);
-      setShowMissionEffect(true);
-    }, 0);
-    return () => window.clearTimeout(reveal);
-  }, [studyComposer, activeTab]);
 
   useEffect(() => {
     const signedIn = currentUser;
@@ -5845,11 +5832,11 @@ export default function Page() {
       return false;
     }
     setLogs((prev) => [payload, ...prev.filter((log) => log.id !== payload.id)]);
-    if (mission) {
-      missionEffectPending.current = true;
+    if (payload.is_mission_completed === true) {
+      setMissionEffectToken((token) => token + 1);
+      setShowMissionEffect(true);
       addNotification('success', `${title}のミッション完了！ 👑`);
     } else {
-      missionEffectPending.current = false;
       addNotification('success', `${title}の学習を記録しました。`);
     }
     clearActiveStudyClock();
@@ -6022,6 +6009,10 @@ export default function Page() {
         console.error(error);
         alert('通信エラー: ' + error.message);
       } else {
+        if (next.is_mission_completed === true) {
+          setMissionEffectToken((token) => token + 1);
+          setShowMissionEffect(true);
+        }
         addNotification('success', '学習記録を更新しました。');
       }
     } catch (err: any) {
@@ -8252,8 +8243,6 @@ export default function Page() {
                                 onEmpty={() => {
                                   const endHour = Math.min(hour + 1, 25);
                                   setComposerDateKey(dateKey);
-                                  missionEffectPending.current = false;
-                                  setShowMissionEffect(false);
                                   setComposerMission(false);
                                   setRecordMode('timer');
                                   setTimerRunning(false);
@@ -8649,13 +8638,7 @@ export default function Page() {
             </div>
             <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
               <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} />
-              <MissionToggle
-                checked={composerMission}
-                onChange={(next) => {
-                  setComposerMission(next);
-                  missionEffectPending.current = next;
-                }}
-              />
+              <MissionToggle checked={composerMission} onChange={setComposerMission} />
               {recordMode === 'timer' && (
                 <div className="flex items-center gap-2">
                   <div className="w-20 text-center text-2xl font-black font-mono">{formatClock(timerElapsedSec)}</div>
