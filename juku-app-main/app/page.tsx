@@ -2042,23 +2042,27 @@ async function saveStudentScheduleTemplates(
 async function fetchWeeklySchedules(
   supabase: { from: (table: string) => any },
   studentId: string,
-): Promise<Record<string, WeekPlanRecord> | null> {
+): Promise<{ plans: Record<string, WeekPlanRecord>; cramMinutes: Record<string, number> } | null> {
   const studentKey = scheduleStudentKey(studentId);
-  if (!studentKey) return {};
-  const result = await supabase.from('weekly_schedules').select('student_id, week_start_date, schedule_data').eq('student_id', studentKey);
+  if (!studentKey) return { plans: {}, cramMinutes: {} };
+  const result = await supabase.from('weekly_schedules').select('student_id, week_start_date, schedule_data, cram_school_minutes').eq('student_id', studentKey);
   if (result.error) {
     alertScheduleError(result.error);
     return null;
   }
   const plans: Record<string, WeekPlanRecord> = {};
-  (result.data || []).forEach((row: { week_start_date?: unknown; schedule_data?: unknown }) => {
+  const cramMinutes: Record<string, number> = {};
+  (result.data || []).forEach((row: { week_start_date?: unknown; schedule_data?: unknown; cram_school_minutes?: unknown }) => {
     const weekStart = String(row?.week_start_date || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) return;
     const raw = unwrapScheduleJson(row.schedule_data);
     const plan = coerceWeekPlan(raw) || (Array.isArray(raw) ? coerceWeekPlan({ templateName: '', slots: raw }) : null);
-    if (plan) plans[weekStart] = plan;
+    if (!plan) return;
+    plans[weekStart] = plan;
+    const saved = Number(row?.cram_school_minutes);
+    if (Number.isFinite(saved)) cramMinutes[weekStart] = Math.max(0, saved);
   });
-  return plans;
+  return { plans, cramMinutes };
 }
 
 async function saveWeeklySchedules(
@@ -2078,9 +2082,10 @@ async function saveWeeklySchedules(
       alertScheduleError(existing.error);
       return false;
     }
+    const cramSchoolMinutes = weekCramSchoolMinutes(plan, weekKey);
     const saved = existing.data && existing.data.length > 0
-      ? await supabase.from('weekly_schedules').update({ schedule_data: plan }).eq('student_id', studentKey).eq('week_start_date', weekKey)
-      : await supabase.from('weekly_schedules').insert([{ student_id: studentKey, week_start_date: weekKey, schedule_data: plan }]);
+      ? await supabase.from('weekly_schedules').update({ schedule_data: plan, cram_school_minutes: cramSchoolMinutes }).eq('student_id', studentKey).eq('week_start_date', weekKey)
+      : await supabase.from('weekly_schedules').insert([{ student_id: studentKey, week_start_date: weekKey, schedule_data: plan, cram_school_minutes: cramSchoolMinutes }]);
     if (saved.error) {
       alertScheduleError(saved.error);
       return false;
@@ -2182,6 +2187,68 @@ function weekJukuMinutes(plan: WeekPlanRecord | undefined, weekStart: string): n
     const daySlots = planSlotsForDate(plan, dateKey);
     total += categoryMinutesOnDay(daySlots, weekdayIdFromDateKey(dateKey), 'cram_school');
   }
+  return total;
+}
+
+function cramMinutesOnDate(plan: WeekPlanRecord | undefined, dateKey: string): number {
+  if (!plan) return 0;
+  const day = weekdayIdFromDateKey(dateKey);
+  return planSlotsForDate(plan, dateKey).reduce((total, slot) => {
+    if (slot.day !== day || scheduleCategoryFromInput(slot.category) !== 'cram_school') return total;
+    const range = slotRangeMinutes(slot);
+    if (range.end <= range.start) return total;
+    return total + (range.end - range.start);
+  }, 0);
+}
+
+function weekCramSchoolMinutes(plan: WeekPlanRecord | undefined, weekStart: string): number {
+  let total = 0;
+  for (let offset = 0; offset < 7; offset += 1) {
+    total += cramMinutesOnDate(plan, shiftDateKey(weekStart, offset));
+  }
+  return total;
+}
+
+function summaryPeriodBounds(period: LogSummaryPeriod, now = new Date()): { start: string; end: string } {
+  const today = todayDateKey(now);
+  if (period === 'today') return { start: today, end: today };
+  const weekStart = weekStartKey(today);
+  if (period === 'week') return { start: weekStart, end: shiftDateKey(weekStart, 6) };
+  const [year, month] = today.split('-').map(Number);
+  const lastDay = new Date(year, month, 0).getDate();
+  const prefix = today.slice(0, 7);
+  return { start: `${prefix}-01`, end: `${prefix}-${String(lastDay).padStart(2, '0')}` };
+}
+
+function resolvedWeekCramMinutes(weekStart: string, stored: number | undefined, plan: WeekPlanRecord | undefined): number {
+  const computed = weekCramSchoolMinutes(plan, weekStart);
+  const saved = Number(stored);
+  if (!Number.isFinite(saved)) return computed;
+  if (saved === 0 && computed > 0) return computed;
+  return Math.max(0, saved);
+}
+
+function cramMinutesInSummaryPeriod(
+  period: LogSummaryPeriod,
+  storedByWeek: Record<string, number>,
+  plans: Record<string, WeekPlanRecord>,
+  now = new Date(),
+): number {
+  const range = summaryPeriodBounds(period, now);
+  const weeks = new Set<string>();
+  for (let date = range.start; date <= range.end; date = shiftDateKey(date, 1)) weeks.add(weekStartKey(date));
+  let total = 0;
+  weeks.forEach((weekStart) => {
+    const weekEnd = shiftDateKey(weekStart, 6);
+    const plan = plans[weekStart];
+    if (weekStart >= range.start && weekEnd <= range.end) {
+      total += resolvedWeekCramMinutes(weekStart, storedByWeek[weekStart], plan);
+      return;
+    }
+    for (let date = weekStart < range.start ? range.start : weekStart; date <= range.end && date <= weekEnd; date = shiftDateKey(date, 1)) {
+      total += cramMinutesOnDate(plan, date);
+    }
+  });
   return total;
 }
 
@@ -3442,6 +3509,7 @@ export default function Page() {
   const [focusDateKey, setFocusDateKey] = useState<string>(() => todayDateKey());
   const [composerDateKey, setComposerDateKey] = useState<string>(() => todayDateKey());
   const [weekPlans, setWeekPlans] = useState<Record<string, WeekPlanRecord>>({});
+  const [weekCramMinutes, setWeekCramMinutes] = useState<Record<string, number>>({});
   const [weekPlansResolved, setWeekPlansResolved] = useState(false);
   const [viewedWeekPlans, setViewedWeekPlans] = useState<Record<string, WeekPlanRecord>>({});
   const [openHinaSlot, setOpenHinaSlot] = useState<number | null>(null);
@@ -4422,6 +4490,7 @@ export default function Page() {
     clearAppSession();
     setCurrentUser(null);
     setWeekPlans({});
+    setWeekCramMinutes({});
     setWeekPlansResolved(false);
     loadedWeekPlanUser.current = '';
     setLoginInputId('');
@@ -4445,6 +4514,7 @@ export default function Page() {
     } finally {
       setCurrentUser(null);
       setWeekPlans({});
+      setWeekCramMinutes({});
       setWeekPlansResolved(false);
       loadedWeekPlanUser.current = '';
       setLoginInputId('');
@@ -4465,6 +4535,7 @@ export default function Page() {
     weekPlanWriteVersion.current[userId] = version;
     weekPlanPending.current[userId] = { version, plans };
     setWeekPlans(plans);
+    setWeekCramMinutes(Object.fromEntries(Object.entries(plans).map(([weekStart, plan]) => [weekStart, weekCramSchoolMinutes(plan, weekStart)])));
     setWeekPlansResolved(true);
     weekPlanSaveChain.current = weekPlanSaveChain.current
       .then(async () => {
@@ -4480,10 +4551,14 @@ export default function Page() {
       const seenVersion = weekPlanWriteVersion.current[userId] || 0;
       const remote = await fetchWeeklySchedules(supabase, userId);
       if ((weekPlanWriteVersion.current[userId] || 0) !== seenVersion) return;
-      const plans = weekPlanPending.current[userId]?.plans ?? remote;
+      const pending = weekPlanPending.current[userId]?.plans;
+      const plans = pending ?? remote?.plans;
       if (!plans) return;
       if (applyToScreen) {
         setWeekPlans(plans);
+        setWeekCramMinutes(pending
+          ? Object.fromEntries(Object.entries(pending).map(([weekStart, plan]) => [weekStart, weekCramSchoolMinutes(plan, weekStart)]))
+          : (remote?.cramMinutes || {}));
         setWeekPlansResolved(true);
         return;
       }
@@ -5001,9 +5076,10 @@ export default function Page() {
         })),
       }];
     });
-    const totalMinutes = periodLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0);
+    const studyMinutes = periodLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0);
+    const totalMinutes = studyMinutes + cramMinutesInSummaryPeriod(logSummaryPeriod, weekCramMinutes, weekPlans);
     return { logs: periodLogs, totalMinutes, subjects };
-  }, [myStudyLogs, materials, myMaterials, logSummaryPeriod, logSlots]);
+  }, [myStudyLogs, materials, myMaterials, logSummaryPeriod, logSlots, weekCramMinutes, weekPlans]);
 
   const previousWeekRank = useMemo(() => {
     const thisWeek = weekStartKey(todayDateKey());
@@ -5096,6 +5172,7 @@ export default function Page() {
     setActiveTab('schedule_planner');
     setLogSlots(readLogSlots());
     setWeekPlans({});
+    setWeekCramMinutes({});
     setWeekPlansResolved(false);
     loadedWeekPlanUser.current = signedIn.id;
     setNewLogForm((prev) => (prev.user_id === signedIn.id ? prev : { ...prev, user_id: signedIn.id }));
@@ -5116,6 +5193,7 @@ export default function Page() {
     if (userChanged) {
       loadedWeekPlanUser.current = signedIn.id;
       setWeekPlans({});
+      setWeekCramMinutes({});
       setWeekPlansResolved(false);
     }
     void refreshWeekPlans(signedIn.id, true);
