@@ -1562,6 +1562,76 @@ function formatMeetingClock(hour: number, minute = 0): string {
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
+function minutesFromStoredClock(value: unknown): number | null {
+  const match = String(value ?? '').trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function studyLogClockFields(range: StudyClockRange): { start_time: string; end_time: string } {
+  return {
+    start_time: `${formatMeetingClock(range.startHour, range.startMinute)}:00`,
+    end_time: `${formatMeetingClock(range.endHour, range.endMinute)}:00`,
+  };
+}
+
+function studyLogOverlapMessage(start: number, end: number): string {
+  const label = (total: number) => formatMeetingClock(Math.floor(total / 60), total % 60);
+  return `⚠️ すでにこの時間帯には学習記録が登録されています（${label(start)}〜${label(end)}）。時間を変更してください。`;
+}
+
+function boundsForStoredStudyLog(
+  row: { id?: unknown; start_time?: unknown; end_time?: unknown },
+  dateKey: string,
+): { start: number; end: number } | null {
+  const start = minutesFromStoredClock(row.start_time);
+  const end = minutesFromStoredClock(row.end_time);
+  if (start != null && end != null && end > start) return { start, end };
+  const slot = readLogSlots()[String(row.id ?? '')];
+  if (!slot?.date || slot.date.slice(0, 10) !== dateKey) return null;
+  const slotStart = clockMinutes(slot.startHour, slot.startMinute || 0);
+  const slotEnd = clockMinutes(slot.endHour, slot.endMinute || 0);
+  if (slotEnd <= slotStart) return null;
+  return { start: slotStart, end: slotEnd };
+}
+
+async function findOverlappingStudyLog(
+  supabase: { from: (table: string) => any },
+  studentId: string,
+  dateKey: string,
+  range: StudyClockRange,
+  ignoreLogId: string | undefined,
+  studentLogIds: Set<string>,
+): Promise<{ start: number; end: number } | null> {
+  const newStart = clockMinutes(range.startHour, range.startMinute);
+  const newEnd = clockMinutes(range.endHour, range.endMinute);
+  if (!(newEnd > newStart)) return null;
+  const { data, error } = await supabase
+    .from('study_logs')
+    .select('id, start_time, end_time')
+    .eq('student_id', studentId)
+    .eq('study_date', dateKey);
+  if (error) throw error;
+  const seen = new Set<string>();
+  for (const row of data || []) {
+    const id = String(row?.id ?? '');
+    if (!id || id === ignoreLogId) continue;
+    seen.add(id);
+    const bounds = boundsForStoredStudyLog(row, dateKey);
+    if (bounds && newStart < bounds.end && newEnd > bounds.start) return bounds;
+  }
+  const slots = readLogSlots();
+  for (const [id, slot] of Object.entries(slots)) {
+    if (!studentLogIds.has(id) || seen.has(id) || id === ignoreLogId) continue;
+    if (!slot?.date || slot.date.slice(0, 10) !== dateKey) continue;
+    const existStart = clockMinutes(slot.startHour, slot.startMinute || 0);
+    const existEnd = clockMinutes(slot.endHour, slot.endMinute || 0);
+    if (existEnd <= existStart) continue;
+    if (newStart < existEnd && newEnd > existStart) return { start: existStart, end: existEnd };
+  }
+  return null;
+}
+
 function formatMeetingWhen(log: StudyLog, slot?: StudySlotLink): string {
   const weekMarks = '日月火水木金土';
   if (slot?.date) {
@@ -5793,6 +5863,20 @@ export default function Page() {
     }
     const mission = Boolean(slot?.mission);
     const range = slot ? clampStudyRange(slot) : null;
+    if (slot?.date && range) {
+      const studentLogIds = new Set(logs.filter((log) => log.user_id === currentUser.id).map((log) => log.id));
+      try {
+        const overlap = await findOverlappingStudyLog(supabase, currentUser.id, slot.date.slice(0, 10), range, undefined, studentLogIds);
+        if (overlap) {
+          alert(studyLogOverlapMessage(overlap.start, overlap.end));
+          return false;
+        }
+      } catch (error: any) {
+        console.error(error);
+        alert('通信エラー: ' + (error?.message || '学習記録の確認に失敗しました'));
+        return false;
+      }
+    }
     const created = new Date();
     if (slot?.date && range) {
       const [year, month, day] = slot.date.split('-').map(Number);
@@ -5823,7 +5907,12 @@ export default function Page() {
     }
     const materialRow = materials.find((item) => item.id === materialId);
     const subjectName = subjectCodeFromInput(newLogForm.subject) || subjectCodeFromInput(materialRow?.subject_code) || subjectCodeFromInput(materialRow?.subject) || '';
-    const { error: logError } = await supabase.from('study_logs').insert([studyLogRemoteRow(payload, subjectName)]);
+    const remoteLog = studyLogRemoteRow(payload, subjectName);
+    if (slot?.date && range) {
+      remoteLog.study_date = slot.date.slice(0, 10);
+      Object.assign(remoteLog, studyLogClockFields(range));
+    }
+    const { error: logError } = await supabase.from('study_logs').insert([remoteLog]);
     if (logError) {
       console.error(logError);
       alert('通信エラー: ' + logError.message);
@@ -5844,7 +5933,7 @@ export default function Page() {
     setCountdownFinished(false);
     setNewLogForm((prev) => ({ ...prev, comment: '' }));
     return true;
-  }, [currentUser, materials, newLogForm.subject, supabase, addNotification]);
+  }, [currentUser, logs, materials, newLogForm.subject, supabase, addNotification]);
 
   useEffect(() => {
     if (!countdownRunning || countdownRemainingSec !== 0 || !countdownStartedAt) return;
@@ -5968,6 +6057,20 @@ export default function Page() {
     }
     const range = clampStudyRange(editRange);
     const placed = studyPlacement(editingLog, readLogSlots());
+    if (placed?.date) {
+      const studentLogIds = new Set(logs.filter((log) => log.user_id === editingLog.user_id).map((log) => log.id));
+      try {
+        const overlap = await findOverlappingStudyLog(supabase, editingLog.user_id, placed.date.slice(0, 10), range, editingLog.id, studentLogIds);
+        if (overlap) {
+          alert(studyLogOverlapMessage(overlap.start, overlap.end));
+          return;
+        }
+      } catch (error: any) {
+        console.error(error);
+        alert('通信エラー: ' + (error?.message || '学習記録の確認に失敗しました'));
+        return;
+      }
+    }
     const next: StudyLog = {
       ...editingLog,
       material_id: editMaterialId,
@@ -6001,6 +6104,10 @@ export default function Page() {
     try {
       const subjectName = materials.find((item) => item.id === next.material_id)?.subject || '';
       const remote = studyLogRemoteRow(next, subjectName);
+      if (placed?.date) {
+        remote.study_date = placed.date.slice(0, 10);
+        Object.assign(remote, studyLogClockFields(range));
+      }
       delete remote.id;
       const { error } = await supabase.from('study_logs').update(remote).eq('id', next.id);
       if (error) {
@@ -6017,7 +6124,7 @@ export default function Page() {
       console.error(err);
       alert('通信エラー: ' + (err?.message || '学習記録の更新に失敗しました'));
     }
-  }, [editingLog, editMaterialId, editRange, editComment, editMission, materials, supabase, addNotification]);
+  }, [editingLog, editMaterialId, editRange, editComment, editMission, logs, materials, supabase, addNotification]);
 
   const deleteStudentLog = useCallback(async (log: StudyLog) => {
     const title = materials.find((item) => item.id === log.material_id)?.title || 'この記録';
