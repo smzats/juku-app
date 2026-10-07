@@ -666,6 +666,7 @@ export interface User {
   individual: string;
   password: string;
   email?: string;
+  isPendingDelete?: boolean;
 }
 
 export interface StudentMessage {
@@ -989,6 +990,7 @@ export type ActiveTab =
   | 'dashboard'
   | 'teachers'
   | 'students'
+  | 'pending_delete'
   | 'student_detail'
   | 'schedule_planner'
   | 'materials'
@@ -3581,6 +3583,7 @@ export default function Page() {
     individual: 'ALL',
   });
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [pendingDeleteSelectedIds, setPendingDeleteSelectedIds] = useState<string[]>([]);
   const [messageDraft, setMessageDraft] = useState<string>('');
 
   // CSVインポート用ステート
@@ -3707,6 +3710,7 @@ export default function Page() {
         japaneseHistory: textCell(row?.jp_history),
         worldHistory: textCell(row?.world_history),
         individual: textCell(row?.individual),
+        isPendingDelete: row?.is_pending_delete === true,
       }];
     });
     return [...teacherUsers, ...studentUsers];
@@ -4221,27 +4225,80 @@ export default function Page() {
       alert('生徒の削除は管理者・講師のみ実行できます。');
       return;
     }
-    const confirmed = window.confirm(`「${student.name}」（${student.id}）を削除します。この操作は取り消せません。よろしいですか？`);
+    const confirmed = window.confirm('この生徒のデータを削除待ち一覧へ移動しますか？');
     if (!confirmed) return;
 
-    setUsers((prev) => prev.filter((user) => user.id !== student.id));
-    setSelectedStudentIds((prev) => prev.filter((id) => id !== student.id));
-    if (selectedStudentId === student.id) setSelectedStudentId(null);
-    const profiles = readLocalProfiles();
-    delete profiles[student.id];
-    writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, profiles);
-    writeLocalMessages(readLocalMessages().filter((message) => message.user_id !== student.id));
-    setMessages((prev) => prev.filter((message) => message.user_id !== student.id));
-
-    const { error } = await supabase.from('students').delete().eq('id', student.id);
-    await supabase.from('student_messages').delete().eq('user_id', student.id);
+    const { error } = await supabase.from('students').update({ is_pending_delete: true }).eq('id', student.id);
     if (error) {
       console.error(error);
       alert('通信エラー: ' + error.message);
       return;
     }
-    addNotification('success', `「${student.name}」を削除いたしました。`);
+    setUsers((prev) => prev.map((user) => (user.id === student.id ? { ...user, isPendingDelete: true } : user)));
+    setSelectedStudentIds((prev) => prev.filter((id) => id !== student.id));
+    if (selectedStudentId === student.id) setSelectedStudentId(null);
+    addNotification('success', `「${student.name}」を削除待ち一覧へ移動しました。`);
   }, [currentUser, selectedStudentId, supabase, addNotification]);
+
+  const selectedPendingDeleteStudents = useCallback((selectedIds: string[]) => {
+    return users.filter((user) => user.role === 'student' && user.isPendingDelete && selectedIds.includes(user.id));
+  }, [users]);
+
+  const handlePurgePendingStudents = useCallback(async () => {
+    if (currentUser?.role !== 'admin') {
+      alert('完全消去は管理者のみ実行できます。');
+      return;
+    }
+    const targets = selectedPendingDeleteStudents(pendingDeleteSelectedIds);
+    if (targets.length === 0) {
+      alert('完全に消去する生徒を選択してください。');
+      return;
+    }
+    const confirmed = window.confirm('⚠️ 選択した生徒のデータを完全に消去します。この操作は取り消せません。よろしいですか？');
+    if (!confirmed) return;
+
+    const ids = targets.map((student) => student.id);
+    const { error } = await supabase.from('students').delete().in('id', ids);
+    if (error) {
+      console.error(error);
+      alert('通信エラー: ' + error.message);
+      return;
+    }
+    setUsers((prev) => prev.filter((user) => !ids.includes(user.id)));
+    setPendingDeleteSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+    setSelectedStudentIds((prev) => prev.filter((id) => !ids.includes(id)));
+    if (selectedStudentId && ids.includes(selectedStudentId)) setSelectedStudentId(null);
+    const profiles = readLocalProfiles();
+    ids.forEach((id) => {
+      delete profiles[id];
+    });
+    writeLocalJson(STUDENT_PROFILE_STORAGE_KEY, profiles);
+    writeLocalMessages(readLocalMessages().filter((message) => !ids.includes(message.user_id)));
+    setMessages((prev) => prev.filter((message) => !ids.includes(message.user_id)));
+    addNotification('success', `${targets.length}名の生徒データを完全に消去しました。`);
+  }, [currentUser, pendingDeleteSelectedIds, selectedPendingDeleteStudents, selectedStudentId, supabase, addNotification]);
+
+  const handleRestorePendingStudents = useCallback(async () => {
+    if (currentUser?.role !== 'admin') {
+      alert('復元は管理者のみ実行できます。');
+      return;
+    }
+    const targets = selectedPendingDeleteStudents(pendingDeleteSelectedIds);
+    if (targets.length === 0) {
+      alert('通常の一覧へ戻す生徒を選択してください。');
+      return;
+    }
+    const ids = targets.map((student) => student.id);
+    const { error } = await supabase.from('students').update({ is_pending_delete: false }).in('id', ids);
+    if (error) {
+      console.error(error);
+      alert('通信エラー: ' + error.message);
+      return;
+    }
+    setUsers((prev) => prev.map((user) => (ids.includes(user.id) ? { ...user, isPendingDelete: false } : user)));
+    setPendingDeleteSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+    addNotification('success', `${targets.length}名を通常の生徒一覧へ戻しました。`);
+  }, [currentUser, pendingDeleteSelectedIds, selectedPendingDeleteStudents, supabase, addNotification]);
 
   const handleSendStudentMessages = useCallback(async () => {
     const text = messageDraft.trim();
@@ -4838,7 +4895,11 @@ export default function Page() {
   }, [filteredUsers]);
 
   const students = useMemo(() => {
-    return filteredUsers.filter((u) => u.role === 'student');
+    return filteredUsers.filter((u) => u.role === 'student' && u.isPendingDelete !== true);
+  }, [filteredUsers]);
+
+  const pendingDeleteStudents = useMemo(() => {
+    return filteredUsers.filter((u) => u.role === 'student' && u.isPendingDelete === true);
   }, [filteredUsers]);
 
   const meetingRoster = useMemo(() => {
@@ -6460,6 +6521,7 @@ export default function Page() {
               { id: 'dashboard', label: 'ダッシュボード', icon: '📊' },
               { id: 'schedule_planner', label: 'スケジュール', icon: '📅' },
               { id: 'students', label: '所属生徒一覧', icon: '🎓' },
+              ...(currentUser.role === 'admin' ? [{ id: 'pending_delete', label: 'データを消す生徒', icon: '🗑️' }] : []),
               { id: 'teachers', label: '所属教師・管理者一覧', icon: '👨‍🏫' },
               { id: 'materials', label: '教材マスタ', icon: '📚' },
               { id: 'progress', label: '教室別・生徒学習進捗', icon: '🏫' },
@@ -6552,6 +6614,7 @@ export default function Page() {
               {activeTab === 'schedule_planner' && 'スケジュール'}
               {activeTab === 'teachers' && '所属教師・管理者管理一覧'}
               {activeTab === 'students' && '所属生徒データ一覧'}
+              {activeTab === 'pending_delete' && 'データを消す生徒'}
               {activeTab === 'student_detail' && `生徒個人カルテ & 科目別成長チャート (${selectedStudent?.name || '未選択'})`}
               {activeTab === 'materials' && '教材マスタ'}
               {activeTab === 'progress' && '教室別・生徒学習進捗'}
@@ -7073,6 +7136,85 @@ export default function Page() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'pending_delete' && currentUser.role === 'admin' && (
+              <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3">
+                  <h3 className="text-base font-extrabold text-rose-950">データを消す生徒 ({pendingDeleteStudents.length}名)</h3>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { void handleRestorePendingStudents(); }}
+                      className="px-4 py-2 bg-white hover:bg-emerald-50 text-emerald-800 rounded-xl text-xs font-extrabold border border-emerald-200 cursor-pointer"
+                    >
+                      この生徒はデータを消す生徒ではありません
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handlePurgePendingStudents(); }}
+                      className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer"
+                    >
+                      データを完全に消去します
+                    </button>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs font-medium">
+                    <thead>
+                      <tr className="bg-rose-50 text-rose-900 border-b border-rose-100">
+                        <th className="p-2 align-bottom whitespace-nowrap">
+                          <div className="font-black mb-1">選択</div>
+                          <input
+                            type="checkbox"
+                            aria-label="表示中の削除待ち生徒をすべて選択"
+                            checked={pendingDeleteStudents.length > 0 && pendingDeleteStudents.every((student) => pendingDeleteSelectedIds.includes(student.id))}
+                            onChange={(e) => {
+                              const visibleIds = pendingDeleteStudents.map((student) => student.id);
+                              if (e.target.checked) {
+                                setPendingDeleteSelectedIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+                              } else {
+                                setPendingDeleteSelectedIds((prev) => prev.filter((id) => !visibleIds.includes(id)));
+                              }
+                            }}
+                            className="w-4 h-4 accent-rose-600 cursor-pointer"
+                          />
+                        </th>
+                        <th className="p-2 font-black whitespace-nowrap">氏名</th>
+                        <th className="p-2 font-black whitespace-nowrap">学年</th>
+                        <th className="p-2 font-black whitespace-nowrap">所属校舎</th>
+                        <th className="p-2 font-black whitespace-nowrap">独自ID</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {pendingDeleteStudents.map((student) => (
+                        <tr key={student.id} className="hover:bg-rose-50/40">
+                          <td className="p-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`${student.name}を選択`}
+                              checked={pendingDeleteSelectedIds.includes(student.id)}
+                              onChange={(e) => {
+                                setPendingDeleteSelectedIds((prev) => (
+                                  e.target.checked ? [...prev, student.id] : prev.filter((id) => id !== student.id)
+                                ));
+                              }}
+                              className="w-4 h-4 accent-rose-600 cursor-pointer"
+                            />
+                          </td>
+                          <td className="p-2 font-bold text-slate-900">{student.name}</td>
+                          <td className="p-2 text-slate-600">{student.grade || '-'}</td>
+                          <td className="p-2 text-slate-600">{student.classroom || '-'}</td>
+                          <td className="p-2 font-mono font-bold text-slate-700">{student.id}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {pendingDeleteStudents.length === 0 && (
+                    <p className="p-6 text-center text-xs font-bold text-slate-400">削除待ちの生徒はいません。</p>
+                  )}
                 </div>
               </div>
             )}
