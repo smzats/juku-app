@@ -170,6 +170,20 @@ const SUBJECT_CODE_TONE: Record<SubjectCode, SubjectType> = {
   other: 'その他',
 };
 
+const TEACHER_SUBJECT_DISPLAY: Partial<Record<SubjectCode, string>> = {
+  vocab: '単語・熟語',
+  math_school: '数学(学校)',
+  math_prep: '数学(受験)',
+};
+
+function teacherSubjectLabel(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '';
+  const code = subjectCodeFromInput(raw);
+  if (code && TEACHER_SUBJECT_DISPLAY[code]) return TEACHER_SUBJECT_DISPLAY[code];
+  return subjectLabel(raw);
+}
+
 function canonicalizeSubjectLabel(value: unknown): string {
   return typeof value === 'string' ? value.trim().replace(/（/g, '(').replace(/）/g, ')') : '';
 }
@@ -941,6 +955,7 @@ export interface StudyLog {
   created_at?: string;
   start_time?: string;
   end_time?: string;
+  subject?: string;
 }
 
 function studyLogRemoteRow(log: StudyLog, subject = ''): Record<string, unknown> {
@@ -1638,6 +1653,13 @@ async function findOverlappingStudyLog(
 
 function formatMeetingWhen(log: StudyLog, slot?: StudySlotLink): string {
   const weekMarks = '日月火水木金土';
+  const placed = storedClockPlacement(log);
+  if (placed) {
+    const [year, month, day] = placed.date.split('-').map(Number);
+    const date = new Date(year, (month || 1) - 1, day || 1);
+    const week = weekMarks[date.getDay()] || '';
+    return `${String(month || 1).padStart(2, '0')}/${String(day || 1).padStart(2, '0')}(${week}) ${formatMeetingClock(placed.startHour, placed.startMinute)}〜${formatMeetingClock(placed.endHour, placed.endMinute)}`;
+  }
   if (slot?.date) {
     const [year, month, day] = slot.date.split('-').map(Number);
     const date = new Date(year, (month || 1) - 1, day || 1);
@@ -3167,7 +3189,7 @@ function DayHourLane({
                 <span className="shrink-0 text-[8px] font-black text-red-700">削除</span>
               </button>
             ) : band.label ? (
-              <span className={`block px-0.5 font-black ${shared ? 'truncate text-[10px] leading-none' : 'text-[8px] leading-tight break-all'}`} title={band.label}>
+              <span className={`block px-0.5 font-black ${splitLanes ? 'truncate whitespace-nowrap text-xs leading-none' : 'text-[8px] leading-tight break-all'}`} title={band.label}>
                 {band.label}
               </span>
             ) : null}
@@ -3187,10 +3209,10 @@ function DayHourLane({
             left: shared ? `calc(${(lane.lane / lane.laneCount) * 100}% + 1px)` : 0,
             width: shared ? `calc(${100 / lane.laneCount}% - 2px)` : undefined,
             right: shared ? 'auto' : 0,
-            zIndex: 2,
-            backgroundColor: study.bgColor || study.color,
-            color: study.bgColor ? study.color : '#ffffff',
-            boxShadow: study.bgColor ? `inset 0 0 0 1px ${study.color}` : undefined,
+            zIndex: splitLanes ? 3 : 2,
+            backgroundColor: splitLanes ? '#ffffff' : (study.bgColor || study.color),
+            color: splitLanes ? study.color : (study.bgColor ? study.color : '#ffffff'),
+            boxShadow: study.bgColor || splitLanes ? `inset 0 0 0 1px ${study.color}` : undefined,
             top: slice.continuesUp ? -1 : `${slice.top}%`,
             height: slice.continuesUp || slice.continuesDown
               ? `calc(${slice.height}% + ${slice.continuesUp && slice.continuesDown ? 2 : 1}px)`
@@ -3203,7 +3225,7 @@ function DayHourLane({
           const body = (
             <>
               {slice.isStart && study.crown ? <span className="shrink-0 text-[10px] leading-none"><MissionCrown /></span> : null}
-              {slice.isStart ? <span className={`min-w-0 flex-1 truncate font-black leading-none text-current ${shared ? 'text-[10px]' : 'text-[8px]'}`} title={study.title}>{study.title}</span> : null}
+              {slice.isStart ? <span className={`min-w-0 flex-1 truncate font-black leading-none text-current ${splitLanes ? 'whitespace-nowrap text-xs' : 'text-[8px]'}`} title={study.title}>{study.title}</span> : null}
             </>
           );
           if (study.onClick) {
@@ -3352,14 +3374,16 @@ function MeetingWeekBoard({
                     const slice = sliceInHour(hour, placed);
                     if (!slice) return [];
                     const material = meetingMaterialInfo(log.material_id, userId, catalog);
-                    const setting = subjectSetting(material.subject);
+                    const subjectSource = log.subject || material.subject;
+                    const setting = subjectSetting(subjectSource);
                     const materialTitle = material.title === '学習' ? '教材名未登録' : material.title;
+                    const subjectName = teacherSubjectLabel(subjectSource);
                     const lane = dayLanes.get(`study:${log.id}`);
                     return [{
                       key: `${log.id}-${hour}`,
                       color: setting.color,
                       bgColor: setting.bgColor,
-                      title: useStoredClock ? `${material.subject} ${materialTitle}` : materialTitle,
+                      title: useStoredClock ? [subjectName, materialTitle].filter(Boolean).join(' ') : materialTitle,
                       crown: Boolean(log.is_mission_completed),
                       slice,
                       lane: lane?.lane,
@@ -3944,6 +3968,7 @@ export default function Page() {
         created_at: row?.study_date ? String(row.study_date) : undefined,
         start_time: row?.start_time == null || row?.start_time === '' ? undefined : String(row.start_time),
         end_time: row?.end_time == null || row?.end_time === '' ? undefined : String(row.end_time),
+        subject: row?.subject == null || row?.subject === '' ? undefined : String(row.subject),
       }];
     });
   }, [supabase]);
@@ -7757,7 +7782,10 @@ export default function Page() {
                             <div className="text-[11px] font-bold text-slate-400">学習日時</div>
                             <div className="text-base font-black text-slate-900">{formatMeetingWhen(log, logSlots[log.id])}</div>
                             <div className="text-sm font-black text-slate-800">{student?.name || '氏名未登録'} / {log.user_id}</div>
-                            <div className="text-sm font-bold text-slate-900">{meetingMaterialTitle(log.material_id, log.user_id, materials)}</div>
+                            <div className="text-sm font-bold text-slate-900 truncate">{meetingMaterialTitle(log.material_id, log.user_id, materials)}</div>
+                            {teacherSubjectLabel(log.subject) ? (
+                              <div className="text-xs font-black truncate" style={{ color: subjectSetting(log.subject).color }}>{teacherSubjectLabel(log.subject)}</div>
+                            ) : null}
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-black text-slate-700">{log.time_spent_minutes}分</span>
                               {log.is_mission_completed ? (
