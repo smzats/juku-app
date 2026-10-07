@@ -3132,10 +3132,12 @@ function LearningTrailFrame({
   hours,
   card,
   ready,
+  imageVersion,
 }: {
   hours: number;
   card: LearningTrailCard | null;
   ready: boolean;
+  imageVersion: number;
 }) {
   const gilt = card
     ? 'linear-gradient(145deg, #fff4cc 0%, #e8c56a 16%, #8a6424 38%, #f8e7b0 52%, #6d5018 72%, #f3d48a 100%)'
@@ -3157,9 +3159,9 @@ function LearningTrailFrame({
         >
           {card ? (
             <img
-              src={`/images/achievements/${card.stageKey}-${card.rarity}.png`}
+              src={`/images/achievements/${card.stageKey}-${card.rarity}.png?v=${imageVersion}`}
               alt="獲得した画像"
-              className="h-full w-full object-contain"
+              className="w-full h-full object-contain"
             />
           ) : ready ? (
             <p className="px-6 text-center text-sm font-black leading-relaxed text-stone-300">
@@ -3175,10 +3177,12 @@ function LearningTrailFrame({
 function LearningTrailCelebration({
   card,
   hasNext,
+  imageVersion,
   onClose,
 }: {
   card: LearningTrailCard;
   hasNext: boolean;
+  imageVersion: number;
   onClose: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -3189,9 +3193,10 @@ function LearningTrailCelebration({
     const audio = new Audio('/audio/fanfare.mp3');
     audio.volume = 0.7;
     audioRef.current = audio;
-    void audio.play().then(() => {
+    audio.addEventListener('playing', () => {
       fanfareStartedRef.current = true;
-    }).catch(() => {});
+    });
+    void audio.play().catch(() => {});
     const token = `${card.stageKey}:${card.rarity}`;
     if (!learningTrailCelebrated.has(token)) {
       learningTrailCelebrated.add(token);
@@ -3233,11 +3238,11 @@ function LearningTrailCelebration({
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 px-4">
       <div className="w-full max-w-md text-center">
         <p className="text-xl font-black text-white sm:text-2xl">🎉 新しい画像をゲットしたよ！</p>
-        <div className="mx-auto mt-5 w-[min(88vw,380px)] bg-[#f6f1e4] p-3 shadow-2xl">
+        <div className="mx-auto mt-5 aspect-[3/4] w-[min(88vw,380px)] bg-[#f6f1e4] p-3 shadow-2xl">
           <img
-            src={`/images/achievements/${card.stageKey}-${card.rarity}.png`}
+            src={`/images/achievements/${card.stageKey}-${card.rarity}.png?v=${imageVersion}`}
             alt="獲得した画像"
-            className="aspect-[3/4] w-full object-contain"
+            className="w-full h-full object-contain"
           />
         </div>
         <button
@@ -3271,6 +3276,7 @@ function LearningTrailAlbum({
   const remainHours = nextStage ? Math.ceil((nextStage.hours * 60 - totalMinutes) / 60) : 0;
   const [cards, setCards] = useState<LearningTrailCard[] | null>(null);
   const [celebrate, setCelebrate] = useState<LearningTrailCard[]>([]);
+  const imageVersion = useRef(Date.now()).current;
 
   useEffect(() => {
     if (!studentId || !supabaseEnvConfigured()) {
@@ -3303,7 +3309,7 @@ function LearningTrailAlbum({
       </p>
       <div className="mx-auto mt-8 flex max-w-md flex-col gap-8">
         {LEARNING_TRAIL_STAGES.map((stage) => (
-          <LearningTrailFrame key={stage.key} hours={stage.hours} ready={cards !== null} card={owned.get(stage.key) ?? null} />
+          <LearningTrailFrame key={stage.key} hours={stage.hours} ready={cards !== null} imageVersion={imageVersion} card={owned.get(stage.key) ?? null} />
         ))}
       </div>
       {showing && (
@@ -3311,6 +3317,7 @@ function LearningTrailAlbum({
           key={showing.stageKey}
           card={showing}
           hasNext={celebrate.length > 1}
+          imageVersion={imageVersion}
           onClose={() => {
             setCelebrate((items) => {
               const next = items.slice(1);
