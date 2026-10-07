@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef, createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
 import Papa from 'papaparse';
+import confetti from 'canvas-confetti';
 import { createClient } from '@supabase/supabase-js';
 import { SCHEDULE_CATEGORY_MAP, scheduleCategoryFromInput, scheduleCategorySetting, type ScheduleCategoryId } from '@/constants/schedule';
 import { SUBJECT_CODES, SUBJECT_CONFIG, SUBJECT_MAP, isSubjectCode, subjectCodeFromInput, subjectLabel, subjectSetting, type SubjectCode } from '@/constants/subjects';
@@ -1367,6 +1368,154 @@ function playTimeAttackChime() {
   } catch {
     // 音が出せない端末では画面の通知だけを出す
   }
+}
+
+const LEARNING_TRAIL_STAGES = [
+  { key: 'apprentice', hours: 50 },
+  { key: 'nobles', hours: 100 },
+  { key: 'grandee', hours: 300 },
+  { key: 'prince', hours: 500 },
+  { key: 'archduke', hours: 1000 },
+  { key: 'monarch', hours: 2000 },
+  { key: 'hero', hours: 3000 },
+  { key: 'demigod', hours: 5000 },
+  { key: 'deity', hours: 7500 },
+  { key: 'god', hours: 10000 },
+  { key: 'ruler', hours: 12500 },
+  { key: 'creator', hours: 15000 },
+] as const;
+
+const LEARNING_TRAIL_RARITIES = ['normal', 'silver', 'gold'] as const;
+
+type LearningTrailStageKey = (typeof LEARNING_TRAIL_STAGES)[number]['key'];
+type LearningTrailRarity = (typeof LEARNING_TRAIL_RARITIES)[number];
+
+type LearningTrailCard = {
+  stageKey: LearningTrailStageKey;
+  hours: number;
+  rarity: LearningTrailRarity;
+};
+
+const learningTrailGrantLocks = new Set<string>();
+const learningTrailJobs = new Map<string, Promise<{ cards: LearningTrailCard[]; fresh: LearningTrailCard[] }>>();
+const learningTrailPendingCelebrate = new Map<string, LearningTrailCard[]>();
+const learningTrailCelebrated = new Set<string>();
+
+function learningTrailRarity(value: unknown): LearningTrailRarity | null {
+  return LEARNING_TRAIL_RARITIES.find((item) => item === value) ?? null;
+}
+
+function learningTrailImageSrc(stageKey: string, rarity: LearningTrailRarity): string {
+  return `/images/achievements/${stageKey}-${rarity}.png`;
+}
+
+function learningTrailTotalMinutes(logs: StudyLog[], cramMinutesByWeek: Record<string, number>): number {
+  const study = logs.reduce((sum, log) => sum + (Number(log.time_spent_minutes) || 0), 0);
+  const cram = Object.values(cramMinutesByWeek).reduce((sum, value) => sum + (Number(value) || 0), 0);
+  return Math.max(0, Math.round(study + cram));
+}
+
+function rollLearningTrailRarity(): LearningTrailRarity {
+  const index = Math.floor(Math.random() * LEARNING_TRAIL_RARITIES.length);
+  return LEARNING_TRAIL_RARITIES[index];
+}
+
+function playAchievementFanfare() {
+  try {
+    const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    void ctx.resume();
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((freq, index) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      const start = now + index * 0.14;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.16, start + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.42);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.46);
+    });
+    [523.25, 659.25, 783.99, 1046.5].forEach((freq) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const start = now + 0.58;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.08, start + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.9);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.95);
+    });
+    window.setTimeout(() => {
+      void ctx.close();
+    }, 2200);
+  } catch {
+    // 音が出せない端末では紙吹雪と画像だけを出す
+  }
+}
+
+async function syncLearningTrail(
+  supabase: { from: (table: string) => any },
+  studentId: string,
+  totalMinutes: number,
+): Promise<{ cards: LearningTrailCard[]; fresh: LearningTrailCard[] }> {
+  const jobKey = `${studentId}:${totalMinutes}`;
+  const pending = learningTrailJobs.get(jobKey);
+  if (pending) return pending;
+  const job = (async () => {
+    const loaded = await supabase.from('student_achievements').select('stage_key, rarity_type').eq('student_id', studentId);
+    if (loaded.error) return { cards: [], fresh: [] };
+    const owned = new Map<string, LearningTrailRarity>();
+    (loaded.data || []).forEach((row: { stage_key?: unknown; rarity_type?: unknown }) => {
+      const rarity = learningTrailRarity(row?.rarity_type);
+      const stageKey = typeof row?.stage_key === 'string' ? row.stage_key : '';
+      if (rarity && stageKey) owned.set(stageKey, rarity);
+    });
+    const before = new Set(owned.keys());
+    for (const stage of LEARNING_TRAIL_STAGES) {
+      if (totalMinutes < stage.hours * 60 || owned.has(stage.key)) continue;
+      const lock = `${studentId}:${stage.key}`;
+      if (learningTrailGrantLocks.has(lock)) continue;
+      learningTrailGrantLocks.add(lock);
+      const rarity = rollLearningTrailRarity();
+      const inserted = await supabase.from('student_achievements').insert([{
+        student_id: studentId,
+        stage_key: stage.key,
+        rarity_type: rarity,
+      }]);
+      if (inserted.error && inserted.error.code !== '23505') learningTrailGrantLocks.delete(lock);
+    }
+    const again = await supabase.from('student_achievements').select('stage_key, rarity_type').eq('student_id', studentId);
+    const rows = again.error ? [] : (again.data || []);
+    const cards = LEARNING_TRAIL_STAGES.flatMap((stage) => {
+      const row = rows.find((item: { stage_key?: unknown }) => item?.stage_key === stage.key);
+      const rarity = learningTrailRarity(row?.rarity_type);
+      return rarity ? [{ stageKey: stage.key, hours: stage.hours, rarity }] : [];
+    });
+    const fresh = cards.filter((card) => !before.has(card.stageKey));
+    if (fresh.length > 0) {
+      const queued = learningTrailPendingCelebrate.get(studentId) || [];
+      const merged = [...queued];
+      fresh.forEach((card) => {
+        if (!merged.some((item) => item.stageKey === card.stageKey)) merged.push(card);
+      });
+      learningTrailPendingCelebrate.set(studentId, merged);
+    }
+    return { cards, fresh };
+  })().finally(() => {
+    learningTrailJobs.delete(jobKey);
+  });
+  learningTrailJobs.set(jobKey, job);
+  return job;
 }
 
 type ScreenWakeLockSentinel = { release: () => Promise<void>; addEventListener?: (type: string, listener: () => void) => void };
@@ -3022,6 +3171,180 @@ function PreviousWeekRankBadge({
           ? `前週の達成ランク: ${rank.label}ランク（前週学習＋塾: ${formatHourAndMinute(totalMinutes)}）`
           : '前週の達成ランク: 0時間0分（ランクなし）'}
       </p>
+    </section>
+  );
+}
+
+function LearningTrailFrame({
+  hours,
+  card,
+  ready,
+}: {
+  hours: number;
+  card: LearningTrailCard | null;
+  ready: boolean;
+}) {
+  const gilt = card
+    ? 'linear-gradient(145deg, #fff4cc 0%, #e8c56a 16%, #8a6424 38%, #f8e7b0 52%, #6d5018 72%, #f3d48a 100%)'
+    : 'linear-gradient(145deg, #6b6458 0%, #3a342c 42%, #8a8174 58%, #2a261f 100%)';
+  return (
+    <article
+      className="p-3 sm:p-4"
+      style={{
+        background: gilt,
+        boxShadow: card
+          ? '0 18px 36px rgba(0,0,0,0.38), inset 0 0 0 2px rgba(255,248,220,0.55)'
+          : '0 12px 24px rgba(0,0,0,0.28), inset 0 0 0 2px rgba(255,255,255,0.08)',
+      }}
+    >
+      <div className="p-2 sm:p-3" style={{ background: card ? '#2a2114' : '#16130f' }}>
+        <div
+          className="relative flex aspect-[3/4] items-center justify-center overflow-hidden"
+          style={{ background: card ? '#f4efe4' : '#100e0c' }}
+        >
+          {card ? (
+            <img
+              src={learningTrailImageSrc(card.stageKey, card.rarity)}
+              alt="獲得した画像"
+              className="h-full w-full object-contain"
+            />
+          ) : ready ? (
+            <p className="px-6 text-center text-sm font-black leading-relaxed text-stone-300">
+              🔒 {hours}時間達成で解放
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function LearningTrailCelebration({
+  card,
+  hasNext,
+  onClose,
+}: {
+  card: LearningTrailCard;
+  hasNext: boolean;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const token = `${card.stageKey}:${card.rarity}`;
+    if (learningTrailCelebrated.has(token)) return;
+    learningTrailCelebrated.add(token);
+    playAchievementFanfare();
+    const colors = ['#fff7d6', '#f6d56a', '#7dd3fc', '#fb7185', '#86efac', '#ffffff'];
+    const burst = {
+      particleCount: 180,
+      spread: 110,
+      startVelocity: 55,
+      ticks: 280,
+      zIndex: 400,
+      colors,
+      disableForReducedMotion: false as const,
+    };
+    try {
+      const fire = confetti as unknown as (options: Record<string, unknown>) => void;
+      fire({ ...burst, origin: { y: 0.58 } });
+      fire({ ...burst, particleCount: 90, angle: 60, spread: 65, origin: { x: 0, y: 0.7 } });
+      fire({ ...burst, particleCount: 90, angle: 120, spread: 65, origin: { x: 1, y: 0.7 } });
+    } catch {
+      // 紙吹雪を出せない端末でも画像とファンファーレは残す
+    }
+  }, [card.stageKey, card.rarity]);
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 px-4">
+      <div className="w-full max-w-md text-center">
+        <p className="text-xl font-black text-white sm:text-2xl">🎉 新しい画像をゲットしたよ！</p>
+        <div className="mx-auto mt-5 w-[min(88vw,380px)] bg-[#f6f1e4] p-3 shadow-2xl">
+          <img
+            src={learningTrailImageSrc(card.stageKey, card.rarity)}
+            alt="獲得した画像"
+            className="aspect-[3/4] w-full object-contain"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 rounded-2xl bg-white px-8 py-3 text-sm font-black text-slate-900 cursor-pointer"
+        >
+          {hasNext ? 'つぎの画像を見る' : 'とじる'}
+        </button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function LearningTrailAlbum({
+  supabase,
+  studentId,
+  studyLogs,
+  cramMinutesByWeek,
+}: {
+  supabase: { from: (table: string) => any };
+  studentId: string;
+  studyLogs: StudyLog[];
+  cramMinutesByWeek: Record<string, number>;
+}) {
+  const totalMinutes = learningTrailTotalMinutes(studyLogs, cramMinutesByWeek);
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  const nextStage = LEARNING_TRAIL_STAGES.find((stage) => totalMinutes < stage.hours * 60);
+  const remainHours = nextStage ? Math.ceil((nextStage.hours * 60 - totalMinutes) / 60) : 0;
+  const [cards, setCards] = useState<LearningTrailCard[] | null>(null);
+  const [celebrate, setCelebrate] = useState<LearningTrailCard[]>([]);
+
+  useEffect(() => {
+    if (!studentId || !supabaseEnvConfigured()) {
+      setCards([]);
+      return;
+    }
+    let cancelled = false;
+    void syncLearningTrail(supabase, studentId, totalMinutes).then((result) => {
+      if (cancelled) return;
+      setCards(result.cards);
+      const pending = learningTrailPendingCelebrate.get(studentId) || [];
+      if (pending.length > 0) setCelebrate((current) => (current.length > 0 ? current : pending));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase, studentId, totalMinutes]);
+
+  const owned = new Map((cards || []).map((card) => [card.stageKey, card]));
+  const showing = celebrate[0];
+
+  return (
+    <section className="rounded-[2rem] px-4 py-8 sm:px-6" style={{ background: 'linear-gradient(180deg, #2c261e 0%, #16130f 100%)' }}>
+      <h3 className="text-center text-lg font-black tracking-wide text-amber-50">🏆 キミの学習の軌跡</h3>
+      <p className="mt-4 text-center text-sm font-black leading-relaxed text-amber-50">
+        キミの総学習時間：{hours} 時間（{mins}分）
+      </p>
+      <p className="mt-1 text-center text-sm font-black leading-relaxed text-amber-200">
+        次の段階クリアーまであと {remainHours} 時間！
+      </p>
+      <div className="mx-auto mt-8 flex max-w-md flex-col gap-8">
+        {LEARNING_TRAIL_STAGES.map((stage) => (
+          <LearningTrailFrame key={stage.key} hours={stage.hours} ready={cards !== null} card={owned.get(stage.key) ?? null} />
+        ))}
+      </div>
+      {showing && (
+        <LearningTrailCelebration
+          key={showing.stageKey}
+          card={showing}
+          hasNext={celebrate.length > 1}
+          onClose={() => {
+            setCelebrate((items) => {
+              const next = items.slice(1);
+              learningTrailPendingCelebrate.set(studentId, next);
+              return next;
+            });
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -8695,6 +9018,12 @@ export default function Page() {
                     />
                   )}
                 </section>
+                <LearningTrailAlbum
+                  supabase={supabase}
+                  studentId={currentUser.id}
+                  studyLogs={myStudyLogs}
+                  cramMinutesByWeek={weekCramMinutes}
+                />
               </div>
             )}
 
