@@ -3181,12 +3181,17 @@ function LearningTrailCelebration({
   hasNext: boolean;
   onClose: () => void;
 }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const fanfareStartedRef = useRef(false);
+  const keepFanfareAfterCloseRef = useRef(false);
+
   useEffect(() => {
     const audio = new Audio('/audio/fanfare.mp3');
     audio.volume = 0.7;
-    void audio.play().catch(() => {
-      // 自動再生が止まった端末では紙吹雪と画像だけを出す
-    });
+    audioRef.current = audio;
+    void audio.play().then(() => {
+      fanfareStartedRef.current = true;
+    }).catch(() => {});
     const token = `${card.stageKey}:${card.rarity}`;
     if (!learningTrailCelebrated.has(token)) {
       learningTrailCelebrated.add(token);
@@ -3210,9 +3215,18 @@ function LearningTrailCelebration({
       }
     }
     return () => {
-      audio.pause();
+      if (!keepFanfareAfterCloseRef.current) audio.pause();
     };
   }, [card.stageKey, card.rarity]);
+
+  const handleClose = () => {
+    const audio = audioRef.current;
+    if (audio && !fanfareStartedRef.current) {
+      keepFanfareAfterCloseRef.current = true;
+      void audio.play().catch(() => {});
+    }
+    onClose();
+  };
 
   if (typeof document === 'undefined') return null;
   return createPortal(
@@ -3228,7 +3242,7 @@ function LearningTrailCelebration({
         </div>
         <button
           type="button"
-          onClick={onClose}
+          onClick={handleClose}
           className="mt-6 rounded-2xl bg-white px-8 py-3 text-sm font-black text-slate-900 cursor-pointer"
         >
           {hasNext ? 'つぎの画像を見る' : 'とじる'}
