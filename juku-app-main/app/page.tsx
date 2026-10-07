@@ -1394,64 +1394,64 @@ const LEARNING_TRAIL_AUDIO_URL = '/audio/fanfare.mp3';
 
 const LEARNING_TRAIL_CHOICES: Record<LearningTrailStageKey, ReadonlyArray<{ rarity_type: LearningTrailRarity; image_url: string }>> = {
   apprentice: [
-    { rarity_type: 'normal', image_url: '/images/achievements/apprentice-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/apprentice-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/apprentice-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/apprentice-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/apprentice-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/apprentice-gold.png' },
   ],
   nobles: [
-    { rarity_type: 'normal', image_url: '/images/achievements/nobles-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/nobles-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/nobles-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/nobles-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/nobles-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/nobles-gold.png' },
   ],
   grandee: [
-    { rarity_type: 'normal', image_url: '/images/achievements/grandee-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/grandee-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/grandee-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/grandee-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/grandee-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/grandee-gold.png' },
   ],
   prince: [
-    { rarity_type: 'normal', image_url: '/images/achievements/prince-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/prince-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/prince-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/prince-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/prince-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/prince-gold.png' },
   ],
   archduke: [
-    { rarity_type: 'normal', image_url: '/images/achievements/archduke-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/archduke-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/archduke-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/archduke-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/archduke-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/archduke-gold.png' },
   ],
   monarch: [
-    { rarity_type: 'normal', image_url: '/images/achievements/monarch-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/monarch-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/monarch-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/monarch-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/monarch-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/monarch-gold.png' },
   ],
   hero: [
-    { rarity_type: 'normal', image_url: '/images/achievements/hero-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/hero-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/hero-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/hero-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/hero-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/hero-gold.png' },
   ],
   demigod: [
-    { rarity_type: 'normal', image_url: '/images/achievements/demigod-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/demigod-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/demigod-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/demigod-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/demigod-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/demigod-gold.png' },
   ],
   deity: [
-    { rarity_type: 'normal', image_url: '/images/achievements/deity-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/deity-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/deity-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/deity-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/deity-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/deity-gold.png' },
   ],
   god: [
-    { rarity_type: 'normal', image_url: '/images/achievements/god-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/god-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/god-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/god-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/god-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/god-gold.png' },
   ],
   ruler: [
-    { rarity_type: 'normal', image_url: '/images/achievements/ruler-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/ruler-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/ruler-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/ruler-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/ruler-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/ruler-gold.png' },
   ],
   creator: [
-    { rarity_type: 'normal', image_url: '/images/achievements/creator-normal.png' },
-    { rarity_type: 'silver', image_url: '/images/achievements/creator-silver.png' },
-    { rarity_type: 'gold', image_url: '/images/achievements/creator-gold.png' },
+    { rarity_type: 'normal', image_url: '/images/creator-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/creator-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/creator-gold.png' },
   ],
 };
 
@@ -3233,7 +3233,7 @@ function LearningTrailFrame({
           {card ? (
             <img
               src={card.image_url}
-              alt="獲得した画像"
+              alt="実績"
               className="w-full h-full object-contain"
             />
           ) : ready ? (
@@ -3312,7 +3312,7 @@ function LearningTrailCelebration({
         <div className="mx-auto mt-5 aspect-[3/4] w-[min(88vw,380px)] bg-[#f6f1e4] p-3 shadow-2xl">
           <img
             src={card.image_url}
-            alt="獲得した画像"
+            alt="実績"
             className="w-full h-full object-contain"
           />
         </div>
