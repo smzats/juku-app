@@ -1390,10 +1390,77 @@ const LEARNING_TRAIL_RARITIES = ['normal', 'silver', 'gold'] as const;
 type LearningTrailStageKey = (typeof LEARNING_TRAIL_STAGES)[number]['key'];
 type LearningTrailRarity = (typeof LEARNING_TRAIL_RARITIES)[number];
 
+const LEARNING_TRAIL_AUDIO_URL = '/audio/fanfare.mp3';
+
+const LEARNING_TRAIL_CHOICES: Record<LearningTrailStageKey, ReadonlyArray<{ rarity_type: LearningTrailRarity; image_url: string }>> = {
+  apprentice: [
+    { rarity_type: 'normal', image_url: '/images/achievements/apprentice-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/apprentice-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/apprentice-gold.png' },
+  ],
+  nobles: [
+    { rarity_type: 'normal', image_url: '/images/achievements/nobles-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/nobles-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/nobles-gold.png' },
+  ],
+  grandee: [
+    { rarity_type: 'normal', image_url: '/images/achievements/grandee-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/grandee-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/grandee-gold.png' },
+  ],
+  prince: [
+    { rarity_type: 'normal', image_url: '/images/achievements/prince-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/prince-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/prince-gold.png' },
+  ],
+  archduke: [
+    { rarity_type: 'normal', image_url: '/images/achievements/archduke-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/archduke-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/archduke-gold.png' },
+  ],
+  monarch: [
+    { rarity_type: 'normal', image_url: '/images/achievements/monarch-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/monarch-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/monarch-gold.png' },
+  ],
+  hero: [
+    { rarity_type: 'normal', image_url: '/images/achievements/hero-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/hero-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/hero-gold.png' },
+  ],
+  demigod: [
+    { rarity_type: 'normal', image_url: '/images/achievements/demigod-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/demigod-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/demigod-gold.png' },
+  ],
+  deity: [
+    { rarity_type: 'normal', image_url: '/images/achievements/deity-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/deity-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/deity-gold.png' },
+  ],
+  god: [
+    { rarity_type: 'normal', image_url: '/images/achievements/god-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/god-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/god-gold.png' },
+  ],
+  ruler: [
+    { rarity_type: 'normal', image_url: '/images/achievements/ruler-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/ruler-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/ruler-gold.png' },
+  ],
+  creator: [
+    { rarity_type: 'normal', image_url: '/images/achievements/creator-normal.png' },
+    { rarity_type: 'silver', image_url: '/images/achievements/creator-silver.png' },
+    { rarity_type: 'gold', image_url: '/images/achievements/creator-gold.png' },
+  ],
+};
+
 type LearningTrailCard = {
   stageKey: LearningTrailStageKey;
   hours: number;
-  rarity: LearningTrailRarity;
+  image_url: string;
+  audio_url: string;
+  show_confetti: boolean;
 };
 
 const learningTrailGrantLocks = new Set<string>();
@@ -1401,19 +1468,24 @@ const learningTrailJobs = new Map<string, Promise<{ cards: LearningTrailCard[]; 
 const learningTrailPendingCelebrate = new Map<string, LearningTrailCard[]>();
 const learningTrailCelebrated = new Set<string>();
 
-function learningTrailRarity(value: unknown): LearningTrailRarity | null {
-  return LEARNING_TRAIL_RARITIES.find((item) => item === value) ?? null;
-}
-
 function learningTrailTotalMinutes(logs: StudyLog[], cramMinutesByWeek: Record<string, number>): number {
   const study = logs.reduce((sum, log) => sum + (Number(log.time_spent_minutes) || 0), 0);
   const cram = Object.values(cramMinutesByWeek).reduce((sum, value) => sum + (Number(value) || 0), 0);
   return Math.max(0, Math.round(study + cram));
 }
 
-function rollLearningTrailRarity(): LearningTrailRarity {
-  const index = Math.floor(Math.random() * LEARNING_TRAIL_RARITIES.length);
-  return LEARNING_TRAIL_RARITIES[index];
+function learningTrailCardFromRow(row: { stage_key?: unknown; image_url?: unknown; audio_url?: unknown; show_confetti?: unknown }): LearningTrailCard | null {
+  const stage = LEARNING_TRAIL_STAGES.find((item) => item.key === row?.stage_key);
+  const image_url = typeof row?.image_url === 'string' ? row.image_url : '';
+  const audio_url = typeof row?.audio_url === 'string' ? row.audio_url : '';
+  if (!stage || !image_url) return null;
+  return {
+    stageKey: stage.key,
+    hours: stage.hours,
+    image_url,
+    audio_url,
+    show_confetti: row?.show_confetti === true,
+  };
 }
 
 async function syncLearningTrail(
@@ -1425,34 +1497,37 @@ async function syncLearningTrail(
   const pending = learningTrailJobs.get(jobKey);
   if (pending) return pending;
   const job = (async () => {
-    const loaded = await supabase.from('student_achievements').select('stage_key, rarity_type').eq('student_id', studentId);
+    const loaded = await supabase.from('student_achievements').select('stage_key, rarity_type, image_url, audio_url, show_confetti').eq('student_id', studentId);
     if (loaded.error) return { cards: [], fresh: [] };
-    const owned = new Map<string, LearningTrailRarity>();
-    (loaded.data || []).forEach((row: { stage_key?: unknown; rarity_type?: unknown }) => {
-      const rarity = learningTrailRarity(row?.rarity_type);
+    const owned = new Set<string>();
+    for (const row of loaded.data || []) {
       const stageKey = typeof row?.stage_key === 'string' ? row.stage_key : '';
-      if (rarity && stageKey) owned.set(stageKey, rarity);
-    });
-    const before = new Set(owned.keys());
+      if (stageKey) owned.add(stageKey);
+    }
+    const before = new Set(owned);
     for (const stage of LEARNING_TRAIL_STAGES) {
       if (totalMinutes < stage.hours * 60 || owned.has(stage.key)) continue;
       const lock = `${studentId}:${stage.key}`;
       if (learningTrailGrantLocks.has(lock)) continue;
       learningTrailGrantLocks.add(lock);
-      const rarity = rollLearningTrailRarity();
+      const choices = LEARNING_TRAIL_CHOICES[stage.key];
+      const picked = choices[Math.floor(Math.random() * choices.length)];
       const inserted = await supabase.from('student_achievements').insert([{
         student_id: studentId,
         stage_key: stage.key,
-        rarity_type: rarity,
+        rarity_type: picked.rarity_type,
+        image_url: picked.image_url,
+        audio_url: LEARNING_TRAIL_AUDIO_URL,
+        show_confetti: true,
       }]);
       if (inserted.error && inserted.error.code !== '23505') learningTrailGrantLocks.delete(lock);
     }
-    const again = await supabase.from('student_achievements').select('stage_key, rarity_type').eq('student_id', studentId);
+    const again = await supabase.from('student_achievements').select('stage_key, image_url, audio_url, show_confetti').eq('student_id', studentId);
     const rows = again.error ? [] : (again.data || []);
     const cards = LEARNING_TRAIL_STAGES.flatMap((stage) => {
       const row = rows.find((item: { stage_key?: unknown }) => item?.stage_key === stage.key);
-      const rarity = learningTrailRarity(row?.rarity_type);
-      return rarity ? [{ stageKey: stage.key, hours: stage.hours, rarity }] : [];
+      const card = row ? learningTrailCardFromRow(row) : null;
+      return card ? [card] : [];
     });
     const fresh = cards.filter((card) => !before.has(card.stageKey));
     if (fresh.length > 0) {
@@ -3132,12 +3207,10 @@ function LearningTrailFrame({
   hours,
   card,
   ready,
-  imageVersion,
 }: {
   hours: number;
   card: LearningTrailCard | null;
   ready: boolean;
-  imageVersion: number;
 }) {
   const gilt = card
     ? 'linear-gradient(145deg, #fff4cc 0%, #e8c56a 16%, #8a6424 38%, #f8e7b0 52%, #6d5018 72%, #f3d48a 100%)'
@@ -3159,7 +3232,7 @@ function LearningTrailFrame({
         >
           {card ? (
             <img
-              src={`/images/achievements/${card.stageKey}-${card.rarity}.png?v=${imageVersion}`}
+              src={card.image_url}
               alt="獲得した画像"
               className="w-full h-full object-contain"
             />
@@ -3177,12 +3250,10 @@ function LearningTrailFrame({
 function LearningTrailCelebration({
   card,
   hasNext,
-  imageVersion,
   onClose,
 }: {
   card: LearningTrailCard;
   hasNext: boolean;
-  imageVersion: number;
   onClose: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -3190,15 +3261,15 @@ function LearningTrailCelebration({
   const keepFanfareAfterCloseRef = useRef(false);
 
   useEffect(() => {
-    const audio = new Audio('/audio/fanfare.mp3');
+    const audio = new Audio(card.audio_url);
     audio.volume = 0.7;
     audioRef.current = audio;
     audio.addEventListener('playing', () => {
       fanfareStartedRef.current = true;
     });
     void audio.play().catch(() => {});
-    const token = `${card.stageKey}:${card.rarity}`;
-    if (!learningTrailCelebrated.has(token)) {
+    const token = card.image_url;
+    if (card.show_confetti === true && !learningTrailCelebrated.has(token)) {
       learningTrailCelebrated.add(token);
       const colors = ['#fff7d6', '#f6d56a', '#7dd3fc', '#fb7185', '#86efac', '#ffffff'];
       const burst = {
@@ -3222,7 +3293,7 @@ function LearningTrailCelebration({
     return () => {
       if (!keepFanfareAfterCloseRef.current) audio.pause();
     };
-  }, [card.stageKey, card.rarity]);
+  }, [card.audio_url, card.image_url, card.show_confetti]);
 
   const handleClose = () => {
     const audio = audioRef.current;
@@ -3240,7 +3311,7 @@ function LearningTrailCelebration({
         <p className="text-xl font-black text-white sm:text-2xl">🎉 新しい画像をゲットしたよ！</p>
         <div className="mx-auto mt-5 aspect-[3/4] w-[min(88vw,380px)] bg-[#f6f1e4] p-3 shadow-2xl">
           <img
-            src={`/images/achievements/${card.stageKey}-${card.rarity}.png?v=${imageVersion}`}
+            src={card.image_url}
             alt="獲得した画像"
             className="w-full h-full object-contain"
           />
@@ -3276,7 +3347,6 @@ function LearningTrailAlbum({
   const remainHours = nextStage ? Math.ceil((nextStage.hours * 60 - totalMinutes) / 60) : 0;
   const [cards, setCards] = useState<LearningTrailCard[] | null>(null);
   const [celebrate, setCelebrate] = useState<LearningTrailCard[]>([]);
-  const imageVersion = useRef(Date.now()).current;
 
   useEffect(() => {
     if (!studentId || !supabaseEnvConfigured()) {
@@ -3309,7 +3379,7 @@ function LearningTrailAlbum({
       </p>
       <div className="mx-auto mt-8 flex max-w-md flex-col gap-8">
         {LEARNING_TRAIL_STAGES.map((stage) => (
-          <LearningTrailFrame key={stage.key} hours={stage.hours} ready={cards !== null} imageVersion={imageVersion} card={owned.get(stage.key) ?? null} />
+          <LearningTrailFrame key={stage.key} hours={stage.hours} ready={cards !== null} card={owned.get(stage.key) ?? null} />
         ))}
       </div>
       {showing && (
@@ -3317,7 +3387,6 @@ function LearningTrailAlbum({
           key={showing.stageKey}
           card={showing}
           hasNext={celebrate.length > 1}
-          imageVersion={imageVersion}
           onClose={() => {
             setCelebrate((items) => {
               const next = items.slice(1);
