@@ -1422,42 +1422,11 @@ function rollLearningTrailRarity(): LearningTrailRarity {
 
 function playAchievementFanfare() {
   try {
-    const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    void ctx.resume();
-    const now = ctx.currentTime;
-    [523.25, 659.25, 783.99, 1046.5].forEach((freq, index) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = freq;
-      const start = now + index * 0.14;
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.16, start + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.42);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + 0.46);
+    const audio = new Audio('/audio/fanfare.mp3');
+    audio.volume = 0.7;
+    void audio.play().catch(() => {
+      // 自動再生が止まった端末では紙吹雪と画像だけを出す
     });
-    [523.25, 659.25, 783.99, 1046.5].forEach((freq) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      const start = now + 0.58;
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.08, start + 0.04);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.9);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + 0.95);
-    });
-    window.setTimeout(() => {
-      void ctx.close();
-    }, 2200);
   } catch {
     // 音が出せない端末では紙吹雪と画像だけを出す
   }
