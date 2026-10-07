@@ -1405,10 +1405,6 @@ function learningTrailRarity(value: unknown): LearningTrailRarity | null {
   return LEARNING_TRAIL_RARITIES.find((item) => item === value) ?? null;
 }
 
-function learningTrailImageSrc(stageKey: string, rarity: LearningTrailRarity): string {
-  return `/images/achievements/${stageKey}-${rarity}.png`;
-}
-
 function learningTrailTotalMinutes(logs: StudyLog[], cramMinutesByWeek: Record<string, number>): number {
   const study = logs.reduce((sum, log) => sum + (Number(log.time_spent_minutes) || 0), 0);
   const cram = Object.values(cramMinutesByWeek).reduce((sum, value) => sum + (Number(value) || 0), 0);
@@ -1418,18 +1414,6 @@ function learningTrailTotalMinutes(logs: StudyLog[], cramMinutesByWeek: Record<s
 function rollLearningTrailRarity(): LearningTrailRarity {
   const index = Math.floor(Math.random() * LEARNING_TRAIL_RARITIES.length);
   return LEARNING_TRAIL_RARITIES[index];
-}
-
-function playAchievementFanfare() {
-  try {
-    const audio = new Audio('/audio/fanfare.mp3');
-    audio.volume = 0.7;
-    void audio.play().catch(() => {
-      // 自動再生が止まった端末では紙吹雪と画像だけを出す
-    });
-  } catch {
-    // 音が出せない端末では紙吹雪と画像だけを出す
-  }
 }
 
 async function syncLearningTrail(
@@ -3173,7 +3157,7 @@ function LearningTrailFrame({
         >
           {card ? (
             <img
-              src={learningTrailImageSrc(card.stageKey, card.rarity)}
+              src={`/images/achievements/${card.stageKey}-${card.rarity}.png`}
               alt="獲得した画像"
               className="h-full w-full object-contain"
             />
@@ -3198,28 +3182,36 @@ function LearningTrailCelebration({
   onClose: () => void;
 }) {
   useEffect(() => {
+    const audio = new Audio('/audio/fanfare.mp3');
+    audio.volume = 0.7;
+    void audio.play().catch(() => {
+      // 自動再生が止まった端末では紙吹雪と画像だけを出す
+    });
     const token = `${card.stageKey}:${card.rarity}`;
-    if (learningTrailCelebrated.has(token)) return;
-    learningTrailCelebrated.add(token);
-    playAchievementFanfare();
-    const colors = ['#fff7d6', '#f6d56a', '#7dd3fc', '#fb7185', '#86efac', '#ffffff'];
-    const burst = {
-      particleCount: 180,
-      spread: 110,
-      startVelocity: 55,
-      ticks: 280,
-      zIndex: 400,
-      colors,
-      disableForReducedMotion: false as const,
-    };
-    try {
-      const fire = confetti as unknown as (options: Record<string, unknown>) => void;
-      fire({ ...burst, origin: { y: 0.58 } });
-      fire({ ...burst, particleCount: 90, angle: 60, spread: 65, origin: { x: 0, y: 0.7 } });
-      fire({ ...burst, particleCount: 90, angle: 120, spread: 65, origin: { x: 1, y: 0.7 } });
-    } catch {
-      // 紙吹雪を出せない端末でも画像とファンファーレは残す
+    if (!learningTrailCelebrated.has(token)) {
+      learningTrailCelebrated.add(token);
+      const colors = ['#fff7d6', '#f6d56a', '#7dd3fc', '#fb7185', '#86efac', '#ffffff'];
+      const burst = {
+        particleCount: 180,
+        spread: 110,
+        startVelocity: 55,
+        ticks: 280,
+        zIndex: 400,
+        colors,
+        disableForReducedMotion: false as const,
+      };
+      try {
+        const fire = confetti as unknown as (options: Record<string, unknown>) => void;
+        fire({ ...burst, origin: { y: 0.58 } });
+        fire({ ...burst, particleCount: 90, angle: 60, spread: 65, origin: { x: 0, y: 0.7 } });
+        fire({ ...burst, particleCount: 90, angle: 120, spread: 65, origin: { x: 1, y: 0.7 } });
+      } catch {
+        // 紙吹雪を出せない端末では画像だけを出す
+      }
     }
+    return () => {
+      audio.pause();
+    };
   }, [card.stageKey, card.rarity]);
 
   if (typeof document === 'undefined') return null;
@@ -3229,7 +3221,7 @@ function LearningTrailCelebration({
         <p className="text-xl font-black text-white sm:text-2xl">🎉 新しい画像をゲットしたよ！</p>
         <div className="mx-auto mt-5 w-[min(88vw,380px)] bg-[#f6f1e4] p-3 shadow-2xl">
           <img
-            src={learningTrailImageSrc(card.stageKey, card.rarity)}
+            src={`/images/achievements/${card.stageKey}-${card.rarity}.png`}
             alt="獲得した画像"
             className="aspect-[3/4] w-full object-contain"
           />
