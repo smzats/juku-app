@@ -939,6 +939,8 @@ export interface StudyLog {
   is_mission_completed: boolean;
   comment?: string;
   created_at?: string;
+  start_time?: string;
+  end_time?: string;
 }
 
 function studyLogRemoteRow(log: StudyLog, subject = ''): Record<string, unknown> {
@@ -1687,6 +1689,47 @@ function studyPlacement(log: StudyLog, slots: Record<string, StudySlotLink>): (S
   const stampHour = jstClock(stamp).hour;
   if (stampHour === 0) return { date: shiftDateKey(dateKey, -1), startHour: 24, startMinute: 0, endHour: 25, endMinute: 0 };
   return { date: dateKey, startHour: stampHour, startMinute: 0, endHour: stampHour + 1, endMinute: 0 };
+}
+
+function storedClockPlacement(log: StudyLog): (StudyClockRange & { date: string }) | null {
+  const dateKey = String(log.created_at || '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return null;
+  const start = minutesFromStoredClock(log.start_time);
+  const end = minutesFromStoredClock(log.end_time);
+  if (start == null || end == null || end <= start) return null;
+  return {
+    date: dateKey,
+    startHour: Math.floor(start / 60),
+    startMinute: start % 60,
+    endHour: Math.floor(end / 60),
+    endMinute: end % 60,
+  };
+}
+
+function slicesOverlap(left: HourSlice, right: HourSlice): boolean {
+  const leftEnd = left.top + left.height;
+  const rightEnd = right.top + right.height;
+  return left.top < rightEnd - 0.05 && right.top < leftEnd - 0.05;
+}
+
+function laneBoxes(slices: HourSlice[]): { lane: number; laneCount: number }[] {
+  const order = slices
+    .map((slice, index) => ({ index, start: slice.top, end: slice.top + slice.height }))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  const laneEnds: number[] = [];
+  const lanes = slices.map(() => 0);
+  order.forEach((entry) => {
+    let lane = laneEnds.findIndex((end) => end <= entry.start + 0.05);
+    if (lane < 0) {
+      lane = laneEnds.length;
+      laneEnds.push(entry.end);
+    } else {
+      laneEnds[lane] = entry.end;
+    }
+    lanes[entry.index] = lane;
+  });
+  const laneCount = Math.max(1, laneEnds.length);
+  return lanes.map((lane) => ({ lane, laneCount }));
 }
 
 function buildStudyStacks(
@@ -3040,12 +3083,13 @@ function DayHourLane({
   studies,
   onEmpty,
   onDeleteSlot,
+  splitLanes = false,
 }: {
   hour: number;
   showHourLabel: boolean;
   planColor?: string | null;
   planLabel?: string;
-  planBands?: { key: string; slotId: string; color: string; bgColor?: string; label?: string; slice: HourSlice }[];
+  planBands?: { key: string; slotId: string; color: string; bgColor?: string; label?: string; slice: HourSlice; lane?: number; laneCount?: number }[];
   studies: {
     key: string;
     color: string;
@@ -3053,11 +3097,31 @@ function DayHourLane({
     title: string;
     crown: boolean;
     slice: HourSlice;
+    lane?: number;
+    laneCount?: number;
     onClick?: () => void;
   }[];
   onEmpty?: () => void;
   onDeleteSlot?: (slotId: string) => void;
+  splitLanes?: boolean;
 }) {
+  const laneItems = [
+    ...(planBands || []).map((band) => band.slice),
+    ...studies.map((study) => study.slice),
+  ];
+  const packed = splitLanes && laneItems.some((slice, index) => laneItems.some((other, otherIndex) => otherIndex !== index && slicesOverlap(slice, other)))
+    ? laneBoxes(laneItems)
+    : laneItems.map(() => ({ lane: 0, laneCount: 1 }));
+  const bandLanes = (planBands || []).map((band, index) => (
+    splitLanes && band.lane != null && band.laneCount != null
+      ? { lane: band.lane, laneCount: band.laneCount }
+      : (packed[index] || { lane: 0, laneCount: 1 })
+  ));
+  const studyLanes = studies.map((study, index) => (
+    splitLanes && study.lane != null && study.laneCount != null
+      ? { lane: study.lane, laneCount: study.laneCount }
+      : (packed[(planBands?.length || 0) + index] || { lane: 0, laneCount: 1 })
+  ));
   return (
     <div
       className={`relative flex-1 min-h-0 w-full flex border-b border-white/50 overflow-visible ${onEmpty ? 'cursor-pointer' : ''}`}
@@ -3070,11 +3134,24 @@ function DayHourLane({
         </span>
       )}
       <div className="relative flex-1 min-w-0">
-        {(planBands || []).map((band) => (
+        {(planBands || []).map((band, index) => {
+          const lane = bandLanes[index] || { lane: 0, laneCount: 1 };
+          const shared = lane.laneCount > 1;
+          return (
           <div
             key={band.key}
-            className={`absolute inset-x-0 overflow-hidden ${band.label && onDeleteSlot ? '' : 'pointer-events-none'}`}
-            style={{ top: `${band.slice.top}%`, height: `${band.slice.height}%`, backgroundColor: band.bgColor || band.color, color: band.color, boxShadow: band.bgColor ? `inset 0 0 0 1px ${band.color}` : undefined }}
+            className={`absolute overflow-hidden ${band.label && onDeleteSlot ? '' : 'pointer-events-none'} ${shared ? '' : 'inset-x-0'}`}
+            style={{
+              top: `${band.slice.top}%`,
+              height: `${band.slice.height}%`,
+              zIndex: 1,
+              left: shared ? `calc(${(lane.lane / lane.laneCount) * 100}% + 1px)` : 0,
+              width: shared ? `calc(${100 / lane.laneCount}% - 2px)` : undefined,
+              right: shared ? 'auto' : 0,
+              backgroundColor: band.bgColor || band.color,
+              color: band.color,
+              boxShadow: band.bgColor ? `inset 0 0 0 1px ${band.color}` : undefined,
+            }}
           >
             {band.label && onDeleteSlot ? (
               <button
@@ -3086,26 +3163,30 @@ function DayHourLane({
                 }}
                 className="flex w-full items-start justify-between gap-0.5 px-0.5 text-left cursor-pointer"
               >
-                <span className="min-w-0 text-[8px] font-black leading-tight break-all">{band.label}</span>
+                <span className={`min-w-0 font-black leading-tight ${shared ? 'truncate text-[10px] leading-none' : 'text-[8px] break-all'}`}>{band.label}</span>
                 <span className="shrink-0 text-[8px] font-black text-red-700">削除</span>
               </button>
             ) : band.label ? (
-              <span className="block px-0.5 text-[8px] font-black leading-tight break-all" title={band.label}>
+              <span className={`block px-0.5 font-black ${shared ? 'truncate text-[10px] leading-none' : 'text-[8px] leading-tight break-all'}`} title={band.label}>
                 {band.label}
               </span>
             ) : null}
           </div>
-        ))}
+          );
+        })}
         {studies.length === 0 && !planBands?.length && planLabel ? (
           <span className="absolute inset-0 flex items-center text-[8px] font-black truncate leading-none pl-0.5 text-slate-700 pointer-events-none">
             {planLabel}
           </span>
         ) : null}
-        {studies.map((study) => {
+        {studies.map((study, index) => {
           const { slice } = study;
+          const lane = studyLanes[index] || { lane: 0, laneCount: 1 };
+          const shared = lane.laneCount > 1;
           const style: React.CSSProperties = {
-            left: 0,
-            right: 0,
+            left: shared ? `calc(${(lane.lane / lane.laneCount) * 100}% + 1px)` : 0,
+            width: shared ? `calc(${100 / lane.laneCount}% - 2px)` : undefined,
+            right: shared ? 'auto' : 0,
             zIndex: 2,
             backgroundColor: study.bgColor || study.color,
             color: study.bgColor ? study.color : '#ffffff',
@@ -3122,7 +3203,7 @@ function DayHourLane({
           const body = (
             <>
               {slice.isStart && study.crown ? <span className="shrink-0 text-[10px] leading-none"><MissionCrown /></span> : null}
-              {slice.isStart ? <span className="min-w-0 text-[8px] font-black truncate leading-none text-current">{study.title}</span> : null}
+              {slice.isStart ? <span className={`min-w-0 flex-1 truncate font-black leading-none text-current ${shared ? 'text-[10px]' : 'text-[8px]'}`} title={study.title}>{study.title}</span> : null}
             </>
           );
           if (study.onClick) {
@@ -3214,6 +3295,7 @@ function MeetingWeekBoard({
   catalog,
   userId,
   compact = false,
+  useStoredClock = false,
 }: {
   weekStart: string;
   plans: Record<string, WeekPlanRecord>;
@@ -3222,6 +3304,7 @@ function MeetingWeekBoard({
   catalog: Material[];
   userId: string;
   compact?: boolean;
+  useStoredClock?: boolean;
 }) {
   const days = Array.from({ length: 7 }, (_, index) => shiftDateKey(weekStart, index));
   return (
@@ -3232,6 +3315,30 @@ function MeetingWeekBoard({
           const weekday = weekdayIdFromDateKey(dateKey);
           const dayLabel = WEEKDAYS.find((day) => day.id === weekday)?.label || '';
           const [, month, day] = dateKey.split('-');
+          const placedLogs = useStoredClock ? studentLogs.flatMap((log) => {
+            const placed = storedClockPlacement(log);
+            if (!placed || placed.date !== dateKey) return [];
+            const start = clockMinutes(placed.startHour, placed.startMinute);
+            const end = clockMinutes(placed.endHour, placed.endMinute);
+            if (end <= start) return [];
+            return [{ log, placed, start, end }];
+          }) : [];
+          const dayPlanSlots = useStoredClock ? planSlots.filter((slot) => slot.day === weekday) : [];
+          const laneSource = [
+            ...dayPlanSlots.map((slot) => {
+              const range = slotRangeMinutes(slot);
+              return { key: `plan:${slot.id}`, top: range.start, height: Math.max(range.end - range.start, 0) };
+            }),
+            ...placedLogs.map((item) => ({ key: `study:${item.log.id}`, top: item.start, height: item.end - item.start })),
+          ].filter((item) => item.height > 0);
+          const laneAssignments = laneBoxes(laneSource.map((item) => ({
+            top: item.top,
+            height: item.height,
+            continuesUp: false,
+            continuesDown: false,
+            isStart: true,
+          })));
+          const dayLanes = new Map(laneSource.map((item, index) => [item.key, laneAssignments[index]]));
           return (
             <div key={dateKey} className="min-h-0 flex flex-col rounded-2xl border border-slate-200 bg-white overflow-hidden">
               <div className="shrink-0 text-center text-[10px] font-black py-1 bg-slate-50 text-slate-700 border-b border-slate-100">
@@ -3240,28 +3347,37 @@ function MeetingWeekBoard({
               <div className="flex-1 min-h-0 flex flex-col">
                 {DAY_VIEW_HOURS.map((hour) => {
                   const studies = studentLogs.flatMap((log) => {
-                    const placed = studyPlacement(log, slots);
+                    const placed = useStoredClock ? storedClockPlacement(log) : studyPlacement(log, slots);
                     if (!placed || placed.date !== dateKey) return [];
                     const slice = sliceInHour(hour, placed);
                     if (!slice) return [];
                     const material = meetingMaterialInfo(log.material_id, userId, catalog);
                     const setting = subjectSetting(material.subject);
+                    const materialTitle = material.title === '学習' ? '教材名未登録' : material.title;
+                    const lane = dayLanes.get(`study:${log.id}`);
                     return [{
                       key: `${log.id}-${hour}`,
                       color: setting.color,
                       bgColor: setting.bgColor,
-                      title: material.title === '学習' ? '教材名未登録' : material.title,
+                      title: useStoredClock ? `${material.subject} ${materialTitle}` : materialTitle,
                       crown: Boolean(log.is_mission_completed),
                       slice,
+                      lane: lane?.lane,
+                      laneCount: lane?.laneCount,
                     }];
+                  });
+                  const planBands = planBandsForHour(planSlots, weekday, hour).map((band) => {
+                    const lane = dayLanes.get(`plan:${band.slotId}`);
+                    return lane ? { ...band, lane: lane.lane, laneCount: lane.laneCount } : band;
                   });
                   return (
                     <DayHourLane
                       key={hour}
                       hour={hour}
                       showHourLabel={columnIndex === 0}
-                      planBands={studies.length === 0 ? planBandsForHour(planSlots, weekday, hour) : undefined}
+                      planBands={useStoredClock || studies.length === 0 ? planBands : undefined}
                       studies={studies}
+                      splitLanes={useStoredClock}
                     />
                   );
                 })}
@@ -3805,7 +3921,7 @@ export default function Page() {
   }, [fetchStudentMessages]);
 
   const fetchLogs = useCallback(async (): Promise<StudyLog[]> => {
-    const { data, error } = await supabase.from('study_logs').select('id, student_id, material_id, subject, duration_minutes, study_date, memo, is_mission_completed');
+    const { data, error } = await supabase.from('study_logs').select('id, student_id, material_id, subject, duration_minutes, study_date, memo, is_mission_completed, start_time, end_time');
     if (error) {
       console.error(error);
       alert('通信エラー: ' + (error.message || '学習ログの取得に失敗しました'));
@@ -3826,6 +3942,8 @@ export default function Page() {
         is_mission_completed: row?.is_mission_completed === true,
         comment: row?.memo == null ? '' : String(row.memo),
         created_at: row?.study_date ? String(row.study_date) : undefined,
+        start_time: row?.start_time == null || row?.start_time === '' ? undefined : String(row.start_time),
+        end_time: row?.end_time == null || row?.end_time === '' ? undefined : String(row.end_time),
       }];
     });
   }, [supabase]);
@@ -7626,6 +7744,7 @@ export default function Page() {
                       slots={logSlots}
                       catalog={materials}
                       userId={meetingStudentId}
+                      useStoredClock
                     />
                     <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
                       <h3 className="text-sm font-black text-slate-900">この週の学習ログ</h3>
