@@ -9545,7 +9545,7 @@ export default function Page() {
                   {isbnDraft.author ? <p className="text-sm font-bold text-slate-600">{isbnDraft.author}</p> : null}
                   <p className="text-xs font-black text-slate-500">科目: マイ教材</p>
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => { void registerScannedBook(); }} className="flex-1 py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer">このマイ教材を追加する</button>
+                    <button type="button" onClick={() => { void registerScannedBook(); }} className="flex-1 py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer">この教材をマイ教材に追加</button>
                     <button type="button" onClick={() => setIsbnDraft(null)} className="flex-1 py-3 rounded-2xl bg-slate-100 text-slate-700 text-sm font-black cursor-pointer">やめる</button>
                   </div>
                 </div>
