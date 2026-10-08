@@ -23,7 +23,7 @@ export const SUBJECT_CONFIG = {
   civics: { label: '公共など', color: '#4d7c0f', bgColor: 'rgba(77, 124, 15, 0.1)' },
   info_tech: { label: '情報', color: '#64748b', bgColor: 'rgba(100, 116, 139, 0.1)' },
   hs_prep: { label: '高校の予習', color: '#78716c', bgColor: 'rgba(120, 113, 108, 0.1)' },
-  other: { label: 'その他', color: '#94a3b8', bgColor: 'rgba(148, 163, 184, 0.1)' },
+  other: { label: 'マイ教材', color: '#94a3b8', bgColor: 'rgba(148, 163, 184, 0.1)' },
 } as const satisfies Record<string, SubjectSetting>;
 
 export type SubjectCode = keyof typeof SUBJECT_CONFIG;
@@ -83,6 +83,7 @@ export function subjectCodeFromInput(value: unknown): SubjectCode | null {
   const raw = normalizeSubjectText(value);
   if (!raw) return null;
   if (isSubjectCode(raw)) return raw;
+  if (raw === 'その他') return 'other';
   const matched = SUBJECT_CODES.find((code) => SUBJECT_MAP[code] === raw);
   return matched ?? null;
 }

@@ -373,7 +373,6 @@ type ScannedBook = {
   isbn: string;
   title: string;
   author: string;
-  image_url: string;
 };
 
 async function lookupIsbnBook(isbn: string): Promise<ScannedBook | null> {
@@ -388,7 +387,6 @@ async function lookupIsbnBook(isbn: string): Promise<ScannedBook | null> {
           isbn,
           title,
           author: String(summary?.author || '').trim(),
-          image_url: String(summary?.cover || '').trim(),
         };
       }
     }
@@ -405,8 +403,8 @@ async function lookupIsbnBook(isbn: string): Promise<ScannedBook | null> {
     const authors = Array.isArray(info?.authors)
       ? info.authors.map((name: unknown) => String(name).trim()).filter(Boolean)
       : [];
-    const cover = String(info?.imageLinks?.thumbnail || info?.imageLinks?.smallThumbnail || '').replace(/^http:\/\//, 'https://');
-    return { isbn, title, author: authors.join('、'), image_url: cover };
+    const description = String(info?.description || '').trim();
+    return { isbn, title, author: authors.join('、') || description };
   } catch {
     return null;
   }
@@ -422,12 +420,12 @@ async function insertScannedMaterial(
     id,
     title: book.title,
     author: book.author,
-    image_url: book.image_url,
     isbn: book.isbn,
     subject: 'other',
     description: book.author || null,
     is_custom: true,
     owner_student_id: ownerId,
+    student_id: ownerId,
   };
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const result = await supabase.from('materials').insert([payload]);
@@ -3824,7 +3822,7 @@ function SubjectTextPicker({
               }`}
               style={selected ? { color: setting.color, backgroundColor: setting.bgColor, borderColor: setting.color } : undefined}
             >
-              {name}
+              {name === 'その他' ? 'マイ教材' : name}
             </button>
           );
         })}
@@ -9543,14 +9541,11 @@ export default function Page() {
             {isbnDraft && activeTab === 'materials' && (
               <div className="fixed inset-0 z-[80] bg-slate-950/70 flex items-end justify-center">
                 <div className="bg-white w-full max-w-lg rounded-t-3xl p-4 pb-8 space-y-3">
-                  {isbnDraft.image_url ? (
-                    <img src={isbnDraft.image_url} alt="" className="w-28 h-40 object-contain mx-auto" />
-                  ) : null}
                   <p className="text-base font-black text-slate-900">{isbnDraft.title}</p>
                   {isbnDraft.author ? <p className="text-sm font-bold text-slate-600">{isbnDraft.author}</p> : null}
-                  <p className="text-sm font-black text-slate-800">この教材をマイ教材に登録しますか？</p>
+                  <p className="text-xs font-black text-slate-500">科目: マイ教材</p>
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => { void registerScannedBook(); }} className="flex-1 py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer">登録する</button>
+                    <button type="button" onClick={() => { void registerScannedBook(); }} className="flex-1 py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer">このマイ教材を追加する</button>
                     <button type="button" onClick={() => setIsbnDraft(null)} className="flex-1 py-3 rounded-2xl bg-slate-100 text-slate-700 text-sm font-black cursor-pointer">やめる</button>
                   </div>
                 </div>
