@@ -106,7 +106,7 @@ export default function CyberTimer({ running, startedAt, onStart, onStop }: Cybe
       <div
         className="time-container pointer-events-none"
         style={{
-          position: 'absolute',
+          position: 'fixed',
           top: '50%',
           left: '50%',
           transform: 'translate(-50%, -50%)',
@@ -115,12 +115,14 @@ export default function CyberTimer({ running, startedAt, onStart, onStop }: Cybe
           alignItems: 'center',
           justifyContent: 'center',
           margin: 0,
+          padding: 0,
         }}
       >
         <p
           className={`${orbitron.className} leading-none tracking-wider`}
           style={{
             margin: 0,
+            padding: 0,
             fontSize: 'clamp(1.6rem, 8cqi, 3rem)',
             color: complete ? '#ffffff' : '#00e5ff',
             textShadow: complete ? '0 0 8px #ffffff, 0 0 18px #ffffff' : '0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.85)',
@@ -132,10 +134,7 @@ export default function CyberTimer({ running, startedAt, onStart, onStop }: Cybe
           className={`${orbitron.className} tracking-[0.18em]`}
           style={{
             margin: 0,
-            position: 'absolute',
-            top: '100%',
-            left: '50%',
-            transform: 'translateX(-50%)',
+            padding: 0,
             fontSize: 'clamp(0.7rem, 3cqi, 1rem)',
             color: 'rgba(0, 229, 255, 0.8)',
           }}

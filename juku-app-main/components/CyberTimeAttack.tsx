@@ -223,7 +223,7 @@ export default function CyberTimeAttack({
                 <div
                   className="time-container pointer-events-none"
                   style={{
-                    position: 'absolute',
+                    position: 'fixed',
                     top: '50%',
                     left: '50%',
                     transform: 'translate(-50%, -50%)',
@@ -232,12 +232,14 @@ export default function CyberTimeAttack({
                     alignItems: 'center',
                     justifyContent: 'center',
                     margin: 0,
+                    padding: 0,
                   }}
                 >
                   <p
                     className={`${orbitron.className} leading-none tracking-wider`}
                     style={{
                       margin: 0,
+                      padding: 0,
                       fontSize: 'clamp(1.8rem, 9cqi, 3.2rem)',
                       color: stroke,
                       textShadow: pinch ? '0 0 8px #ff0055, 0 0 16px #ff0055' : '0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.85)',
@@ -250,10 +252,7 @@ export default function CyberTimeAttack({
                     className={`${orbitron.className} tracking-[0.18em]`}
                     style={{
                       margin: 0,
-                      position: 'absolute',
-                      top: '100%',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
+                      padding: 0,
                       fontSize: 'clamp(0.7rem, 3cqi, 1rem)',
                       color: pinch ? '#ff0055' : 'rgba(0, 229, 255, 0.85)',
                     }}
@@ -329,6 +328,7 @@ export default function CyberTimeAttack({
               alignItems: 'center',
               justifyContent: 'center',
               margin: 0,
+              padding: 0,
             }}
           >
             {!running ? (
@@ -337,6 +337,7 @@ export default function CyberTimeAttack({
                   className={`${orbitron.className} leading-none`}
                   style={{
                     margin: 0,
+                    padding: 0,
                     fontSize: 'clamp(1.4rem, 10cqi, 2.2rem)',
                     color: '#00e5ff',
                     textShadow: '0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.85)',
@@ -346,7 +347,7 @@ export default function CyberTimeAttack({
                 </p>
                 <p
                   className={`${orbitron.className} tracking-[0.22em]`}
-                  style={{ margin: 0, position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', fontSize: 'clamp(0.5rem, 2.8cqi, 0.75rem)', color: 'rgba(0, 229, 255, 0.85)' }}
+                  style={{ margin: 0, padding: 0, fontSize: 'clamp(0.5rem, 2.8cqi, 0.75rem)', color: 'rgba(0, 229, 255, 0.85)' }}
                 >
                   MINS
                 </p>
@@ -357,6 +358,7 @@ export default function CyberTimeAttack({
                   className={`${orbitron.className} leading-none tracking-wider`}
                   style={{
                     margin: 0,
+                    padding: 0,
                     fontSize: 'clamp(1.1rem, 8cqi, 1.8rem)',
                     color: stroke,
                     textShadow: pinch ? '0 0 8px #ff0055, 0 0 16px #ff0055' : '0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.85)',
@@ -367,7 +369,7 @@ export default function CyberTimeAttack({
                 </p>
                 <p
                   className={`${orbitron.className} tracking-[0.18em]`}
-                  style={{ margin: 0, position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', fontSize: 'clamp(0.45rem, 2.4cqi, 0.7rem)', color: pinch ? '#ff0055' : 'rgba(0, 229, 255, 0.85)' }}
+                  style={{ margin: 0, padding: 0, fontSize: 'clamp(0.45rem, 2.4cqi, 0.7rem)', color: pinch ? '#ff0055' : 'rgba(0, 229, 255, 0.85)' }}
                 >
                   REMAINING
                 </p>
