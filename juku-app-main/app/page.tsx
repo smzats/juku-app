@@ -4005,6 +4005,7 @@ export default function Page() {
     note?: string;
   } | null>(null);
   const [recordMode, setRecordMode] = useState<'timer' | 'countdown' | 'manual'>('timer');
+  const [manualTimeOpen, setManualTimeOpen] = useState(false);
   const [timerRunning, setTimerRunning] = useState(false);
   const [timerStartedAt, setTimerStartedAt] = useState(0);
   const [timerElapsedSec, setTimerElapsedSec] = useState(0);
@@ -9159,6 +9160,7 @@ export default function Page() {
                                   setComposerDateKey(dateKey);
                                   setComposerMission(false);
                                   setRecordMode('timer');
+                                  setManualTimeOpen(false);
                                   setTimerRunning(false);
                                   setCountdownRunning(false);
                                   setTimerElapsedSec(0);
@@ -9532,23 +9534,7 @@ export default function Page() {
                 <h4 className="font-black text-sm leading-tight">学習の記録方法を選んでね</h4>
                 <p className="text-[10px] font-bold text-slate-400">{formatFocusDate(composerDateKey)} {formatMeetingClock(studyComposer.startHour, studyComposer.startMinute)}–{formatMeetingClock(studyComposer.endHour, studyComposer.endMinute)}（{studyDurationMinutes(clampStudyRange(studyComposer))}分）</p>
               </div>
-              <button type="button" onClick={() => { dismissStudyClock(); setStudyComposer(null); }} className="w-8 h-8 shrink-0 rounded-full bg-slate-100 font-bold cursor-pointer">✕</button>
-            </div>
-            <div className="shrink-0 px-3 py-1.5 space-y-1">
-              {([
-                ['timer', '⏱️ ①開始と終了を自分でタップ！'],
-                ['countdown', '⚡ ②時間を決めてタイムアタック！'],
-                ['manual', '📝 ③学習時間を直接記録'],
-              ] as const).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => { dismissStudyClock(); setRecordMode(id); }}
-                  className={`w-full text-left px-2.5 py-1.5 rounded-xl text-[12px] font-black cursor-pointer border ${recordMode === id ? 'bg-sky-600 text-white border-sky-600' : 'bg-white text-slate-700 border-slate-200'}`}
-                >
-                  {label}
-                </button>
-              ))}
+              <button type="button" onClick={() => { dismissStudyClock(); setManualTimeOpen(false); setStudyComposer(null); }} className="w-8 h-8 shrink-0 rounded-full bg-slate-100 font-bold cursor-pointer">✕</button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto px-3 py-1">
               <SubjectTextPicker
@@ -9563,7 +9549,7 @@ export default function Page() {
                 onMaterial={(materialId) => setNewLogForm((prev) => ({ ...prev, material_id: materialId }))}
                 onToggleFavorite={toggleFavoriteMaterial}
               />
-              {recordMode === 'timer' && (
+              {recordMode === 'timer' && timerRunning && (
                 <CyberTimer
                   running={timerRunning}
                   startedAt={timerRunning ? timerStartedAt : null}
@@ -9611,7 +9597,69 @@ export default function Page() {
               )}
             </div>
             <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
-              <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} />
+              {recordMode !== 'countdown' && !timerRunning && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
+                    const startedAt = Date.now();
+                    setRecordMode('timer');
+                    setCountdownRunning(false);
+                    setCountdownFinished(false);
+                    setTimerStartedAt(startedAt);
+                    setTimerElapsedSec(0);
+                    setTimerRunning(true);
+                    if (studyComposer) {
+                      writeActiveStudyClock({
+                        userId: currentUser.id,
+                        mode: 'timer',
+                        running: true,
+                        startedAt,
+                        targetSec: 0,
+                        finished: false,
+                        subject: String(newLogForm.subject || ''),
+                        materialId: newLogForm.material_id,
+                        comment: newLogForm.comment,
+                        mission: composerMission,
+                        date: composerDateKey,
+                        composer: studyComposer,
+                      });
+                    }
+                  }}
+                  className="w-full cursor-pointer rounded-2xl py-4 text-base font-black tracking-wide text-slate-950"
+                  style={{
+                    background: 'linear-gradient(180deg, #b8fbff 0%, #00e5ff 42%, #00b7d4 100%)',
+                    boxShadow: '0 0 18px rgba(0, 229, 255, 0.9), 0 10px 24px rgba(0, 184, 212, 0.35)',
+                  }}
+                >
+                  この教材で学習スタート
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setManualTimeOpen((open) => !open)}
+                className="w-full cursor-pointer py-1 text-center text-[11px] font-bold text-slate-400 underline"
+              >
+                ✎ 開始時間・終了時間を直接入力・修正する
+              </button>
+              {manualTimeOpen && (
+                <div className="space-y-2">
+                  <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} totalLabel="学習時間" />
+                  <div className="rounded-xl bg-slate-50 px-3 py-2 text-center text-sm font-black text-slate-700">
+                    学習時間 {String(Math.floor(studyDurationMinutes(clampStudyRange(studyComposer)) / 60)).padStart(2, '0')}:{String(studyDurationMinutes(clampStudyRange(studyComposer)) % 60).padStart(2, '0')}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const span = composerContext.current ? studyDurationMinutes(clampStudyRange(composerContext.current)) : 0;
+                      void saveStudentMinutes(span, newLogForm.material_id, newLogForm.comment, composerContext.current);
+                    }}
+                    className="w-full py-3 rounded-2xl bg-slate-200 text-slate-700 font-black cursor-pointer"
+                  >
+                    手動で記録保存
+                  </button>
+                </div>
+              )}
               <MissionToggle checked={composerMission} onChange={setComposerMission} />
               {recordMode === 'countdown' && (
                 <div className="space-y-2">
@@ -9691,18 +9739,6 @@ export default function Page() {
                     )}
                   </div>
                 </div>
-              )}
-              {recordMode === 'manual' && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const span = composerContext.current ? studyDurationMinutes(clampStudyRange(composerContext.current)) : 0;
-                    void saveStudentMinutes(span, newLogForm.material_id, newLogForm.comment, composerContext.current);
-                  }}
-                  className="w-full py-3 rounded-2xl bg-sky-600 text-white font-black cursor-pointer"
-                >
-                  記録保存
-                </button>
               )}
             </div>
           </div>
