@@ -103,10 +103,24 @@ export default function CyberTimer({ running, startedAt, onStart, onStop }: Cybe
           />
         </g>
       </svg>
-      <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+      <div
+        className="time-container pointer-events-none"
+        style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          margin: 0,
+        }}
+      >
         <p
           className={`${orbitron.className} leading-none tracking-wider`}
           style={{
+            margin: 0,
             fontSize: 'clamp(1.6rem, 8cqi, 3rem)',
             color: complete ? '#ffffff' : '#00e5ff',
             textShadow: complete ? '0 0 8px #ffffff, 0 0 18px #ffffff' : '0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.85)',
@@ -114,7 +128,18 @@ export default function CyberTimer({ running, startedAt, onStart, onStop }: Cybe
         >
           {formatHourClock(shown)}
         </p>
-        <p className={`${orbitron.className} mt-1 tracking-[0.18em]`} style={{ fontSize: 'clamp(0.7rem, 3cqi, 1rem)', color: 'rgba(0, 229, 255, 0.8)' }}>
+        <p
+          className={`${orbitron.className} tracking-[0.18em]`}
+          style={{
+            margin: 0,
+            position: 'absolute',
+            top: '100%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            fontSize: 'clamp(0.7rem, 3cqi, 1rem)',
+            color: 'rgba(0, 229, 255, 0.8)',
+          }}
+        >
           MAX 4H
         </p>
       </div>
