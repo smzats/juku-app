@@ -7,6 +7,7 @@ import confetti from 'canvas-confetti';
 import { createClient } from '@supabase/supabase-js';
 import CyberTimer from '@/components/CyberTimer';
 import CyberTimeAttack from '@/components/CyberTimeAttack';
+import IsbnBarcodeScanner from '@/components/IsbnBarcodeScanner';
 import { SCHEDULE_CATEGORY_MAP, scheduleCategoryFromInput, scheduleCategorySetting, type ScheduleCategoryId } from '@/constants/schedule';
 import { SUBJECT_CODES, SUBJECT_CONFIG, SUBJECT_MAP, isSubjectCode, subjectCodeFromInput, subjectLabel, subjectSetting, type SubjectCode } from '@/constants/subjects';
 export type { ScheduleCategoryId };
@@ -366,6 +367,78 @@ function materialWritePayload(
   };
   if (saved.display_order != null) payload.order_index = saved.display_order;
   return payload;
+}
+
+type ScannedBook = {
+  isbn: string;
+  title: string;
+  author: string;
+  image_url: string;
+};
+
+async function lookupIsbnBook(isbn: string): Promise<ScannedBook | null> {
+  try {
+    const response = await fetch(`https://api.openbd.jp/v1/get?isbn=${isbn}`);
+    if (response.ok) {
+      const rows = await response.json();
+      const summary = Array.isArray(rows) ? rows[0]?.summary : null;
+      const title = String(summary?.title || '').trim();
+      if (title) {
+        return {
+          isbn,
+          title,
+          author: String(summary?.author || '').trim(),
+          image_url: String(summary?.cover || '').trim(),
+        };
+      }
+    }
+  } catch {
+    // openBD に届かないときは Google Books を使う
+  }
+  try {
+    const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const info = data?.items?.[0]?.volumeInfo;
+    const title = String(info?.title || '').trim();
+    if (!title) return null;
+    const authors = Array.isArray(info?.authors)
+      ? info.authors.map((name: unknown) => String(name).trim()).filter(Boolean)
+      : [];
+    const cover = String(info?.imageLinks?.thumbnail || info?.imageLinks?.smallThumbnail || '').replace(/^http:\/\//, 'https://');
+    return { isbn, title, author: authors.join('、'), image_url: cover };
+  } catch {
+    return null;
+  }
+}
+
+async function insertScannedMaterial(
+  supabase: any,
+  id: string,
+  book: ScannedBook,
+  ownerId: string,
+): Promise<string | null> {
+  const payload: Record<string, unknown> = {
+    id,
+    title: book.title,
+    author: book.author,
+    image_url: book.image_url,
+    isbn: book.isbn,
+    subject: 'other',
+    description: book.author || null,
+    is_custom: true,
+    owner_student_id: ownerId,
+  };
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const result = await supabase.from('materials').insert([payload]);
+    if (!result.error) return null;
+    const missing = missingMaterialsColumn(result.error.message || '');
+    if (!missing || !(missing in payload) || missing === 'id' || missing === 'title') {
+      return result.error.message || '教材の保存に失敗しました';
+    }
+    delete payload[missing];
+  }
+  return '教材の保存に失敗しました';
 }
 
 function missingMaterialsColumn(message: string): string | null {
@@ -1174,124 +1247,6 @@ function writeMyMaterials(userId: string, items: MyMaterialItem[]) {
   const stored = readLocalJson<Record<string, MyMaterialItem[]>>(MY_MATERIALS_KEY, {});
   stored[userId] = items;
   writeLocalJson(MY_MATERIALS_KEY, stored);
-}
-
-function parseScannedMaterial(raw: string, catalog: Material[]): { title: string; subject: SubjectType } | null {
-  const text = raw.trim();
-  if (!text) return null;
-  try {
-    const parsed = JSON.parse(text) as { title?: unknown; name?: unknown; subject?: unknown };
-    const title = String(parsed.title || parsed.name || '').trim();
-    const subject = subjectFromInput(parsed.subject);
-    if (title && subject) return { title, subject };
-    if (title) return { title, subject: 'その他' };
-  } catch {
-    // QRはJSON以外の文字列もある
-  }
-  const byId = catalog.find((item) => item.id === text);
-  if (byId && isSubjectType(byId.subject)) return { title: byId.title, subject: byId.subject };
-  const byTitle = findMaterialByTitle(catalog, text);
-  if (byTitle && isSubjectType(byTitle.subject)) return { title: byTitle.title, subject: byTitle.subject };
-  const parts = text.split(/[|｜,\t]/).map((part) => part.trim()).filter(Boolean);
-  if (parts.length >= 2) {
-    const subjectFirst = subjectFromInput(parts[0]);
-    if (subjectFirst) return { title: parts.slice(1).join(' '), subject: subjectFirst };
-    const subjectSecond = subjectFromInput(parts[1]);
-    if (subjectSecond) return { title: parts[0], subject: subjectSecond };
-  }
-  return { title: text, subject: 'その他' };
-}
-
-type QrCodeDetector = {
-  detect: (source: CanvasImageSource) => Promise<Array<{ rawValue?: string }>>;
-};
-
-function QrMaterialScanner({
-  onResult,
-  onClose,
-}: {
-  onResult: (value: string) => void;
-  onClose: () => void;
-}) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [message, setMessage] = useState('カメラを起動しています。');
-  const onResultRef = useRef(onResult);
-  onResultRef.current = onResult;
-
-  useEffect(() => {
-    let stopped = false;
-    let timer = 0;
-    let stream: MediaStream | null = null;
-    const DetectorCtor = (window as Window & {
-      BarcodeDetector?: new (options: { formats: string[] }) => QrCodeDetector;
-    }).BarcodeDetector;
-
-    const start = async () => {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setMessage('この端末ではカメラを起動できません。下のフォームから追加してください。');
-        return;
-      }
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
-          audio: false,
-        });
-        if (stopped) {
-          stream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-        if (!DetectorCtor) {
-          setMessage('カメラは起動しました。このブラウザはQRの解析に未対応です。下のフォームから追加してください。');
-          return;
-        }
-        const detector = new DetectorCtor({ formats: ['qr_code'] });
-        setMessage('QRコードをかざしてください。');
-        const loop = async () => {
-          if (stopped) return;
-          const video = videoRef.current;
-          if (video && video.readyState >= 2) {
-            try {
-              const codes = await detector.detect(video);
-              const value = codes.find((code) => code.rawValue)?.rawValue;
-              if (value) {
-                onResultRef.current(value);
-                return;
-              }
-            } catch {
-              // 次のフレームで読み取りを続ける
-            }
-          }
-          timer = window.setTimeout(() => { void loop(); }, 280);
-        };
-        void loop();
-      } catch {
-        setMessage('カメラを起動できませんでした。許可を確認するか、下のフォームから追加してください。');
-      }
-    };
-    void start();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-      stream?.getTracks().forEach((track) => track.stop());
-    };
-  }, []);
-
-  return (
-    <div className="fixed inset-0 z-[80] bg-slate-950/70 flex items-end justify-center" onClick={onClose}>
-      <div className="bg-white w-full max-w-lg rounded-t-3xl p-4 pb-8 space-y-3" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="font-black text-base">QRコードを読み取る</h3>
-          <button type="button" onClick={onClose} className="text-xs font-black text-slate-400 cursor-pointer">閉じる</button>
-        </div>
-        <video ref={videoRef} muted playsInline className="w-full aspect-square bg-slate-900 rounded-2xl object-cover" />
-        <p className="text-xs font-bold text-slate-500">{message}</p>
-      </div>
-    </div>
-  );
 }
 
 function formatClock(totalSeconds: number): string {
@@ -3996,7 +3951,9 @@ export default function Page() {
   const [myMaterials, setMyMaterials] = useState<MyMaterialItem[]>([]);
   const [myMaterialTitle, setMyMaterialTitle] = useState('');
   const [myMaterialSubject, setMyMaterialSubject] = useState<SubjectCode>('english');
-  const [qrScanOpen, setQrScanOpen] = useState(false);
+  const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
+  const [isbnLookup, setIsbnLookup] = useState(false);
+  const [isbnDraft, setIsbnDraft] = useState<ScannedBook | null>(null);
   const [logSummaryPeriod, setLogSummaryPeriod] = useState<LogSummaryPeriod>('today');
   const [pastWeekStart, setPastWeekStart] = useState<string | null>(null);
   const [weekRankPreview, setWeekRankPreview] = useState<{
@@ -6713,14 +6670,36 @@ export default function Page() {
     setMyMaterialTitle('');
   };
 
-  const handleQrMaterial = (raw: string) => {
-    setQrScanOpen(false);
-    const parsed = parseScannedMaterial(raw, materials);
-    if (!parsed) {
-      addNotification('warning', 'QRコードから教材を読み取れませんでした。');
+  const handleIsbnDetected = async (isbn: string) => {
+    setBarcodeScanOpen(false);
+    setIsbnLookup(true);
+    const book = await lookupIsbnBook(isbn);
+    setIsbnLookup(false);
+    if (!book) {
+      addNotification('warning', `ISBN ${isbn} の書籍情報を取得できませんでした。`);
       return;
     }
-    appendMyMaterial(parsed.title, parsed.subject);
+    setIsbnDraft(book);
+  };
+
+  const registerScannedBook = async () => {
+    if (!currentUser || currentUser.role !== 'student' || !isbnDraft) return;
+    const exists = materials.some((item) => item.is_custom === true && item.owner_student_id === currentUser.id && materialTitleKey(item.title) === materialTitleKey(isbnDraft.title) && item.subject === SUBJECT_CODE_TONE.other);
+    if (exists) {
+      addNotification('info', `「${isbnDraft.title}」はすでにマイ教材にあります。`);
+      setIsbnDraft(null);
+      return;
+    }
+    try {
+      const failure = await insertScannedMaterial(supabase, `mym_${Date.now()}`, isbnDraft, currentUser.id);
+      if (failure) throw new Error(failure);
+      const title = isbnDraft.title;
+      setIsbnDraft(null);
+      await reloadMaterials();
+      addNotification('success', `「${title}」をマイ教材に追加しました。`);
+    } catch (error) {
+      reportMaterialError(error, 'マイ教材の保存に失敗しました');
+    }
   };
 
   const removeMyMaterial = async (id: string) => {
@@ -9367,10 +9346,10 @@ export default function Page() {
                 <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3">
                   <button
                     type="button"
-                    onClick={() => setQrScanOpen(true)}
+                    onClick={() => setBarcodeScanOpen(true)}
                     className="w-full py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer"
                   >
-                    QRコードを読み取る
+                    📷 バーコードで本を追加
                   </button>
                   <form onSubmit={handleManualMyMaterial} className="space-y-2">
                     <p className="text-xs font-black text-slate-700">リストに載っていない教材の追加</p>
@@ -9429,8 +9408,29 @@ export default function Page() {
                 </section>
               </div>
             )}
-            {qrScanOpen && activeTab === 'materials' && (
-              <QrMaterialScanner onResult={handleQrMaterial} onClose={() => setQrScanOpen(false)} />
+            {barcodeScanOpen && activeTab === 'materials' && (
+              <IsbnBarcodeScanner onIsbn={(isbn) => { void handleIsbnDetected(isbn); }} onClose={() => setBarcodeScanOpen(false)} />
+            )}
+            {isbnLookup && activeTab === 'materials' && (
+              <div className="fixed inset-0 z-[80] bg-slate-950/70 flex items-center justify-center">
+                <p className="bg-white rounded-2xl px-5 py-4 text-sm font-black text-slate-800">書籍情報を確認しています</p>
+              </div>
+            )}
+            {isbnDraft && activeTab === 'materials' && (
+              <div className="fixed inset-0 z-[80] bg-slate-950/70 flex items-end justify-center">
+                <div className="bg-white w-full max-w-lg rounded-t-3xl p-4 pb-8 space-y-3">
+                  {isbnDraft.image_url ? (
+                    <img src={isbnDraft.image_url} alt="" className="w-28 h-40 object-contain mx-auto" />
+                  ) : null}
+                  <p className="text-base font-black text-slate-900">{isbnDraft.title}</p>
+                  {isbnDraft.author ? <p className="text-sm font-bold text-slate-600">{isbnDraft.author}</p> : null}
+                  <p className="text-sm font-black text-slate-800">この教材をマイ教材に登録しますか？</p>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => { void registerScannedBook(); }} className="flex-1 py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer">登録する</button>
+                    <button type="button" onClick={() => setIsbnDraft(null)} className="flex-1 py-3 rounded-2xl bg-slate-100 text-slate-700 text-sm font-black cursor-pointer">やめる</button>
+                  </div>
+                </div>
+              </div>
             )}
 
             
