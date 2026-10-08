@@ -1616,6 +1616,31 @@ function todayDateKey(date = new Date()): string {
   }).format(date);
 }
 
+function clockFromMeasured(started: Date, ended: Date, minutes: number): { date: string; range: StudyClockRange } {
+  const startDate = todayDateKey(started);
+  const endDate = todayDateKey(ended);
+  const startClock = jstClock(started);
+  const endClock = jstClock(ended);
+  let dayDelta = 0;
+  let cursor = startDate;
+  while (cursor < endDate && dayDelta < 3) {
+    dayDelta += 1;
+    cursor = shiftDateKey(cursor, 1);
+  }
+  const startTotal = startClock.hour * 60 + startClock.minute;
+  let endTotal = (endClock.hour + dayDelta * 24) * 60 + endClock.minute;
+  if (endTotal <= startTotal) endTotal = startTotal + Math.max(minutes, 1);
+  return {
+    date: startDate,
+    range: {
+      startHour: startClock.hour,
+      startMinute: startClock.minute,
+      endHour: Math.floor(endTotal / 60),
+      endMinute: endTotal % 60,
+    },
+  };
+}
+
 function jstClock(date: Date): { hour: number; minute: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: JST_TIME_ZONE,
@@ -3991,6 +4016,7 @@ export default function Page() {
   const [editComment, setEditComment] = useState('');
   const [editMission, setEditMission] = useState(false);
   const countdownSaveLock = useRef(false);
+  const measuredStartedIso = useRef<string | null>(null);
   const [focusDateKey, setFocusDateKey] = useState<string>(() => todayDateKey());
   const [composerDateKey, setComposerDateKey] = useState<string>(() => todayDateKey());
   const [weekPlans, setWeekPlans] = useState<Record<string, WeekPlanRecord>>({});
@@ -5900,6 +5926,7 @@ export default function Page() {
       if (!saved || !currentUser || saved.userId !== currentUser.id || isStaffRole(currentUser.role, currentUser.id, currentUser.email)) return;
       if (saved.mode === 'timer') {
         if (!saved.running) return;
+        measuredStartedIso.current = new Date(saved.startedAt).toISOString();
         setTimerStartedAt(saved.startedAt);
         setTimerElapsedSec(elapsedSecondsSince(saved.startedAt));
         setTimerRunning(true);
@@ -5908,6 +5935,7 @@ export default function Page() {
       }
       const targetSec = Math.max(1, saved.targetSec || countdownTargetMin * 60);
       const remaining = Math.max(0, targetSec - elapsedSecondsSince(saved.startedAt));
+      measuredStartedIso.current = new Date(saved.startedAt).toISOString();
       setCountdownStartedAt(saved.startedAt);
       setCountdownTargetMin(Math.max(1, Math.round(targetSec / 60)));
       setCountdownRemainingSec(remaining);
@@ -5958,6 +5986,7 @@ export default function Page() {
       comment: saved.comment || '',
     }));
     if (saved.mode === 'timer' && saved.running) {
+      measuredStartedIso.current = new Date(saved.startedAt).toISOString();
       setTimerStartedAt(saved.startedAt);
       setTimerElapsedSec(elapsedSecondsSince(saved.startedAt));
       setTimerRunning(true);
@@ -5968,6 +5997,7 @@ export default function Page() {
     const targetSec = Math.max(1, saved.targetSec || 1);
     const remaining = Math.max(0, targetSec - elapsedSecondsSince(saved.startedAt));
     setCountdownTargetMin(Math.max(1, Math.round(targetSec / 60)));
+    measuredStartedIso.current = new Date(saved.startedAt).toISOString();
     setCountdownStartedAt(saved.startedAt);
     setCountdownRemainingSec(remaining);
     setTimerRunning(false);
@@ -6618,7 +6648,7 @@ export default function Page() {
     return true;
   }, [currentUser, logs, materials, newLogForm.subject, supabase, addNotification]);
 
-  const saveMeasuredStudy = useCallback(async (seconds: number, startedAt: number | null) => {
+  const saveMeasuredStudy = useCallback(async (seconds: number, startedAt: number | null, endedAtIso?: string) => {
     if (countdownSaveLock.current) return;
     if (!currentUser || currentUser.role !== 'student') return;
     if (!newLogForm.material_id) {
@@ -6626,26 +6656,23 @@ export default function Page() {
       return;
     }
     countdownSaveLock.current = true;
-    const minutes = Math.max(0, Math.ceil(seconds / 60));
+    const endedIso = endedAtIso || new Date().toISOString();
+    const startedIso = measuredStartedIso.current || (startedAt ? new Date(startedAt).toISOString() : endedIso);
+    const started = new Date(startedIso);
+    const ended = new Date(endedIso);
+    const elapsedMs = Number.isFinite(started.getTime()) && Number.isFinite(ended.getTime())
+      ? Math.max(0, ended.getTime() - started.getTime())
+      : Math.max(0, seconds) * 1000;
+    const minutes = Math.max(0, Math.ceil(elapsedMs / 60000));
     const slot = composerContext.current;
-    const started = new Date(startedAt || Date.now());
-    const ended = new Date();
     const mission = Boolean(slot?.mission ?? composerMission);
-    let range: StudyClockRange | null = null;
-    if (slot && minutes > 0) {
-      const start = clockMinutes(slot.startHour, slot.startMinute);
-      const end = start + minutes;
-      range = {
-        startHour: slot.startHour,
-        startMinute: slot.startMinute,
-        endHour: Math.floor(end / 60),
-        endMinute: end % 60,
-      };
-    }
-    if (slot?.date && range) {
+    const measured = minutes > 0 && Number.isFinite(started.getTime()) ? clockFromMeasured(started, ended, minutes) : null;
+    const range = measured?.range ?? null;
+    const studyDate = measured?.date ?? '';
+    if (studyDate && range) {
       const studentLogIds = new Set(logs.filter((log) => log.user_id === currentUser.id).map((log) => log.id));
       try {
-        const overlap = await findOverlappingStudyLog(supabase, currentUser.id, slot.date.slice(0, 10), range, undefined, studentLogIds);
+        const overlap = await findOverlappingStudyLog(supabase, currentUser.id, studyDate, range, undefined, studentLogIds);
         if (overlap) {
           alert(studyLogOverlapMessage(overlap.start, overlap.end));
           countdownSaveLock.current = false;
@@ -6667,7 +6694,7 @@ export default function Page() {
       time_spent_minutes: minutes,
       is_mission_completed: mission,
       comment: newLogForm.comment.trim() || undefined,
-      created_at: started.toISOString(),
+      created_at: startedIso,
       start_time: range ? `${formatMeetingClock(range.startHour, range.startMinute)}:00` : undefined,
       end_time: range ? `${formatMeetingClock(range.endHour, range.endMinute)}:00` : undefined,
     };
@@ -6676,10 +6703,10 @@ export default function Page() {
     const remote: Record<string, unknown> = {
       ...studyLogRemoteRow(payload, subjectName),
       duration_minutes: minutes,
-      started_at: started.toISOString(),
-      ended_at: ended.toISOString(),
+      started_at: startedIso,
+      ended_at: endedIso,
     };
-    if (slot?.date) remote.study_date = slot.date.slice(0, 10);
+    if (studyDate) remote.study_date = studyDate;
     if (range) Object.assign(remote, studyLogClockFields(range));
     const columnPatterns = [
       /Could not find the '([^']+)' column/i,
@@ -6709,8 +6736,8 @@ export default function Page() {
       countdownSaveLock.current = false;
       return;
     }
-    if (slot && range) {
-      writeLogSlot(payload.id, { date: slot.date, ...range });
+    if (studyDate && range) {
+      writeLogSlot(payload.id, { date: studyDate, ...range });
       setLogSlots(readLogSlots());
     }
     const nextLogs = [payload, ...logs.filter((log) => log.id !== payload.id)];
@@ -6723,6 +6750,7 @@ export default function Page() {
     } else {
       addNotification('success', `${title}の学習を記録しました。`);
     }
+    measuredStartedIso.current = null;
     clearActiveStudyClock();
     setTimerRunning(false);
     setCountdownRunning(false);
@@ -9672,7 +9700,9 @@ export default function Page() {
                     type="button"
                     onClick={() => {
                       if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
-                      const startedAt = Date.now();
+                      const startedIso = new Date().toISOString();
+                      measuredStartedIso.current = startedIso;
+                      const startedAt = Date.parse(startedIso);
                       setRecordMode('timer');
                       setCountdownRunning(false);
                       setCountdownFinished(false);
@@ -9737,7 +9767,9 @@ export default function Page() {
                   startedAt={timerRunning ? timerStartedAt : null}
                   onStart={() => {
                     if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
-                    const startedAt = Date.now();
+                    const startedIso = new Date().toISOString();
+                    measuredStartedIso.current = startedIso;
+                    const startedAt = Date.parse(startedIso);
                     setCountdownRunning(false);
                     setCountdownFinished(false);
                     setTimerStartedAt(startedAt);
@@ -9780,7 +9812,9 @@ export default function Page() {
                   }}
                   onStart={(minutes) => {
                     if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
-                    const startedAt = Date.now();
+                    const startedIso = new Date().toISOString();
+                    measuredStartedIso.current = startedIso;
+                    const startedAt = Date.parse(startedIso);
                     const targetSec = minutes * 60;
                     countdownSaveLock.current = false;
                     timeAttackFinishedRef.current = 0;
@@ -9813,7 +9847,11 @@ export default function Page() {
                     clearActiveStudyClock();
                   }}
                   onTimeUp={(minutes) => { void saveMeasuredStudy(minutes * 60, countdownStartedAt); }}
-                  onSaveElapsed={(seconds) => { void saveMeasuredStudy(seconds, countdownStartedAt); }}
+                  onSaveElapsed={(seconds) => {
+                    const startedMs = Date.parse(measuredStartedIso.current || '') || countdownStartedAt;
+                    const endedIso = new Date(startedMs + Math.max(0, seconds) * 1000).toISOString();
+                    void saveMeasuredStudy(seconds, countdownStartedAt, endedIso);
+                  }}
                 />
               )}
             </div>
