@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import Papa from 'papaparse';
 import confetti from 'canvas-confetti';
 import { createClient } from '@supabase/supabase-js';
+import CyberTimer from '@/components/CyberTimer';
 import { SCHEDULE_CATEGORY_MAP, scheduleCategoryFromInput, scheduleCategorySetting, type ScheduleCategoryId } from '@/constants/schedule';
 import { SUBJECT_CODES, SUBJECT_CONFIG, SUBJECT_MAP, isSubjectCode, subjectCodeFromInput, subjectLabel, subjectSetting, type SubjectCode } from '@/constants/subjects';
 export type { ScheduleCategoryId };
@@ -9562,61 +9563,56 @@ export default function Page() {
                 onMaterial={(materialId) => setNewLogForm((prev) => ({ ...prev, material_id: materialId }))}
                 onToggleFavorite={toggleFavoriteMaterial}
               />
+              {recordMode === 'timer' && (
+                <CyberTimer
+                  running={timerRunning}
+                  startedAt={timerRunning ? timerStartedAt : null}
+                  onStart={() => {
+                    if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
+                    const startedAt = Date.now();
+                    setCountdownRunning(false);
+                    setCountdownFinished(false);
+                    setTimerStartedAt(startedAt);
+                    setTimerElapsedSec(0);
+                    setTimerRunning(true);
+                    if (studyComposer) {
+                      writeActiveStudyClock({
+                        userId: currentUser.id,
+                        mode: 'timer',
+                        running: true,
+                        startedAt,
+                        targetSec: 0,
+                        finished: false,
+                        subject: String(newLogForm.subject || ''),
+                        materialId: newLogForm.material_id,
+                        comment: newLogForm.comment,
+                        mission: composerMission,
+                        date: composerDateKey,
+                        composer: studyComposer,
+                      });
+                    }
+                  }}
+                  onStop={(seconds) => {
+                    setTimerRunning(false);
+                    clearActiveStudyClock();
+                    const minutes = Math.max(0, Math.round(seconds / 60));
+                    setNewLogForm((prev) => ({ ...prev, time_spent_minutes: minutes }));
+                    const slot = composerContext.current;
+                    const timedSlot = slot
+                      ? {
+                          ...slot,
+                          endHour: Math.floor((clockMinutes(slot.startHour, slot.startMinute) + minutes) / 60),
+                          endMinute: (clockMinutes(slot.startHour, slot.startMinute) + minutes) % 60,
+                        }
+                      : slot;
+                    void saveStudentMinutes(minutes, newLogForm.material_id, newLogForm.comment, timedSlot);
+                  }}
+                />
+              )}
             </div>
             <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
               <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} />
               <MissionToggle checked={composerMission} onChange={setComposerMission} />
-              {recordMode === 'timer' && (
-                <div className="flex items-center gap-2">
-                  <div className="w-20 text-center text-2xl font-black font-mono">{formatClock(timerElapsedSec)}</div>
-                  {!timerRunning ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
-                        const startedAt = Date.now();
-                        setCountdownRunning(false);
-                        setCountdownFinished(false);
-                        setTimerStartedAt(startedAt);
-                        setTimerElapsedSec(0);
-                        setTimerRunning(true);
-                        if (studyComposer) {
-                          writeActiveStudyClock({
-                            userId: currentUser.id,
-                            mode: 'timer',
-                            running: true,
-                            startedAt,
-                            targetSec: 0,
-                            finished: false,
-                            subject: String(newLogForm.subject || ''),
-                            materialId: newLogForm.material_id,
-                            comment: newLogForm.comment,
-                            mission: composerMission,
-                            date: composerDateKey,
-                            composer: studyComposer,
-                          });
-                        }
-                      }}
-                      className="flex-1 py-3 rounded-2xl bg-sky-600 text-white font-black cursor-pointer"
-                    >
-                      スタート
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setTimerRunning(false);
-                        clearActiveStudyClock();
-                        const seconds = elapsedSecondsSince(timerStartedAt);
-                        void saveStudentMinutes(Math.max(0, Math.round(seconds / 60)), newLogForm.material_id, newLogForm.comment, composerContext.current);
-                      }}
-                      className="flex-1 py-3 rounded-2xl bg-amber-500 text-white font-black cursor-pointer"
-                    >
-                      ストップ＆保存
-                    </button>
-                  )}
-                </div>
-              )}
               {recordMode === 'countdown' && (
                 <div className="space-y-2">
                   <label className="block text-[11px] font-black text-slate-600">
