@@ -6,6 +6,7 @@ import Papa from 'papaparse';
 import confetti from 'canvas-confetti';
 import { createClient } from '@supabase/supabase-js';
 import CyberTimer from '@/components/CyberTimer';
+import CyberTimeAttack from '@/components/CyberTimeAttack';
 import { SCHEDULE_CATEGORY_MAP, scheduleCategoryFromInput, scheduleCategorySetting, type ScheduleCategoryId } from '@/constants/schedule';
 import { SUBJECT_CODES, SUBJECT_CONFIG, SUBJECT_MAP, isSubjectCode, subjectCodeFromInput, subjectLabel, subjectSetting, type SubjectCode } from '@/constants/subjects';
 export type { ScheduleCategoryId };
@@ -9595,6 +9596,95 @@ export default function Page() {
                   }}
                 />
               )}
+              {recordMode === 'countdown' && (
+                <CyberTimeAttack
+                  running={countdownRunning}
+                  startedAt={countdownRunning ? countdownStartedAt : null}
+                  targetMin={countdownTargetMin}
+                  onTargetMin={(minutes) => {
+                    setCountdownTargetMin(minutes);
+                    if (!countdownRunning && !countdownFinished) setCountdownRemainingSec(minutes * 60);
+                  }}
+                  onBack={() => {
+                    setCountdownRunning(false);
+                    setCountdownFinished(false);
+                    setRecordMode('timer');
+                  }}
+                  onStart={(minutes) => {
+                    if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
+                    const startedAt = Date.now();
+                    const targetSec = minutes * 60;
+                    countdownSaveLock.current = false;
+                    timeAttackFinishedRef.current = 0;
+                    setTimerRunning(false);
+                    setCountdownFinished(false);
+                    setCountdownTargetMin(minutes);
+                    setCountdownStartedAt(startedAt);
+                    setCountdownRemainingSec(targetSec);
+                    setCountdownRunning(true);
+                    if (studyComposer) {
+                      writeActiveStudyClock({
+                        userId: currentUser.id,
+                        mode: 'countdown',
+                        running: true,
+                        startedAt,
+                        targetSec,
+                        finished: false,
+                        subject: String(newLogForm.subject || ''),
+                        materialId: newLogForm.material_id,
+                        comment: newLogForm.comment,
+                        mission: composerMission,
+                        date: composerDateKey,
+                        composer: studyComposer,
+                      });
+                    }
+                  }}
+                  onPause={() => {
+                    setCountdownRunning(false);
+                    setCountdownFinished(false);
+                    clearActiveStudyClock();
+                  }}
+                  onTimeUp={(minutes) => {
+                    if (countdownSaveLock.current) return;
+                    countdownSaveLock.current = true;
+                    setCountdownRunning(false);
+                    setCountdownFinished(false);
+                    clearActiveStudyClock();
+                    setNewLogForm((prev) => ({ ...prev, time_spent_minutes: minutes }));
+                    const slot = composerContext.current;
+                    const timedSlot = slot
+                      ? {
+                          ...slot,
+                          endHour: Math.floor((clockMinutes(slot.startHour, slot.startMinute) + minutes) / 60),
+                          endMinute: (clockMinutes(slot.startHour, slot.startMinute) + minutes) % 60,
+                        }
+                      : slot;
+                    void saveStudentMinutes(minutes, newLogForm.material_id, newLogForm.comment, timedSlot).finally(() => {
+                      countdownSaveLock.current = false;
+                    });
+                  }}
+                  onSaveElapsed={(seconds) => {
+                    if (countdownSaveLock.current) return;
+                    countdownSaveLock.current = true;
+                    const minutes = Math.max(0, Math.round(seconds / 60));
+                    setCountdownRunning(false);
+                    setCountdownFinished(false);
+                    clearActiveStudyClock();
+                    setNewLogForm((prev) => ({ ...prev, time_spent_minutes: minutes }));
+                    const slot = composerContext.current;
+                    const timedSlot = slot
+                      ? {
+                          ...slot,
+                          endHour: Math.floor((clockMinutes(slot.startHour, slot.startMinute) + minutes) / 60),
+                          endMinute: (clockMinutes(slot.startHour, slot.startMinute) + minutes) % 60,
+                        }
+                      : slot;
+                    void saveStudentMinutes(minutes, newLogForm.material_id, newLogForm.comment, timedSlot).finally(() => {
+                      countdownSaveLock.current = false;
+                    });
+                  }}
+                />
+              )}
             </div>
             <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
               {recordMode !== 'countdown' && !timerRunning && (
@@ -9635,6 +9725,15 @@ export default function Page() {
                   この教材で学習スタート
                 </button>
               )}
+              {recordMode !== 'countdown' && !timerRunning && (
+                <button
+                  type="button"
+                  onClick={() => setRecordMode('countdown')}
+                  className="w-full cursor-pointer py-1 text-center text-[11px] font-bold text-slate-500 underline"
+                >
+                  ⚡ 時間を決めてタイムアタック
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setManualTimeOpen((open) => !open)}
@@ -9661,85 +9760,6 @@ export default function Page() {
                 </div>
               )}
               <MissionToggle checked={composerMission} onChange={setComposerMission} />
-              {recordMode === 'countdown' && (
-                <div className="space-y-2">
-                  <label className="block text-[11px] font-black text-slate-600">
-                    学習の予定時間(分)
-                    <input
-                      type="number"
-                      min={1}
-                      value={countdownTargetMin}
-                      disabled={countdownRunning || countdownFinished}
-                      onChange={(event) => {
-                        const next = Math.max(1, Number(event.target.value) || 1);
-                        setCountdownTargetMin(next);
-                        if (!countdownRunning && !countdownFinished) setCountdownRemainingSec(next * 60);
-                      }}
-                      className="mt-1 w-full bg-slate-50 border border-slate-200 p-2 rounded-xl text-base font-black"
-                    />
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <div className="w-20 text-center text-2xl font-black font-mono">{formatClock(countdownRemainingSec)}</div>
-                    {!countdownRunning && !countdownFinished ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
-                          const startedAt = Date.now();
-                          const targetSec = countdownTargetMin * 60;
-                          countdownSaveLock.current = false;
-                          timeAttackFinishedRef.current = 0;
-                          setTimerRunning(false);
-                          setCountdownFinished(false);
-                          setCountdownStartedAt(startedAt);
-                          setCountdownRemainingSec(targetSec);
-                          setCountdownRunning(true);
-                          if (studyComposer) {
-                            writeActiveStudyClock({
-                              userId: currentUser.id,
-                              mode: 'countdown',
-                              running: true,
-                              startedAt,
-                              targetSec,
-                              finished: false,
-                              subject: String(newLogForm.subject || ''),
-                              materialId: newLogForm.material_id,
-                              comment: newLogForm.comment,
-                              mission: composerMission,
-                              date: composerDateKey,
-                              composer: studyComposer,
-                            });
-                          }
-                        }}
-                        className="flex-1 py-3 rounded-2xl bg-sky-600 text-white font-black cursor-pointer"
-                      >
-                        スタート
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (countdownSaveLock.current) return;
-                          countdownSaveLock.current = true;
-                          const targetSec = countdownTargetMin * 60;
-                          const elapsedSec = countdownFinished
-                            ? targetSec
-                            : Math.min(targetSec, countdownStartedAt ? elapsedSecondsSince(countdownStartedAt) : Math.max(0, targetSec - countdownRemainingSec));
-                          setCountdownRunning(false);
-                          setCountdownFinished(false);
-                          clearActiveStudyClock();
-                          void saveStudentMinutes(Math.max(0, Math.round(elapsedSec / 60)), newLogForm.material_id, newLogForm.comment, composerContext.current).finally(() => {
-                            countdownSaveLock.current = false;
-                          });
-                        }}
-                        className="flex-1 py-3 rounded-2xl bg-amber-500 text-white font-black cursor-pointer"
-                      >
-                        {countdownFinished ? '記録する' : '途中停止して記録'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>
