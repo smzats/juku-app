@@ -4007,6 +4007,7 @@ export default function Page() {
   } | null>(null);
   const [recordMode, setRecordMode] = useState<'timer' | 'countdown' | 'manual'>('timer');
   const [manualTimeOpen, setManualTimeOpen] = useState(false);
+  const [timeAttackManualOpen, setTimeAttackManualOpen] = useState(false);
   const [timerRunning, setTimerRunning] = useState(false);
   const [timerStartedAt, setTimerStartedAt] = useState(0);
   const [timerElapsedSec, setTimerElapsedSec] = useState(0);
@@ -9608,6 +9609,7 @@ export default function Page() {
                   onBack={() => {
                     setCountdownRunning(false);
                     setCountdownFinished(false);
+                    setTimeAttackManualOpen(false);
                     setRecordMode('timer');
                   }}
                   onStart={(minutes) => {
@@ -9683,7 +9685,37 @@ export default function Page() {
                       countdownSaveLock.current = false;
                     });
                   }}
-                />
+                >
+                  {!countdownRunning && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setTimeAttackManualOpen((open) => !open)}
+                        className="w-full cursor-pointer py-1 text-center text-[11px] font-bold text-slate-400 underline"
+                      >
+                        ✎ 開始時間・終了時間を直接入力・修正する
+                      </button>
+                      {timeAttackManualOpen && (
+                        <div className="space-y-2">
+                          <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} totalLabel="学習時間" />
+                          <div className="rounded-xl bg-slate-50 px-3 py-2 text-center text-sm font-black text-slate-700">
+                            学習時間 {String(Math.floor(studyDurationMinutes(clampStudyRange(studyComposer)) / 60)).padStart(2, '0')}:{String(studyDurationMinutes(clampStudyRange(studyComposer)) % 60).padStart(2, '0')}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const span = composerContext.current ? studyDurationMinutes(clampStudyRange(composerContext.current)) : 0;
+                              void saveStudentMinutes(span, newLogForm.material_id, newLogForm.comment, composerContext.current);
+                            }}
+                            className="w-full py-3 rounded-2xl bg-slate-200 text-slate-700 font-black cursor-pointer"
+                          >
+                            手動で記録保存
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </CyberTimeAttack>
               )}
             </div>
             <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
@@ -9728,12 +9760,14 @@ export default function Page() {
               {recordMode !== 'countdown' && !timerRunning && (
                 <button
                   type="button"
-                  onClick={() => setRecordMode('countdown')}
+                  onClick={() => { setTimeAttackManualOpen(false); setRecordMode('countdown'); }}
                   className="w-full cursor-pointer py-1 text-center text-[11px] font-bold text-slate-500 underline"
                 >
                   ⚡ 時間を決めてタイムアタック
                 </button>
               )}
+              {recordMode !== 'countdown' && (
+                <>
               <button
                 type="button"
                 onClick={() => setManualTimeOpen((open) => !open)}
@@ -9758,6 +9792,8 @@ export default function Page() {
                     手動で記録保存
                   </button>
                 </div>
+              )}
+                </>
               )}
               <MissionToggle checked={composerMission} onChange={setComposerMission} />
             </div>

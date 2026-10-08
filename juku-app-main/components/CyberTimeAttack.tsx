@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Orbitron } from 'next/font/google';
 
@@ -37,6 +37,7 @@ type CyberTimeAttackProps = {
   onPause: () => void;
   onSaveElapsed: (seconds: number) => void;
   onBack: () => void;
+  children?: ReactNode;
 };
 
 function clampTarget(minutes: number): number {
@@ -81,6 +82,7 @@ export default function CyberTimeAttack({
   onPause,
   onSaveElapsed,
   onBack,
+  children,
 }: CyberTimeAttackProps) {
   const target = clampTarget(targetMin);
   const targetSec = target * 60;
@@ -247,10 +249,15 @@ export default function CyberTimeAttack({
           <button
             type="button"
             onClick={() => onStart(target)}
-            className={`${orbitron.className} w-full cursor-pointer rounded-2xl bg-sky-600 py-3 text-sm font-black tracking-[0.14em] text-white`}
+            className="w-full cursor-pointer rounded-2xl py-4 text-base font-black tracking-wide text-slate-950"
+            style={{
+              background: 'linear-gradient(180deg, #b8fbff 0%, #00e5ff 42%, #00b7d4 100%)',
+              boxShadow: '0 0 18px rgba(0, 229, 255, 0.9), 0 10px 24px rgba(0, 184, 212, 0.35)',
+            }}
           >
-            MISSION START
+            この教材でタイムアタックスタート
           </button>
+          {children}
           <button type="button" onClick={onBack} className="w-full cursor-pointer py-1 text-center text-[11px] font-bold text-slate-400 underline">
             通常の計測に戻る
           </button>
