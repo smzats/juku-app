@@ -1326,18 +1326,18 @@ function playTimeAttackChime() {
 }
 
 const LEARNING_TRAIL_STAGES = [
-  { key: 'apprentice', hours: 50 },
-  { key: 'nobles', hours: 100 },
-  { key: 'grandee', hours: 300 },
-  { key: 'prince', hours: 500 },
-  { key: 'archduke', hours: 1000 },
-  { key: 'monarch', hours: 2000 },
-  { key: 'hero', hours: 3000 },
-  { key: 'demigod', hours: 5000 },
-  { key: 'deity', hours: 7500 },
-  { key: 'god', hours: 10000 },
-  { key: 'ruler', hours: 12500 },
-  { key: 'creator', hours: 15000 },
+  { key: 'apprentice', hours: 50, title: '見習い貴族' },
+  { key: 'nobles', hours: 100, title: '名門貴族' },
+  { key: 'grandee', hours: 300, title: '上級貴族' },
+  { key: 'prince', hours: 500, title: '若き王' },
+  { key: 'archduke', hours: 800, title: '名王' },
+  { key: 'monarch', hours: 1200, title: '賢王' },
+  { key: 'hero', hours: 1600, title: '英雄' },
+  { key: 'demigod', hours: 2000, title: '若き神' },
+  { key: 'deity', hours: 2500, title: '偉大な神' },
+  { key: 'god', hours: 3000, title: '至高の神' },
+  { key: 'ruler', hours: 4000, title: '時空の神' },
+  { key: 'creator', hours: 5000, title: '創造神' },
 ] as const;
 
 const LEARNING_TRAIL_RARITIES = ['normal', 'silver', 'gold'] as const;
@@ -3159,11 +3159,13 @@ function PreviousWeekRankBadge({
 }
 
 function LearningTrailFrame({
-  hours,
+  title,
+  remainHours,
   card,
   ready,
 }: {
-  hours: number;
+  title: string;
+  remainHours: number;
   card: LearningTrailCard | null;
   ready: boolean;
 }) {
@@ -3193,11 +3195,12 @@ function LearningTrailFrame({
             />
           ) : ready ? (
             <p className="px-6 text-center text-sm font-black leading-relaxed text-stone-300">
-              🔒 {hours}時間達成で解放
+              🔒 開放まで あと{remainHours}時間
             </p>
           ) : null}
         </div>
       </div>
+      <p className="text-amber-300 text-sm font-bold text-center mt-2">タイトル：{title}</p>
     </article>
   );
 }
@@ -3334,7 +3337,13 @@ function LearningTrailAlbum({
       </p>
       <div className="mx-auto mt-8 flex max-w-md flex-col gap-8">
         {LEARNING_TRAIL_STAGES.map((stage) => (
-          <LearningTrailFrame key={stage.key} hours={stage.hours} ready={cards !== null} card={owned.get(stage.key) ?? null} />
+          <LearningTrailFrame
+            key={stage.key}
+            title={stage.title}
+            remainHours={Math.max(0, Math.ceil((stage.hours * 60 - totalMinutes) / 60))}
+            ready={cards !== null}
+            card={owned.get(stage.key) ?? null}
+          />
         ))}
       </div>
       {showing && (
