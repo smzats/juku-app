@@ -3965,6 +3965,7 @@ export default function Page() {
   const [recordMode, setRecordMode] = useState<'timer' | 'countdown' | 'manual'>('timer');
   const [manualTimeOpen, setManualTimeOpen] = useState(false);
   const [timeAttackManualOpen, setTimeAttackManualOpen] = useState(false);
+  const [timerCelebrate, setTimerCelebrate] = useState<LearningTrailCard[]>([]);
   const [timerRunning, setTimerRunning] = useState(false);
   const [timerStartedAt, setTimerStartedAt] = useState(0);
   const [timerElapsedSec, setTimerElapsedSec] = useState(0);
@@ -6610,9 +6611,132 @@ export default function Page() {
     return true;
   }, [currentUser, logs, materials, newLogForm.subject, supabase, addNotification]);
 
+  const saveMeasuredStudy = useCallback(async (seconds: number, startedAt: number | null) => {
+    if (countdownSaveLock.current) return;
+    if (!currentUser || currentUser.role !== 'student') return;
+    if (!newLogForm.material_id) {
+      alert('テキストを選択してください。');
+      return;
+    }
+    countdownSaveLock.current = true;
+    const minutes = Math.max(0, Math.ceil(seconds / 60));
+    const slot = composerContext.current;
+    const started = new Date(startedAt || Date.now());
+    const ended = new Date();
+    const mission = Boolean(slot?.mission ?? composerMission);
+    let range: StudyClockRange | null = null;
+    if (slot && minutes > 0) {
+      const start = clockMinutes(slot.startHour, slot.startMinute);
+      const end = start + minutes;
+      range = {
+        startHour: slot.startHour,
+        startMinute: slot.startMinute,
+        endHour: Math.floor(end / 60),
+        endMinute: end % 60,
+      };
+    }
+    if (slot?.date && range) {
+      const studentLogIds = new Set(logs.filter((log) => log.user_id === currentUser.id).map((log) => log.id));
+      try {
+        const overlap = await findOverlappingStudyLog(supabase, currentUser.id, slot.date.slice(0, 10), range, undefined, studentLogIds);
+        if (overlap) {
+          alert(studyLogOverlapMessage(overlap.start, overlap.end));
+          countdownSaveLock.current = false;
+          return;
+        }
+      } catch (error: any) {
+        console.error(error);
+        alert('通信エラー: ' + (error?.message || '学習記録の確認に失敗しました'));
+        countdownSaveLock.current = false;
+        return;
+      }
+    }
+    const payload: StudyLog = {
+      id: `log_${Date.now()}`,
+      user_id: currentUser.id,
+      material_id: newLogForm.material_id,
+      score: 0,
+      max_score: 100,
+      time_spent_minutes: minutes,
+      is_mission_completed: mission,
+      comment: newLogForm.comment.trim() || undefined,
+      created_at: started.toISOString(),
+      start_time: range ? `${formatMeetingClock(range.startHour, range.startMinute)}:00` : undefined,
+      end_time: range ? `${formatMeetingClock(range.endHour, range.endMinute)}:00` : undefined,
+    };
+    const materialRow = materials.find((item) => item.id === newLogForm.material_id);
+    const subjectName = subjectCodeFromInput(newLogForm.subject) || subjectCodeFromInput(materialRow?.subject_code) || subjectCodeFromInput(materialRow?.subject) || '';
+    const remote: Record<string, unknown> = {
+      ...studyLogRemoteRow(payload, subjectName),
+      duration_minutes: minutes,
+      started_at: started.toISOString(),
+      ended_at: ended.toISOString(),
+    };
+    if (slot?.date) remote.study_date = slot.date.slice(0, 10);
+    if (range) Object.assign(remote, studyLogClockFields(range));
+    const columnPatterns = [
+      /Could not find the '([^']+)' column/i,
+      /column ["']([^"']+)["'] of relation/i,
+      /column ["']([^"']+)["'] does not exist/i,
+    ];
+    let saved = false;
+    let lastMessage = '';
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const result = await supabase.from('study_logs').insert([remote]);
+      if (!result.error) {
+        saved = true;
+        break;
+      }
+      lastMessage = result.error.message || lastMessage;
+      let missing: string | null = null;
+      for (const pattern of columnPatterns) {
+        const match = lastMessage.match(pattern);
+        if (match?.[1]) missing = match[1];
+      }
+      if (!missing || !(missing in remote) || missing === 'id' || missing === 'student_id' || missing === 'material_id' || missing === 'duration_minutes') break;
+      delete remote[missing];
+    }
+    if (!saved) {
+      console.error(lastMessage);
+      alert('通信エラー: ' + (lastMessage || '学習ログの保存に失敗しました'));
+      countdownSaveLock.current = false;
+      return;
+    }
+    if (slot && range) {
+      writeLogSlot(payload.id, { date: slot.date, ...range });
+      setLogSlots(readLogSlots());
+    }
+    const nextLogs = [payload, ...logs.filter((log) => log.id !== payload.id)];
+    setLogs(nextLogs);
+    const title = materials.find((item) => item.id === payload.material_id)?.title || 'テキスト';
+    if (payload.is_mission_completed) {
+      setMissionEffectToken((token) => token + 1);
+      setShowMissionEffect(true);
+      addNotification('success', `${title}のミッション完了！ 👑`);
+    } else {
+      addNotification('success', `${title}の学習を記録しました。`);
+    }
+    clearActiveStudyClock();
+    setTimerRunning(false);
+    setCountdownRunning(false);
+    setCountdownFinished(false);
+    setStudyComposer(null);
+    setNewLogForm((prev) => ({ ...prev, comment: '', time_spent_minutes: minutes }));
+    try {
+      const total = learningTrailTotalMinutes(nextLogs.filter((log) => log.user_id === currentUser.id), weekCramMinutes);
+      const granted = await syncLearningTrail(supabase, currentUser.id, total);
+      if (granted.fresh.length > 0) {
+        learningTrailPendingCelebrate.set(currentUser.id, []);
+        setTimerCelebrate(granted.fresh);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+    countdownSaveLock.current = false;
+  }, [composerMission, currentUser, logs, materials, newLogForm.comment, newLogForm.material_id, newLogForm.subject, supabase, weekCramMinutes, addNotification]);
+
   useEffect(() => {
     if (!countdownRunning || countdownRemainingSec !== 0 || !countdownStartedAt) return;
-    setCountdownRunning(false);
     setCountdownFinished(true);
     const saved = readActiveStudyClock();
     if (saved) writeActiveStudyClock({ ...saved, running: false, finished: true });
@@ -9531,12 +9655,64 @@ export default function Page() {
       {studyComposer && (
         <div className="fixed inset-0 z-[70] bg-slate-950/60 flex items-end justify-center">
           <div className="bg-white w-full max-w-lg h-[100dvh] max-h-[100dvh] flex flex-col overflow-hidden">
-            <div className="shrink-0 px-3 pt-2 pb-1 flex items-start justify-between gap-2 border-b border-slate-100">
-              <div className="min-w-0">
-                <h4 className="font-black text-sm leading-tight">学習の記録方法を選んでね</h4>
-                <p className="text-[10px] font-bold text-slate-400">{formatFocusDate(composerDateKey)} {formatMeetingClock(studyComposer.startHour, studyComposer.startMinute)}–{formatMeetingClock(studyComposer.endHour, studyComposer.endMinute)}（{studyDurationMinutes(clampStudyRange(studyComposer))}分）</p>
+            <div className="shrink-0 border-b border-slate-100 px-3 pt-2 pb-2 space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <h4 className="font-black text-sm leading-tight">学習の記録方法を選んでね</h4>
+                </div>
+                <button type="button" onClick={() => { dismissStudyClock(); setManualTimeOpen(false); setStudyComposer(null); }} className="w-8 h-8 shrink-0 rounded-full bg-slate-100 font-bold cursor-pointer">✕</button>
               </div>
-              <button type="button" onClick={() => { dismissStudyClock(); setManualTimeOpen(false); setStudyComposer(null); }} className="w-8 h-8 shrink-0 rounded-full bg-slate-100 font-bold cursor-pointer">✕</button>
+              {!timerRunning && !countdownRunning && (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
+                      const startedAt = Date.now();
+                      setRecordMode('timer');
+                      setCountdownRunning(false);
+                      setCountdownFinished(false);
+                      setTimerStartedAt(startedAt);
+                      setTimerElapsedSec(0);
+                      setTimerRunning(true);
+                      if (studyComposer) {
+                        writeActiveStudyClock({
+                          userId: currentUser.id,
+                          mode: 'timer',
+                          running: true,
+                          startedAt,
+                          targetSec: 0,
+                          finished: false,
+                          subject: String(newLogForm.subject || ''),
+                          materialId: newLogForm.material_id,
+                          comment: newLogForm.comment,
+                          mission: composerMission,
+                          date: composerDateKey,
+                          composer: studyComposer,
+                        });
+                      }
+                    }}
+                    className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold rounded-xl shadow-lg hover:shadow-cyan-500/50 px-3 py-3 text-left text-sm cursor-pointer"
+                  >
+                    ⏱️ 自分で開始・終了を記録（タイマー）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setTimeAttackManualOpen(false); setRecordMode('countdown'); }}
+                    className="w-full bg-gradient-to-r from-purple-500 to-pink-600 text-white font-bold rounded-xl shadow-lg hover:shadow-purple-500/50 px-3 py-3 text-left text-sm cursor-pointer"
+                  >
+                    ⚡ 時間を決めてタイムアタック
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setRecordMode('manual'); setManualTimeOpen(true); }}
+                    className="w-full bg-slate-800 border-2 border-amber-500/70 text-amber-300 font-bold rounded-xl shadow-md px-3 py-3 text-left text-sm cursor-pointer"
+                  >
+                    ✎ 開始時間・終了時間を直接入力・修正する
+                  </button>
+                </div>
+              )}
+              <p className="text-[10px] font-bold text-slate-400">{formatFocusDate(composerDateKey)} {formatMeetingClock(studyComposer.startHour, studyComposer.startMinute)}–{formatMeetingClock(studyComposer.endHour, studyComposer.endMinute)}（{studyDurationMinutes(clampStudyRange(studyComposer))}分）</p>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto px-3 py-1">
               <SubjectTextPicker
@@ -9580,21 +9756,7 @@ export default function Page() {
                       });
                     }
                   }}
-                  onStop={(seconds) => {
-                    setTimerRunning(false);
-                    clearActiveStudyClock();
-                    const minutes = Math.max(0, Math.round(seconds / 60));
-                    setNewLogForm((prev) => ({ ...prev, time_spent_minutes: minutes }));
-                    const slot = composerContext.current;
-                    const timedSlot = slot
-                      ? {
-                          ...slot,
-                          endHour: Math.floor((clockMinutes(slot.startHour, slot.startMinute) + minutes) / 60),
-                          endMinute: (clockMinutes(slot.startHour, slot.startMinute) + minutes) % 60,
-                        }
-                      : slot;
-                    void saveStudentMinutes(minutes, newLogForm.material_id, newLogForm.comment, timedSlot);
-                  }}
+                  onStop={(seconds) => { void saveMeasuredStudy(seconds, timerStartedAt); }}
                 />
               )}
               {recordMode === 'countdown' && (
@@ -9646,135 +9808,12 @@ export default function Page() {
                     setCountdownFinished(false);
                     clearActiveStudyClock();
                   }}
-                  onTimeUp={(minutes) => {
-                    if (countdownSaveLock.current) return;
-                    countdownSaveLock.current = true;
-                    setCountdownRunning(false);
-                    setCountdownFinished(false);
-                    clearActiveStudyClock();
-                    setNewLogForm((prev) => ({ ...prev, time_spent_minutes: minutes }));
-                    const slot = composerContext.current;
-                    const timedSlot = slot
-                      ? {
-                          ...slot,
-                          endHour: Math.floor((clockMinutes(slot.startHour, slot.startMinute) + minutes) / 60),
-                          endMinute: (clockMinutes(slot.startHour, slot.startMinute) + minutes) % 60,
-                        }
-                      : slot;
-                    void saveStudentMinutes(minutes, newLogForm.material_id, newLogForm.comment, timedSlot).finally(() => {
-                      countdownSaveLock.current = false;
-                    });
-                  }}
-                  onSaveElapsed={(seconds) => {
-                    if (countdownSaveLock.current) return;
-                    countdownSaveLock.current = true;
-                    const minutes = Math.max(0, Math.round(seconds / 60));
-                    setCountdownRunning(false);
-                    setCountdownFinished(false);
-                    clearActiveStudyClock();
-                    setNewLogForm((prev) => ({ ...prev, time_spent_minutes: minutes }));
-                    const slot = composerContext.current;
-                    const timedSlot = slot
-                      ? {
-                          ...slot,
-                          endHour: Math.floor((clockMinutes(slot.startHour, slot.startMinute) + minutes) / 60),
-                          endMinute: (clockMinutes(slot.startHour, slot.startMinute) + minutes) % 60,
-                        }
-                      : slot;
-                    void saveStudentMinutes(minutes, newLogForm.material_id, newLogForm.comment, timedSlot).finally(() => {
-                      countdownSaveLock.current = false;
-                    });
-                  }}
-                >
-                  {!countdownRunning && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => setTimeAttackManualOpen((open) => !open)}
-                        className="w-full cursor-pointer py-1 text-center text-[11px] font-bold text-slate-400 underline"
-                      >
-                        ✎ 開始時間・終了時間を直接入力・修正する
-                      </button>
-                      {timeAttackManualOpen && (
-                        <div className="space-y-2">
-                          <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} totalLabel="学習時間" />
-                          <div className="rounded-xl bg-slate-50 px-3 py-2 text-center text-sm font-black text-slate-700">
-                            学習時間 {String(Math.floor(studyDurationMinutes(clampStudyRange(studyComposer)) / 60)).padStart(2, '0')}:{String(studyDurationMinutes(clampStudyRange(studyComposer)) % 60).padStart(2, '0')}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const span = composerContext.current ? studyDurationMinutes(clampStudyRange(composerContext.current)) : 0;
-                              void saveStudentMinutes(span, newLogForm.material_id, newLogForm.comment, composerContext.current);
-                            }}
-                            className="w-full py-3 rounded-2xl bg-slate-200 text-slate-700 font-black cursor-pointer"
-                          >
-                            手動で記録保存
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </CyberTimeAttack>
+                  onTimeUp={(minutes) => { void saveMeasuredStudy(minutes * 60, countdownStartedAt); }}
+                  onSaveElapsed={(seconds) => { void saveMeasuredStudy(seconds, countdownStartedAt); }}
+                />
               )}
             </div>
             <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
-              {recordMode !== 'countdown' && !timerRunning && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
-                    const startedAt = Date.now();
-                    setRecordMode('timer');
-                    setCountdownRunning(false);
-                    setCountdownFinished(false);
-                    setTimerStartedAt(startedAt);
-                    setTimerElapsedSec(0);
-                    setTimerRunning(true);
-                    if (studyComposer) {
-                      writeActiveStudyClock({
-                        userId: currentUser.id,
-                        mode: 'timer',
-                        running: true,
-                        startedAt,
-                        targetSec: 0,
-                        finished: false,
-                        subject: String(newLogForm.subject || ''),
-                        materialId: newLogForm.material_id,
-                        comment: newLogForm.comment,
-                        mission: composerMission,
-                        date: composerDateKey,
-                        composer: studyComposer,
-                      });
-                    }
-                  }}
-                  className="w-full cursor-pointer rounded-2xl py-4 text-base font-black tracking-wide text-slate-950"
-                  style={{
-                    background: 'linear-gradient(180deg, #b8fbff 0%, #00e5ff 42%, #00b7d4 100%)',
-                    boxShadow: '0 0 18px rgba(0, 229, 255, 0.9), 0 10px 24px rgba(0, 184, 212, 0.35)',
-                  }}
-                >
-                  この教材で学習スタート
-                </button>
-              )}
-              {recordMode !== 'countdown' && !timerRunning && (
-                <button
-                  type="button"
-                  onClick={() => { setTimeAttackManualOpen(false); setRecordMode('countdown'); }}
-                  className="w-full cursor-pointer py-1 text-center text-[11px] font-bold text-slate-500 underline"
-                >
-                  ⚡ 時間を決めてタイムアタック
-                </button>
-              )}
-              {recordMode !== 'countdown' && (
-                <>
-              <button
-                type="button"
-                onClick={() => setManualTimeOpen((open) => !open)}
-                className="w-full cursor-pointer py-1 text-center text-[11px] font-bold text-slate-400 underline"
-              >
-                ✎ 開始時間・終了時間を直接入力・修正する
-              </button>
               {manualTimeOpen && (
                 <div className="space-y-2">
                   <StudyTimeRangeFields value={studyComposer} onChange={setStudyComposer} totalLabel="学習時間" />
@@ -9793,14 +9832,20 @@ export default function Page() {
                   </button>
                 </div>
               )}
-                </>
-              )}
               <MissionToggle checked={composerMission} onChange={setComposerMission} />
             </div>
           </div>
         </div>
       )}
 
+      {timerCelebrate[0] && (
+        <LearningTrailCelebration
+          key={timerCelebrate[0].stageKey}
+          card={timerCelebrate[0]}
+          hasNext={timerCelebrate.length > 1}
+          onClose={() => setTimerCelebrate((items) => items.slice(1))}
+        />
+      )}
 
       {editingLog && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4 z-[70]">

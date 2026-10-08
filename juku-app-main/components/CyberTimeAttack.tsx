@@ -95,6 +95,15 @@ export default function CyberTimeAttack({
   onTimeUpRef.current = onTimeUp;
 
   useEffect(() => {
+    if (!running) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [running]);
+
+  useEffect(() => {
     if (!running || !startedAt) {
       finishedRef.current = false;
       setRemainSec(targetSec);
@@ -133,6 +142,117 @@ export default function CyberTimeAttack({
     onPause();
     setAbortOpen(true);
   };
+
+  const overlays = (
+    <>
+      <style>{'@keyframes cyber-pinch { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }'}</style>
+      {timeUpOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/75 px-4">
+          <div className="w-full max-w-sm rounded-3xl bg-slate-950 px-6 py-8 text-center text-white shadow-2xl">
+            <p className={`${orbitron.className} text-sm tracking-[0.2em] text-cyan-300`}>TIME UP</p>
+            <p className="mt-3 text-xl font-black">タイムアップ！</p>
+            <p className="mt-2 text-sm font-bold text-slate-300">目標の {target} 分を学習記録に残しました。</p>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {abortOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/75 px-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white px-6 py-6 text-center shadow-2xl">
+            <p className="text-base font-black text-slate-900">タイムアタックを中断しました</p>
+            <p className="mt-2 text-sm font-bold text-slate-600">
+              ここまでの {Math.max(0, Math.ceil(abortElapsed / 60))} 分を学習記録に残しますか？
+            </p>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setAbortOpen(false)}
+                className="flex-1 cursor-pointer rounded-2xl bg-slate-100 py-3 text-sm font-black text-slate-600"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAbortOpen(false);
+                  onSaveElapsed(abortElapsed);
+                }}
+                className="flex-1 cursor-pointer rounded-2xl bg-sky-600 py-3 text-sm font-black text-white"
+              >
+                記録する
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+
+  if (running && typeof document !== 'undefined') {
+    return (
+      <>
+        {createPortal(
+          <div
+            className="fixed inset-0 w-screen h-screen z-[9999] bg-[#030811] flex flex-col items-center justify-between p-4 overflow-hidden"
+            style={{
+              backgroundImage: 'url(/images/bg-timer.png)',
+              backgroundSize: 'contain',
+              backgroundPosition: 'center',
+              backgroundRepeat: 'no-repeat',
+            }}
+          >
+            <div className="flex min-h-0 w-full flex-1 items-center justify-center">
+              <div className="relative h-full max-h-full w-auto max-w-full" style={{ aspectRatio: '1080 / 1920', containerType: 'inline-size' }}>
+                <svg viewBox="0 0 200 200" className="absolute overflow-visible" style={RING_BOX} aria-hidden="true">
+                  <g transform="rotate(-90 100 100)">
+                    <circle cx="100" cy="100" r={RING_RADIUS} fill="none" stroke="rgba(0, 212, 255, 0.1)" strokeWidth="6" strokeDasharray="3 8.0" />
+                    <circle
+                      cx="100"
+                      cy="100"
+                      r={RING_RADIUS}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth="6"
+                      strokeDasharray={dash.array}
+                      strokeDashoffset={dash.offset}
+                      style={{ filter: glow }}
+                    />
+                  </g>
+                </svg>
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <p
+                    className={`${orbitron.className} leading-none tracking-wider`}
+                    style={{
+                      fontSize: 'clamp(1.8rem, 9cqi, 3.2rem)',
+                      color: stroke,
+                      textShadow: pinch ? '0 0 8px #ff0055, 0 0 16px #ff0055' : '0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.85)',
+                      animation: pinch ? 'cyber-pinch 0.8s steps(2, end) infinite' : undefined,
+                    }}
+                  >
+                    {formatRemain(shown)}
+                  </p>
+                  <p className={`${orbitron.className} mt-1 tracking-[0.18em]`} style={{ fontSize: 'clamp(0.7rem, 3cqi, 1rem)', color: pinch ? '#ff0055' : 'rgba(0, 229, 255, 0.85)' }}>
+                    REMAINING
+                  </p>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleAbort}
+              className={`${orbitron.className} w-full max-w-sm cursor-pointer rounded-2xl bg-rose-600 py-4 text-base font-black tracking-[0.12em] text-white`}
+            >
+              ABORT（中断）
+            </button>
+            <style>{'@keyframes cyber-pinch { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }'}</style>
+          </div>,
+          document.body,
+        )}
+        {overlays}
+      </>
+    );
+  }
 
   return (
     <div className="mx-auto mt-2 w-full max-w-[280px]">
@@ -216,8 +336,7 @@ export default function CyberTimeAttack({
           </div>
         </div>
       </div>
-      {!running ? (
-        <div className="mt-2 space-y-2">
+      <div className="mt-2 space-y-2">
           <div className="flex items-center justify-center gap-3">
             <button
               type="button"
@@ -262,56 +381,7 @@ export default function CyberTimeAttack({
             通常の計測に戻る
           </button>
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={handleAbort}
-          className={`${orbitron.className} mt-2 w-full cursor-pointer rounded-2xl bg-rose-600 py-3 text-sm font-black tracking-[0.12em] text-white`}
-        >
-          ABORT（中断）
-        </button>
-      )}
-      <style>{'@keyframes cyber-pinch { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }'}</style>
-      {timeUpOpen && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/75 px-4">
-          <div className="w-full max-w-sm rounded-3xl bg-slate-950 px-6 py-8 text-center text-white shadow-2xl">
-            <p className={`${orbitron.className} text-sm tracking-[0.2em] text-cyan-300`}>TIME UP</p>
-            <p className="mt-3 text-xl font-black">タイムアップ！</p>
-            <p className="mt-2 text-sm font-bold text-slate-300">目標の {target} 分を学習記録に残しました。</p>
-          </div>
-        </div>,
-        document.body,
-      )}
-      {abortOpen && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/75 px-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white px-6 py-6 text-center shadow-2xl">
-            <p className="text-base font-black text-slate-900">タイムアタックを中断しました</p>
-            <p className="mt-2 text-sm font-bold text-slate-600">
-              ここまでの {Math.max(0, Math.round(abortElapsed / 60))} 分を学習記録に残しますか？
-            </p>
-            <div className="mt-5 flex gap-2">
-              <button
-                type="button"
-                onClick={() => setAbortOpen(false)}
-                className="flex-1 cursor-pointer rounded-2xl bg-slate-100 py-3 text-sm font-black text-slate-600"
-              >
-                キャンセル
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAbortOpen(false);
-                  onSaveElapsed(abortElapsed);
-                }}
-                className="flex-1 cursor-pointer rounded-2xl bg-sky-600 py-3 text-sm font-black text-white"
-              >
-                記録する
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+      {overlays}
     </div>
   );
 }
