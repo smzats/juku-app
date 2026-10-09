@@ -736,7 +736,7 @@ function emptyStudentProfile(): StudentProfile {
 }
 
 export interface User {
-  id: string; // 独自文字列ID (例: ext001, ext002, teacher01 等)
+  id: string;
   name: string;
   role: UserRole;
   classroom: string;
@@ -4291,7 +4291,12 @@ export default function Page() {
   }, [fetchMaterials]);
 
   const fetchStudentMessages = useCallback(async (options?: { silent?: boolean }): Promise<StudentMessage[] | null> => {
-    const remote = await selectAllRows(supabase, 'teacher_messages');
+    const viewer = materialViewerRef.current || readAppSession();
+    if (!viewer?.id) return options?.silent ? null : [];
+    const studentView = resolveAppRole(viewer.role, viewer.id, viewer.email) === 'student';
+    const remote = studentView
+      ? await supabase.from('teacher_messages').select('*').eq('student_id', viewer.id)
+      : await selectAllRows(supabase, 'teacher_messages');
     if (remote.error) {
       console.error(remote.error);
       if (!options?.silent) alert('通信エラー: ' + (remote.error.message || 'メッセージの取得に失敗しました'));
@@ -4314,7 +4319,11 @@ export default function Page() {
   }, [fetchStudentMessages]);
 
   const fetchLogs = useCallback(async (): Promise<StudyLog[]> => {
-    const { data, error } = await supabase.from('study_logs').select('id, student_id, material_id, subject, duration_minutes, study_date, memo, is_mission_completed, start_time, end_time');
+    const viewer = materialViewerRef.current || readAppSession();
+    if (!viewer?.id) return [];
+    const studentView = resolveAppRole(viewer.role, viewer.id, viewer.email) === 'student';
+    const request = supabase.from('study_logs').select('id, student_id, material_id, subject, duration_minutes, study_date, memo, is_mission_completed, start_time, end_time');
+    const { data, error } = studentView ? await request.eq('student_id', viewer.id) : await request;
     if (error) {
       console.error(error);
       alert('通信エラー: ' + (error.message || '学習ログの取得に失敗しました'));
@@ -4355,7 +4364,16 @@ export default function Page() {
         fetchLogs(),
       ]);
       setMaterials(mData);
-      setLogs((prev) => (lData.length === 0 && prev.length > 0 ? prev : lData));
+      setLogs((prev) => {
+        const viewer = materialViewerRef.current || readAppSession();
+        const studentView = Boolean(viewer && resolveAppRole(viewer.role, viewer.id, viewer.email) === 'student');
+        if (studentView && viewer) {
+          const own = lData.filter((log) => log.user_id === viewer.id);
+          const pending = prev.filter((log) => log.user_id === viewer.id && !own.some((item) => item.id === log.id));
+          return [...own, ...pending];
+        }
+        return lData.length === 0 && prev.length > 0 ? prev : lData;
+      });
       const loadedMessages = await fetchStudentMessages();
       if (loadedMessages) setMessages(loadedMessages);
       setConnectionError(null);
@@ -4371,6 +4389,11 @@ export default function Page() {
   useEffect(() => {
     void fetchAllData({ silent: true });
   }, [fetchAllData]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    void fetchAllData({ silent: true });
+  }, [currentUser?.id, fetchAllData]);
 
   useEffect(() => {
     if (!currentUser || currentUser.role !== 'student') return;
@@ -4444,21 +4467,23 @@ export default function Page() {
       return;
     }
     let active = true;
-    void supabase.auth.getSession().then(({ data }) => {
-      if (!active || !data.session?.user?.email) return;
-      const email = data.session.user.email;
-      const restored: User = {
-        id: email,
-        name: String(data.session.user.user_metadata?.name || email),
-        role: 'student',
-        classroom: '本川越校',
-        password: '',
-        email,
-        ...emptyStudentProfile(),
-      };
-      writeAppSession(restored);
-      setCurrentUser(restored);
-      setActiveTab('schedule_planner');
+    void supabase.auth.getUser().then(async ({ data, error }) => {
+      if (!active || error || !data.user) return;
+      const email = String(data.user.email || '').trim();
+      const authId = String(data.user.id || '').trim();
+      const directory = await fetchUsers();
+      const restored = directory.find((user) => {
+        const id = user.id.trim().toLowerCase();
+        const userEmail = (user.email || '').trim().toLowerCase();
+        return (authId !== '' && id === authId.toLowerCase())
+          || (email !== '' && (id === email.toLowerCase() || userEmail === email.toLowerCase()));
+      });
+      if (!active || !restored) return;
+      const role = resolveAppRole(restored.role, restored.id, restored.email || email);
+      const signedIn = { ...restored, role, password: '' };
+      writeAppSession(signedIn);
+      setCurrentUser(signedIn);
+      setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
     }).catch(() => {
       if (active) setConnectionError('通信エラーが発生しました');
     }).finally(() => {
@@ -4467,7 +4492,7 @@ export default function Page() {
     return () => {
       active = false;
     };
-  }, [supabase]);
+  }, [supabase, fetchUsers]);
 
   useEffect(() => {
     if (currentUser?.role !== 'admin' && newUserForm.role === 'admin') {
@@ -4969,23 +4994,7 @@ export default function Page() {
             addNotification('success', `${authMatch.name} さん（${role}）としてログインいたしました。`);
             return;
           }
-          const signedIn: User = {
-            id: email,
-            name: String(data.session.user.user_metadata?.name || email),
-            role: 'student',
-            classroom: '本川越校',
-            password: '',
-            email,
-            ...emptyStudentProfile(),
-          };
-          rememberSignedIn(signedIn);
-          setActiveTab('schedule_planner');
-          setStudyComposer(null);
-          setEditingLog(null);
-          setOpenHinaSlot(null);
-          setWeekPickerStart(null);
-          setCrownBurst(null);
-          addNotification('success', `${signedIn.name} さん（student）としてログインいたしました。`);
+          setLoginError('IDまたはパスワードが違います');
           return;
         }
       } catch {
@@ -5028,36 +5037,14 @@ export default function Page() {
       setLoginError(connectionError || '通信エラーが発生しました');
       return;
     }
-    if (inputPassword !== inputIdClean && inputPassword !== DEFAULT_LOGIN_PASSWORD) {
-      setLoginError('IDまたはパスワードが違います');
-      return;
-    }
-    const privilegedAdmin = isKnownAdminIdentity(inputIdClean);
-    const newSessionUser: User = {
-      id: inputIdClean,
-      name: privilegedAdmin ? '管理者' : `ユーザー_${inputIdClean}`,
-      role: privilegedAdmin ? 'admin' : 'student',
-      classroom: '本川越校',
-      password: inputPassword,
-      email: privilegedAdmin ? inputIdClean : undefined,
-      ...emptyStudentProfile(),
-    };
-    if (privilegedAdmin) rememberUserRole(inputIdClean, 'admin');
-    rememberSignedIn(newSessionUser);
-    setActiveTab(privilegedAdmin ? 'dashboard' : 'schedule_planner');
-    if (privilegedAdmin) {
-      setStudyComposer(null);
-      setEditingLog(null);
-      setOpenHinaSlot(null);
-      setWeekPickerStart(null);
-      setCrownBurst(null);
-    }
-    addNotification(privilegedAdmin ? 'success' : 'info', privilegedAdmin ? '管理者としてログインいたしました。' : `独自ID [${inputIdClean}] でログインいたしました。`);
+    setLoginError('IDまたはパスワードが違います');
   };
 
   const handleLogout = () => {
     clearAppSession();
     setCurrentUser(null);
+    setLogs([]);
+    setMessages([]);
     setWeekPlans({});
     setWeekCramMinutes({});
     setWeekPlansResolved(false);
@@ -5082,6 +5069,8 @@ export default function Page() {
       alert('ログアウトに失敗しました: ' + (error?.message || String(error)));
     } finally {
       setCurrentUser(null);
+      setLogs([]);
+      setMessages([]);
       setWeekPlans({});
       setWeekCramMinutes({});
       setWeekPlansResolved(false);
@@ -6023,8 +6012,6 @@ export default function Page() {
   const downloadStudentCsvTemplate = useCallback(() => {
     const csvBody = [
       'id,name,high_school,grade,branch_id,password,math,english,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual',
-      'ext001,川越 太郎,川越高校,高2,本川越校,ext001,標準,選抜,標準,,基礎,標準,基礎,日本史A,,個別A',
-      'ext002,山手 花子,山手高校,高1,本川越校,1234,選抜,標準,標準,,,生物A,,世界史B,個別B',
     ].join('\n');
     const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -6040,8 +6027,6 @@ export default function Page() {
   const downloadTeacherCsvTemplate = useCallback(() => {
     const csvBody = [
       'id,name,branch_id,role,password',
-      'teacher01,佐藤 講師,本川越校,teacher,teacher01',
-      'teacher02,鈴木 講師,川越校,teacher,1234',
     ].join('\n');
     const blob = new Blob(['\uFEFF' + csvBody], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -7008,8 +6993,20 @@ export default function Page() {
   // ---------------------------------------------------------------------------
   // 未ログイン時：独立 ログイン画面コンポーネント (Y Log タイトル ＆ ロゴ画像 /logo.png 固定表示)
   // ---------------------------------------------------------------------------
+function SkeletonLoader() {
+  return (
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6" aria-busy="true">
+      <div className="w-full max-w-md space-y-4">
+        <div className="mx-auto h-24 w-24 animate-pulse rounded-3xl bg-slate-800" />
+        <div className="h-4 animate-pulse rounded-full bg-slate-800" />
+        <div className="mx-auto h-4 w-2/3 animate-pulse rounded-full bg-slate-800" />
+      </div>
+    </div>
+  );
+}
+
   if (!currentUser && !sessionChecked) {
-    return <div className="min-h-screen bg-slate-950" />;
+    return <SkeletonLoader />;
   }
 
   if (!currentUser) {
@@ -7219,30 +7216,6 @@ export default function Page() {
             </button>
           </div>
 
-          <div className="bg-slate-900 p-3 rounded-2xl border border-slate-800 space-y-2">
-            <div className="text-[10px] font-black text-slate-300">ユーザー切替</div>
-            <div className="grid grid-cols-3 gap-1">
-              {(['student', 'teacher', 'admin'] as const).map((role) => {
-                const sample = users.find((user) => user.role === role);
-                const label = role === 'student' ? '生徒' : role === 'teacher' ? '講師' : '管理者';
-                return (
-                  <button
-                    key={role}
-                    type="button"
-                    disabled={!sample}
-                    onClick={() => {
-                      if (!sample) return;
-                      setCurrentUser(sample);
-                      setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
-                    }}
-                    className="py-2 rounded-xl bg-slate-800 text-[10px] font-black text-white cursor-pointer disabled:opacity-40"
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
           <button
             onClick={() => setIsUserModalOpen(true)}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-2xl transition-all shadow-lg shadow-sky-600/20 active:scale-95 cursor-pointer"
@@ -8225,7 +8198,7 @@ export default function Page() {
                         type="text"
                         value={meetingStudentQuery}
                         onChange={(event) => setMeetingStudentQuery(event.target.value)}
-                        placeholder="氏名・IDで絞り込み（例: 山田太郎 / exs001）"
+                        placeholder="氏名・IDで絞り込み"
                         className="w-full bg-slate-50 border border-slate-200 text-sm font-bold text-slate-900 rounded-2xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-sky-500"
                       />
                       <select
