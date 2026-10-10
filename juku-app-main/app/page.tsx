@@ -5120,6 +5120,57 @@ export default function Page() {
     setCurrentUser(signedIn);
   };
 
+  const readLoginDirectoryUser = async (loginId: string, email: string): Promise<User | null> => {
+    const keys = [loginId.trim()];
+    const at = loginId.lastIndexOf('@');
+    if (at > 0) keys.push(loginId.slice(0, at).trim());
+    const unique = [...new Set(keys.filter(Boolean))];
+    for (const key of unique) {
+      const teachers = await supabase.from('teachers').select('id,name,role,branch_id').eq('id', key).limit(1);
+      const teacher = teachers.data?.[0];
+      if (!teachers.error && teacher?.id) {
+        const id = String(teacher.id).trim();
+        return {
+          ...emptyStudentProfile(),
+          id,
+          name: String(teacher.name || '名前未設定'),
+          role: resolveAppRole(teacher.role, id, email),
+          classroom: String(teacher.branch_id || ''),
+          password: '',
+          email,
+        };
+      }
+      const students = await supabase.from('students').select('id,name,branch_id,grade,high_school,english,math,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual,is_pending_delete').eq('id', key).limit(1);
+      const student = students.data?.[0];
+      if (!students.error && student?.id) {
+        const id = String(student.id).trim();
+        return {
+          ...emptyStudentProfile(),
+          id,
+          name: String(student.name || '名前未設定'),
+          role: 'student',
+          classroom: String(student.branch_id || ''),
+          password: '',
+          email,
+          grade: String(student.grade || ''),
+          highSchool: String(student.high_school || ''),
+          english: String(student.english || ''),
+          math: String(student.math || ''),
+          japanese: String(student.modern_jp || ''),
+          classicJp: String(student.classic_jp || ''),
+          physics: String(student.physics || ''),
+          chemistry: String(student.chemistry || ''),
+          biology: String(student.biology || ''),
+          japaneseHistory: String(student.jp_history || ''),
+          worldHistory: String(student.world_history || ''),
+          individual: String(student.individual || ''),
+          isPendingDelete: student.is_pending_delete === true,
+        };
+      }
+    }
+    return null;
+  };
+
   // 独自IDによるログイン実行処理
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -5150,42 +5201,27 @@ export default function Page() {
 
     if (supabaseEnvConfigured()) {
       try {
-        const response = await fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: inputIdClean, password: inputPassword }),
-        });
-        const payload = await response.json().catch(() => null) as {
-          error?: string;
-          session?: { access_token?: string; refresh_token?: string };
-          user?: Partial<User>;
-        } | null;
-        if (response.ok && payload?.session?.access_token && payload.session.refresh_token && payload.user?.id) {
-          const { error } = await supabase.auth.setSession({
-            access_token: payload.session.access_token,
-            refresh_token: payload.session.refresh_token,
-          });
-          if (error) {
-            setLoginError('通信エラーが発生しました');
+        const email = authEmailForLogin(inputIdClean);
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password: inputPassword });
+        if (error || !data.session) {
+          const detail = `${error?.name || ''} ${error?.message || ''}`.toLowerCase();
+          if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
+            setLoginError(detail.includes('fetch') || detail.includes('network') ? '通信エラーが発生しました' : 'IDまたはパスワードが違います');
             return;
           }
-          const role = resolveAppRole(payload.user.role, payload.user.id, payload.user.email || authEmailForLogin(inputIdClean));
-          const signedIn: User = {
-            ...emptyStudentProfile(),
-            ...payload.user,
-            id: payload.user.id,
-            name: payload.user.name || '名前未設定',
-            role,
-            classroom: payload.user.classroom || '本川越校',
-            password: '',
-            email: payload.user.email || authEmailForLogin(inputIdClean),
-          };
-          finishLogin(signedIn, `${signedIn.name} さん（${role}）としてログインいたしました。`);
-          return;
-        }
-        if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
-          setLoginError(response.status === 401 ? 'IDまたはパスワードが違います' : '通信エラーが発生しました');
-          return;
+        } else {
+          const profile = await readLoginDirectoryUser(inputIdClean, email);
+          if (!profile) {
+            await supabase.auth.signOut();
+            if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
+              setLoginError('IDまたはパスワードが違います');
+              return;
+            }
+          } else {
+            const role = resolveAppRole(profile.role, profile.id, email);
+            finishLogin({ ...profile, role, password: '', email }, `${profile.name} さん（${role}）としてログインいたしました。`);
+            return;
+          }
         }
       } catch {
         if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
