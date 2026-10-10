@@ -33,6 +33,14 @@ function createSafeSupabaseClient() {
   });
 }
 
+async function loadSupabaseSession(client: { auth: { getSession: () => Promise<unknown> } }) {
+  try {
+    await client.auth.getSession();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 // =============================================================================
 // プロの仕事とは「簡単で、簡潔で、丁寧で、見やすくて、チェックのしやすい、
 // 一切のミスのない、絶対に誤解を生じないコードで、誰もが感動して涙するような実装を実現すること」
@@ -4529,6 +4537,7 @@ export default function Page() {
     if (!silent) setLoading(true);
     setGlobalError(null);
     try {
+      await loadSupabaseSession(supabase);
       const uData = await fetchUsers();
       setUsers(uData);
       setUsersReady(true);
@@ -4679,6 +4688,7 @@ export default function Page() {
     let cancelled = false;
     void (async () => {
       try {
+        await loadSupabaseSession(supabase);
         const templates = await fetchGlobalScheduleTemplates(supabase);
         if (cancelled || !templates) return;
         setStaffTemplates(templates);
@@ -5283,6 +5293,7 @@ export default function Page() {
 
   const refreshWeekPlans = useCallback(async (userId: string, applyToScreen: boolean) => {
     try {
+      await loadSupabaseSession(supabase);
       const seenVersion = weekPlanWriteVersion.current[userId] || 0;
       const remote = await fetchWeeklySchedules(supabase, userId);
       if ((weekPlanWriteVersion.current[userId] || 0) !== seenVersion) return;
