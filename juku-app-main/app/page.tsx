@@ -5268,20 +5268,30 @@ export default function Page() {
     setLoginError('IDまたはパスワードが違います');
   };
 
-  const handleLogout = () => {
-    clearAppSession();
-    setCurrentUser(null);
-    setLogs([]);
-    setMessages([]);
-    setWeekPlans({});
-    setWeekCramMinutes({});
-    setWeekPlansResolved(false);
-    loadedWeekPlanUser.current = '';
-    setLoginInputId('');
-    setLoginPassword('');
-    setLoginPasswordVisible(false);
-    void supabase.auth.signOut();
-    addNotification('info', 'ログアウトいたしました。');
+  const handleLogout = async () => {
+    try {
+      writeExplicitLogout();
+      clearStoredLoginSession();
+      window.localStorage.removeItem(USER_ROLE_CACHE_KEY);
+      const { error } = await supabase.auth.signOut();
+      if (error) console.error(error);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      clearStoredLoginSession();
+      window.localStorage.removeItem(USER_ROLE_CACHE_KEY);
+      setCurrentUser(null);
+      setLogs([]);
+      setMessages([]);
+      setWeekPlans({});
+      setWeekCramMinutes({});
+      setWeekPlansResolved(false);
+      loadedWeekPlanUser.current = '';
+      setLoginInputId('');
+      setLoginPassword('');
+      setLoginPasswordVisible(false);
+      window.location.assign('/');
+    }
   };
 
   const handleStudentLogout = async () => {
@@ -7517,6 +7527,13 @@ function SkeletonLoader() {
                 <option value="ＥＸ校">ＥＸ校</option>
               </select>
             </div>
+            <button
+              type="button"
+              onClick={() => { void handleLogout(); }}
+              className="shrink-0 px-3 py-2.5 bg-white border border-slate-200 text-slate-600 hover:bg-red-50 hover:text-red-700 hover:border-red-200 rounded-2xl text-xs font-extrabold transition-all cursor-pointer"
+            >
+              ログアウト
+            </button>
           </div>
         </header>
         
