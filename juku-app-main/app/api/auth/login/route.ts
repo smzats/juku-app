@@ -21,20 +21,9 @@ function lookupKeys(id: string): string[] {
 }
 
 async function findDirectoryUser(client: SupabaseClient, id: string) {
+  const studentColumns = 'id,name,branch_id,grade,high_school,english,math,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual,is_pending_delete';
   for (const key of lookupKeys(id)) {
-    const teachers = await client.from('teachers').select('id,name,role,branch_id').eq('id', key).limit(1);
-    const teacher = teachers.data?.[0] as { id?: string; name?: string; role?: string; branch_id?: string } | undefined;
-    if (!teachers.error && teacher?.id) {
-      return {
-        id: textCell(teacher.id),
-        name: textCell(teacher.name) || '名前未設定',
-        role: textCell(teacher.role) === 'admin' || textCell(teacher.role) === 'teacher' || textCell(teacher.role) === 'student'
-          ? textCell(teacher.role)
-          : (textCell(teacher.role) || 'teacher'),
-        classroom: textCell(teacher.branch_id),
-      };
-    }
-    const students = await client.from('students').select('id,name,branch_id,grade,high_school,english,math,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual,is_pending_delete').eq('id', key).limit(1);
+    const students = await client.from('students').select(studentColumns).eq('id', key).limit(1);
     const student = students.data?.[0] as Record<string, unknown> | undefined;
     if (!students.error && student?.id) {
       return {
@@ -55,6 +44,19 @@ async function findDirectoryUser(client: SupabaseClient, id: string) {
         worldHistory: textCell(student.world_history),
         individual: textCell(student.individual),
         isPendingDelete: student.is_pending_delete === true,
+      };
+    }
+  }
+  for (const key of lookupKeys(id)) {
+    const teachers = await client.from('teachers').select('id,name,role,branch_id').eq('id', key).limit(1);
+    const teacher = teachers.data?.[0] as { id?: string; name?: string; role?: string; branch_id?: string } | undefined;
+    if (!teachers.error && teacher?.id) {
+      const storedRole = textCell(teacher.role);
+      return {
+        id: textCell(teacher.id),
+        name: textCell(teacher.name) || '名前未設定',
+        role: storedRole === 'admin' || storedRole === 'teacher' || storedRole === 'student' ? storedRole : (storedRole || 'teacher'),
+        classroom: textCell(teacher.branch_id),
       };
     }
   }

@@ -5120,50 +5120,60 @@ export default function Page() {
     if (at > 0) keys.push(loginId.slice(0, at).trim());
     const unique = [...new Set(keys.filter(Boolean))];
     for (const key of unique) {
-      const teachers = await supabase.from('teachers').select('id,name,role,branch_id').eq('id', key).limit(1);
-      const teacher = teachers.data?.[0];
-      if (!teachers.error && teacher?.id) {
-        const id = String(teacher.id).trim();
-        const storedRole = String(teacher.role ?? '').trim();
-        const role: UserRole = storedRole === 'admin' || storedRole === 'teacher' || storedRole === 'student'
-          ? storedRole
-          : resolveAppRole(teacher.role, id, email);
-        return {
-          ...emptyStudentProfile(),
-          id,
-          name: String(teacher.name || '名前未設定'),
-          role,
-          classroom: String(teacher.branch_id || ''),
-          password: '',
-          email,
-        };
+      try {
+        const students = await supabase.from('students').select('id,name,branch_id,grade,high_school,english,math,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual,is_pending_delete').eq('id', key).limit(1);
+        const student = students.data?.[0];
+        if (!students.error && student?.id) {
+          const id = String(student.id).trim();
+          return {
+            ...emptyStudentProfile(),
+            id,
+            name: String(student.name || '名前未設定'),
+            role: 'student',
+            classroom: String(student.branch_id || ''),
+            password: '',
+            email,
+            grade: String(student.grade || ''),
+            highSchool: String(student.high_school || ''),
+            english: String(student.english || ''),
+            math: String(student.math || ''),
+            japanese: String(student.modern_jp || ''),
+            classicJp: String(student.classic_jp || ''),
+            physics: String(student.physics || ''),
+            chemistry: String(student.chemistry || ''),
+            biology: String(student.biology || ''),
+            japaneseHistory: String(student.jp_history || ''),
+            worldHistory: String(student.world_history || ''),
+            individual: String(student.individual || ''),
+            isPendingDelete: student.is_pending_delete === true,
+          };
+        }
+      } catch (studentError) {
+        console.error(studentError);
       }
-      const students = await supabase.from('students').select('id,name,branch_id,grade,high_school,english,math,modern_jp,classic_jp,physics,chemistry,biology,jp_history,world_history,individual,is_pending_delete').eq('id', key).limit(1);
-      const student = students.data?.[0];
-      if (!students.error && student?.id) {
-        const id = String(student.id).trim();
-        return {
-          ...emptyStudentProfile(),
-          id,
-          name: String(student.name || '名前未設定'),
-          role: 'student',
-          classroom: String(student.branch_id || ''),
-          password: '',
-          email,
-          grade: String(student.grade || ''),
-          highSchool: String(student.high_school || ''),
-          english: String(student.english || ''),
-          math: String(student.math || ''),
-          japanese: String(student.modern_jp || ''),
-          classicJp: String(student.classic_jp || ''),
-          physics: String(student.physics || ''),
-          chemistry: String(student.chemistry || ''),
-          biology: String(student.biology || ''),
-          japaneseHistory: String(student.jp_history || ''),
-          worldHistory: String(student.world_history || ''),
-          individual: String(student.individual || ''),
-          isPendingDelete: student.is_pending_delete === true,
-        };
+    }
+    for (const key of unique) {
+      try {
+        const teachers = await supabase.from('teachers').select('id,name,role,branch_id').eq('id', key).limit(1);
+        const teacher = teachers.data?.[0];
+        if (!teachers.error && teacher?.id) {
+          const id = String(teacher.id).trim();
+          const storedRole = String(teacher.role ?? '').trim();
+          const role: UserRole = storedRole === 'admin' || storedRole === 'teacher' || storedRole === 'student'
+            ? storedRole
+            : resolveAppRole(teacher.role, id, email);
+          return {
+            ...emptyStudentProfile(),
+            id,
+            name: String(teacher.name || '名前未設定'),
+            role,
+            classroom: String(teacher.branch_id || ''),
+            password: '',
+            email,
+          };
+        }
+      } catch (teacherError) {
+        console.error(teacherError);
       }
     }
     return null;
