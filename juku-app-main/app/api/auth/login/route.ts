@@ -9,7 +9,7 @@ function textCell(value: unknown): string {
 
 function authEmailForId(id: string): string {
   const candidate = id.trim();
-  if (candidate.includes('@')) return candidate;
+  if (candidate.toLowerCase().endsWith('@juku.app')) return candidate;
   return `${candidate}@juku.app`;
 }
 
@@ -28,7 +28,9 @@ async function findDirectoryUser(client: SupabaseClient, id: string) {
       return {
         id: textCell(teacher.id),
         name: textCell(teacher.name) || '名前未設定',
-        role: textCell(teacher.role) || 'teacher',
+        role: textCell(teacher.role) === 'admin' || textCell(teacher.role) === 'teacher' || textCell(teacher.role) === 'student'
+          ? textCell(teacher.role)
+          : (textCell(teacher.role) || 'teacher'),
         classroom: textCell(teacher.branch_id),
       };
     }
@@ -84,8 +86,12 @@ export async function POST(request: Request) {
   const session = signed.data.session;
   if (signed.error || !session) return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
 
-  const directoryUser = await findDirectoryUser(supabase, id);
-  if (!directoryUser) return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
+  let directoryUser: Awaited<ReturnType<typeof findDirectoryUser>> = null;
+  try {
+    directoryUser = await findDirectoryUser(supabase, id);
+  } catch (error) {
+    console.error(error);
+  }
 
   return NextResponse.json({
     session: {
@@ -93,6 +99,8 @@ export async function POST(request: Request) {
       refresh_token: session.refresh_token,
       expires_at: session.expires_at ?? null,
     },
-    user: { ...directoryUser, email },
+    user: directoryUser
+      ? { ...directoryUser, email }
+      : { id, name: id, role: 'teacher', classroom: '', email },
   });
 }

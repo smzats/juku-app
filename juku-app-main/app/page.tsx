@@ -43,7 +43,7 @@ async function loadSupabaseSession(client: { auth: { getSession: () => Promise<u
 
 function authEmailForLogin(id: string): string {
   const candidate = String(id || '').trim();
-  if (candidate.includes('@')) return candidate;
+  if (candidate.toLowerCase().endsWith('@juku.app')) return candidate;
   return `${candidate}@juku.app`;
 }
 
@@ -884,12 +884,6 @@ function readCachedUserRole(userId: string): UserRole | null {
 }
 
 const KNOWN_ADMIN_LOGIN_IDS = ['admin@y.stlog'];
-const BUILTIN_ADMIN_ID = 'admin@y.stlog';
-const BUILTIN_ADMIN_PASSWORD = 'ylog-admin';
-
-function isBuiltinAdminLogin(id: string, password: string): boolean {
-  return normalizeLoginIdentity(id) === normalizeLoginIdentity(BUILTIN_ADMIN_ID) && password === BUILTIN_ADMIN_PASSWORD;
-}
 
 function normalizeLoginIdentity(value: unknown): string {
   return String(value ?? '').replace(/[\s\u3000]/g, '').toLowerCase();
@@ -5130,11 +5124,15 @@ export default function Page() {
       const teacher = teachers.data?.[0];
       if (!teachers.error && teacher?.id) {
         const id = String(teacher.id).trim();
+        const storedRole = String(teacher.role ?? '').trim();
+        const role: UserRole = storedRole === 'admin' || storedRole === 'teacher' || storedRole === 'student'
+          ? storedRole
+          : resolveAppRole(teacher.role, id, email);
         return {
           ...emptyStudentProfile(),
           id,
           name: String(teacher.name || '名前未設定'),
-          role: resolveAppRole(teacher.role, id, email),
+          role,
           classroom: String(teacher.branch_id || ''),
           password: '',
           email,
@@ -5182,7 +5180,7 @@ export default function Page() {
       setLoginError('独自IDとパスワードを入力してください。');
       return;
     }
-    if (!supabaseEnvConfigured() && !isBuiltinAdminLogin(inputIdClean, inputPassword)) {
+    if (!supabaseEnvConfigured()) {
       setLoginError('通信エラーが発生しました');
       return;
     }
@@ -5199,53 +5197,36 @@ export default function Page() {
       addNotification('success', message);
     };
 
-    if (supabaseEnvConfigured()) {
-      try {
-        const email = authEmailForLogin(inputIdClean);
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password: inputPassword });
-        if (error || !data.session) {
-          const detail = `${error?.name || ''} ${error?.message || ''}`.toLowerCase();
-          if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
-            setLoginError(detail.includes('fetch') || detail.includes('network') ? '通信エラーが発生しました' : 'IDまたはパスワードが違います');
-            return;
-          }
-        } else {
-          const profile = await readLoginDirectoryUser(inputIdClean, email);
-          if (!profile) {
-            await supabase.auth.signOut();
-            if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
-              setLoginError('IDまたはパスワードが違います');
-              return;
-            }
-          } else {
-            const role = resolveAppRole(profile.role, profile.id, email);
-            finishLogin({ ...profile, role, password: '', email }, `${profile.name} さん（${role}）としてログインいたしました。`);
-            return;
-          }
-        }
-      } catch {
-        if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
-          setLoginError('通信エラーが発生しました');
-          return;
-        }
+    const email = authEmailForLogin(inputIdClean);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password: inputPassword });
+      if (error || !data.session) {
+        setLoginError('IDまたはパスワードが違います');
+        return;
       }
-    }
-
-    if (isBuiltinAdminLogin(inputIdClean, inputPassword)) {
-      const signedIn: User = {
-        id: BUILTIN_ADMIN_ID,
-        name: '管理者',
-        role: 'admin',
-        classroom: '本川越校',
-        password: '',
-        email: BUILTIN_ADMIN_ID,
+      let profile: User | null = null;
+      try {
+        profile = await readLoginDirectoryUser(inputIdClean, email);
+      } catch (directoryError) {
+        console.error(directoryError);
+      }
+      const signedIn: User = profile ?? {
         ...emptyStudentProfile(),
+        id: inputIdClean,
+        name: inputIdClean,
+        role: 'teacher',
+        classroom: '',
+        password: '',
+        email,
       };
-      finishLogin(signedIn, '管理者としてログインいたしました。');
-      return;
+      const role = profile && (profile.role === 'admin' || profile.role === 'teacher' || profile.role === 'student')
+        ? profile.role
+        : signedIn.role;
+      finishLogin({ ...signedIn, role, password: '', email }, `${signedIn.name} さん（${role}）としてログインいたしました。`);
+    } catch (loginError) {
+      console.error(loginError);
+      setLoginError('IDまたはパスワードが違います');
     }
-
-    setLoginError('IDまたはパスワードが違います');
   };
 
   const handleLogout = async () => {
