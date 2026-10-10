@@ -3010,12 +3010,20 @@ function timetablePlacement(slot: ScheduleSlot): { start: number; end: number; t
   const meta = categoryMeta(slot.category);
   const title = slot.title.trim() || meta.label;
   return {
-    start: Math.min(Math.max(start, 0), 24),
-    end: Math.min(Math.max(end, 0), 24),
+    start: Math.min(Math.max(start, 0), 25),
+    end: Math.min(Math.max(end, 0), 25),
     title,
     color: meta.color,
     bgColor: meta.bgColor,
   };
+}
+
+const STAFF_TIMETABLE_START = 6;
+const STAFF_TIMETABLE_END = 25;
+const STAFF_TIMETABLE_HOURS = Array.from({ length: STAFF_TIMETABLE_END - STAFF_TIMETABLE_START }, (_, index) => index + STAFF_TIMETABLE_START);
+
+function staffTimetableTop(hour: number, hourHeight: number): number {
+  return (hour - STAFF_TIMETABLE_START) * hourHeight;
 }
 
 function formatTimetableHour(value: number): string {
@@ -3047,8 +3055,8 @@ function WeeklyTimetable({
           ))}
         </div>
         <div className="grid" style={{ gridTemplateColumns: '72px repeat(7, minmax(110px, 1fr))' }}>
-          <div>
-            {SCHEDULE_HOURS.map((hour) => (
+          <div className="relative" style={{ height: (STAFF_TIMETABLE_END - STAFF_TIMETABLE_START) * SCHEDULE_HOUR_HEIGHT }}>
+            {STAFF_TIMETABLE_HOURS.map((hour) => (
               <div
                 key={hour}
                 style={{ height: SCHEDULE_HOUR_HEIGHT }}
@@ -3057,23 +3065,27 @@ function WeeklyTimetable({
                 {formatScheduleHour(hour)}
               </div>
             ))}
+            <div className="absolute bottom-0 right-2 text-[10px] font-mono font-bold leading-none text-slate-400">25:00</div>
           </div>
           {WEEKDAYS.map((day) => (
-            <div key={day.id} className="relative border-l border-slate-200" style={{ height: SCHEDULE_HOURS.length * SCHEDULE_HOUR_HEIGHT }}>
-              {SCHEDULE_HOURS.map((hour) => (
+            <div key={day.id} className="relative border-l border-slate-200" style={{ height: (STAFF_TIMETABLE_END - STAFF_TIMETABLE_START) * SCHEDULE_HOUR_HEIGHT }}>
+              {STAFF_TIMETABLE_HOURS.map((hour) => (
                 <button
                   key={hour}
                   type="button"
                   aria-label={`${day.label}曜日 ${formatScheduleHour(hour)} にコマを追加`}
                   onClick={() => onAddAt(day.id, hour)}
                   className="absolute left-0 right-0 border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
-                  style={{ top: hour * SCHEDULE_HOUR_HEIGHT, height: SCHEDULE_HOUR_HEIGHT }}
+                  style={{ top: staffTimetableTop(hour, SCHEDULE_HOUR_HEIGHT), height: SCHEDULE_HOUR_HEIGHT }}
                 />
               ))}
               {slots.flatMap((slot) => {
                 if (slot.day !== day.id) return [];
                 const placed = timetablePlacement(slot);
                 if (!placed || placed.end <= placed.start) return [];
+                const drawStart = Math.max(placed.start, STAFF_TIMETABLE_START);
+                const drawEnd = Math.min(placed.end, STAFF_TIMETABLE_END);
+                if (drawEnd <= drawStart) return [];
                 const timeRange = `${formatTimetableHour(placed.start)}〜${formatTimetableHour(placed.end)}`;
                 return [(
                   <button
@@ -3083,8 +3095,8 @@ function WeeklyTimetable({
                     title={`${placed.title} ${timeRange}`}
                     className="absolute left-1 right-1 z-10 rounded-md border px-1 py-0.5 text-left overflow-hidden cursor-pointer"
                     style={{
-                      top: placed.start * SCHEDULE_HOUR_HEIGHT,
-                      height: Math.max((placed.end - placed.start) * SCHEDULE_HOUR_HEIGHT, 16),
+                      top: staffTimetableTop(drawStart, SCHEDULE_HOUR_HEIGHT),
+                      height: Math.max((drawEnd - drawStart) * SCHEDULE_HOUR_HEIGHT, 16),
                       backgroundColor: placed.bgColor,
                       borderColor: placed.color,
                       color: placed.color,
@@ -3117,25 +3129,29 @@ function DayTimetable({
   const hourHeight = 64;
   return (
     <div className="overflow-y-auto max-h-[68vh] border border-slate-200 rounded-2xl bg-white">
-      <div className="relative" style={{ height: SCHEDULE_HOURS.length * hourHeight }}>
-        {SCHEDULE_HOURS.map((hour) => (
+      <div className="relative" style={{ height: (STAFF_TIMETABLE_END - STAFF_TIMETABLE_START) * hourHeight }}>
+        {STAFF_TIMETABLE_HOURS.map((hour) => (
           <button
             key={hour}
             type="button"
             aria-label={`${formatScheduleHour(hour)} にコマを追加`}
             onClick={() => onAddAt(day, hour)}
             className="absolute left-0 right-0 border-b border-slate-100 text-left cursor-pointer"
-            style={{ top: hour * hourHeight, height: hourHeight }}
+            style={{ top: staffTimetableTop(hour, hourHeight), height: hourHeight }}
           >
             <span className="inline-block w-14 pt-1 pr-2 text-right text-[11px] font-mono font-bold text-slate-400">
               {formatScheduleHour(hour)}
             </span>
           </button>
         ))}
+        <div className="absolute bottom-0 left-0 w-14 pr-2 text-right text-[11px] font-mono font-bold leading-none text-slate-400">25:00</div>
         {slots.flatMap((slot) => {
           if (slot.day !== day) return [];
           const placed = timetablePlacement(slot);
           if (!placed || placed.end <= placed.start) return [];
+          const drawStart = Math.max(placed.start, STAFF_TIMETABLE_START);
+          const drawEnd = Math.min(placed.end, STAFF_TIMETABLE_END);
+          if (drawEnd <= drawStart) return [];
           const timeRange = `${formatTimetableHour(placed.start)}〜${formatTimetableHour(placed.end)}`;
           return [(
             <button
@@ -3145,8 +3161,8 @@ function DayTimetable({
               title={`${timeRange} ${placed.title}`}
               className="absolute left-14 right-2 z-10 rounded-xl border px-3 py-1 text-left overflow-hidden cursor-pointer"
               style={{
-                top: placed.start * hourHeight,
-                height: Math.max((placed.end - placed.start) * hourHeight, 28),
+                top: staffTimetableTop(drawStart, hourHeight),
+                height: Math.max((drawEnd - drawStart) * hourHeight, 28),
                 backgroundColor: placed.bgColor,
                 borderColor: placed.color,
                 color: placed.color,
