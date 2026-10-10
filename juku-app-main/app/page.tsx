@@ -7417,18 +7417,12 @@ function SkeletonLoader() {
           </nav>
 
         <div className="shrink-0 space-y-3 border-t border-slate-800 p-5">
-          {/* ログインユーザープロフ ＆ ログアウトボタン */}
+          {/* ログインユーザープロフ */}
           <div className="bg-slate-900 p-3 rounded-2xl border border-slate-800 flex items-center justify-between">
             <div className="truncate">
               <div className="font-extrabold text-xs text-white truncate">{currentUser.name}</div>
               <div className="text-[10px] font-mono text-sky-400 font-bold">ID: {currentUser.id} ({currentUser.role})</div>
             </div>
-            <button
-              onClick={handleLogout}
-              className="px-2.5 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white rounded-xl text-[10px] font-extrabold transition-all cursor-pointer"
-            >
-              切替
-            </button>
           </div>
 
           <button
@@ -10187,15 +10181,29 @@ function SkeletonLoader() {
     const staffRole: UserRole = role === 'teacher' && !isKnownAdmin ? 'teacher' : resolveAppRole(role, currentUser.id, currentUser.email);
     const staffUser = staffRole === 'student' ? { ...currentUser, role: 'admin' as const } : (currentUser.role === staffRole ? currentUser : { ...currentUser, role: staffRole });
     return (
-      <RoleScreenContext.Provider value={screens}>
-        <AdminView currentUser={staffUser} />
-      </RoleScreenContext.Provider>
+      <>
+        <div className="flex lg:hidden min-h-screen items-center justify-center bg-slate-100 p-6">
+          <p className="max-w-sm text-center text-base font-black leading-relaxed text-slate-800">教員・管理者機能はPCからアクセスしてください</p>
+        </div>
+        <div className="hidden lg:contents">
+          <RoleScreenContext.Provider value={screens}>
+            <AdminView currentUser={staffUser} />
+          </RoleScreenContext.Provider>
+        </div>
+      </>
     );
   }
 
   return (
-    <RoleScreenContext.Provider value={screens}>
-      <StudentView currentUser={currentUser} />
-    </RoleScreenContext.Provider>
+    <>
+      <div className="hidden lg:flex min-h-screen items-center justify-center bg-slate-100 p-6">
+        <p className="max-w-sm text-center text-base font-black leading-relaxed text-slate-800">生徒用機能はスマートフォンまたはタブレットからアクセスしてください</p>
+      </div>
+      <div className="contents lg:hidden">
+        <RoleScreenContext.Provider value={screens}>
+          <StudentView currentUser={currentUser} />
+        </RoleScreenContext.Provider>
+      </div>
+    </>
   );
 }
