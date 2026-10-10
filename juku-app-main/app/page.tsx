@@ -2080,26 +2080,65 @@ function unwrapScheduleJson(value: unknown): unknown {
   }
 }
 
+function weekdayFromSchedule(value: unknown): WeekdayId | null {
+  if (typeof value === 'number' && value >= 0 && value <= 7) {
+    if (value === 0 || value === 7) return 'sun';
+    return WEEKDAYS[value - 1]?.id || null;
+  }
+  const text = String(value ?? '').trim().toLowerCase();
+  const labels: Record<string, WeekdayId> = {
+    mon: 'mon', monday: 'mon', '月': 'mon', '1': 'mon',
+    tue: 'tue', tuesday: 'tue', '火': 'tue', '2': 'tue',
+    wed: 'wed', wednesday: 'wed', '水': 'wed', '3': 'wed',
+    thu: 'thu', thursday: 'thu', '木': 'thu', '4': 'thu',
+    fri: 'fri', friday: 'fri', '金': 'fri', '5': 'fri',
+    sat: 'sat', saturday: 'sat', '土': 'sat', '6': 'sat',
+    sun: 'sun', sunday: 'sun', '日': 'sun', '0': 'sun', '7': 'sun',
+  };
+  return labels[text] || null;
+}
+
+function clockFromSchedule(clock: unknown, hour: unknown, minute: unknown): { hour: number; minute: number } | null {
+  const match = String(clock ?? '').trim().match(/^(\d{1,2}):(\d{2})/);
+  if (match) return { hour: Number(match[1]), minute: Number(match[2]) };
+  if (typeof hour === 'number' && Number.isFinite(hour)) {
+    const safeMinute = typeof minute === 'number' && Number.isFinite(minute) ? minute : 0;
+    return { hour, minute: safeMinute };
+  }
+  return null;
+}
+
 function parseScheduleSlots(value: unknown): ScheduleSlot[] {
-  const source = unwrapScheduleJson(value);
-  if (!Array.isArray(source)) return [];
+  const unwrapped = unwrapScheduleJson(value);
+  const source = Array.isArray(unwrapped)
+    ? unwrapped
+    : unwrapped && typeof unwrapped === 'object' && Array.isArray((unwrapped as { slots?: unknown }).slots)
+      ? (unwrapped as { slots: unknown[] }).slots
+      : [];
   return source.flatMap((slot) => {
-    if (!slot || typeof slot !== 'object') return [];
-    const row = slot as Partial<ScheduleSlot> & { type?: unknown };
-    if (row.day !== 'mon' && row.day !== 'tue' && row.day !== 'wed' && row.day !== 'thu' && row.day !== 'fri' && row.day !== 'sat' && row.day !== 'sun') return [];
-    if (typeof row.startHour !== 'number' || typeof row.endHour !== 'number') return [];
-    const category = scheduleCategoryFromInput(row.category) || scheduleCategoryFromInput(row.type);
-    if (!category) return [];
-    return [{
-      id: typeof row.id === 'string' && row.id ? row.id : `slot_${row.day}_${row.startHour}`,
-      day: row.day,
-      startHour: row.startHour,
-      endHour: row.endHour,
-      startMinute: typeof row.startMinute === 'number' ? row.startMinute : 0,
-      endMinute: typeof row.endMinute === 'number' ? row.endMinute : 0,
-      category,
-      title: typeof row.title === 'string' ? row.title : '',
-    }];
+    try {
+      if (!slot || typeof slot !== 'object') return [];
+      const row = slot as Partial<ScheduleSlot> & { type?: unknown; day_of_week?: unknown; start_time?: unknown; end_time?: unknown };
+      const day = weekdayFromSchedule(row.day) || weekdayFromSchedule(row.day_of_week);
+      const start = clockFromSchedule(row.start_time, row.startHour, row.startMinute);
+      const end = clockFromSchedule(row.end_time, row.endHour, row.endMinute);
+      if (!day || !start || !end || end.hour * 60 + end.minute <= start.hour * 60 + start.minute) return [];
+      const category = scheduleCategoryFromInput(row.category) || scheduleCategoryFromInput(row.type);
+      if (!category) return [];
+      return [{
+        id: typeof row.id === 'string' && row.id ? row.id : `slot_${day}_${start.hour}_${start.minute}`,
+        day,
+        startHour: start.hour,
+        endHour: end.hour,
+        startMinute: start.minute,
+        endMinute: end.minute,
+        category,
+        title: typeof row.title === 'string' ? row.title : '',
+      }];
+    } catch (error) {
+      console.error(error);
+      return [];
+    }
   });
 }
 
@@ -2125,21 +2164,66 @@ const GLOBAL_TEMPLATE_NAME: Record<string, StaffScheduleTemplateId> = {
   '高校＋部活': 'high_school_club',
 };
 
+function slotsFromTemplateRows(rows: unknown[]): Record<StaffScheduleTemplateId, ScheduleSlot[]> {
+  const next: Record<StaffScheduleTemplateId, ScheduleSlot[]> = { plain: [], high_school: [], high_school_club: [] };
+  rows.forEach((item) => {
+    try {
+      const row = item as { template_name?: unknown; name?: unknown; description?: unknown; schedule_data?: unknown; slots?: unknown };
+      const label = String(row?.template_name || row?.name || '');
+      const key = GLOBAL_TEMPLATE_NAME[label] || GLOBAL_TEMPLATE_NAME[String(row?.description || '')];
+      if (!key) return;
+      const parsed = parseScheduleSlots(row.schedule_data ?? row.slots);
+      if (parsed.length > 0 || next[key].length === 0) next[key] = parsed;
+    } catch (error) {
+      console.error(error);
+    }
+  });
+  return next;
+}
+
+function preferredStaffTemplate(templates: Record<StaffScheduleTemplateId, ScheduleSlot[]>): StaffScheduleTemplateId {
+  if ((templates.high_school || []).length > 0) return 'high_school';
+  if ((templates.high_school_club || []).length > 0) return 'high_school_club';
+  if ((templates.plain || []).length > 0) return 'plain';
+  return 'high_school';
+}
+
+async function readScheduleTemplateRows(
+  supabase: { from: (table: string) => any },
+  table: string,
+): Promise<unknown[] | null> {
+  const selected = await supabase.from(table).select('template_name, description, schedule_data');
+  if (!selected.error) return selected.data || [];
+  console.error(selected.error);
+  const all = await supabase.from(table).select('*');
+  if (all.error) {
+    console.error(all.error);
+    return null;
+  }
+  return all.data || [];
+}
+
 async function fetchGlobalScheduleTemplates(
   supabase: { from: (table: string) => any },
 ): Promise<Record<StaffScheduleTemplateId, ScheduleSlot[]> | null> {
-  const result = await supabase.from('global_schedule_templates').select('template_name, description, schedule_data');
-  if (result.error) {
-    alertScheduleError(result.error);
+  try {
+    const primary = await readScheduleTemplateRows(supabase, 'global_schedule_templates');
+    if (!primary) {
+      alertScheduleError({ message: '全体ひな形の取得に失敗しました' });
+      return null;
+    }
+    let next = slotsFromTemplateRows(primary);
+    const hasSlots = Object.values(next).some((slots) => slots.length > 0);
+    if (!hasSlots) {
+      const fallback = await readScheduleTemplateRows(supabase, 'schedule_templates');
+      if (fallback && fallback.length > 0) next = slotsFromTemplateRows(fallback);
+    }
+    return next;
+  } catch (error) {
+    console.error(error);
+    alertScheduleError(error as { message?: string });
     return null;
   }
-  const next: Record<StaffScheduleTemplateId, ScheduleSlot[]> = { plain: [], high_school: [], high_school_club: [] };
-  (result.data || []).forEach((row: { template_name?: unknown; description?: unknown; schedule_data?: unknown }) => {
-    const key = GLOBAL_TEMPLATE_NAME[String(row?.template_name || '')] || GLOBAL_TEMPLATE_NAME[String(row?.description || '')];
-    if (!key) return;
-    next[key] = parseScheduleSlots(row.schedule_data);
-  });
-  return next;
 }
 
 async function saveGlobalScheduleTemplate(
@@ -4500,6 +4584,8 @@ export default function Page() {
     }
   }, [currentUser, newUserForm.role]);
 
+  const staffScheduleBootUser = useRef('');
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -4513,8 +4599,10 @@ export default function Page() {
         if (staff) {
           setMySchedules([]);
           setSelectedMyScheduleId(null);
-          setSelectedStaffTemplateId('plain');
-          setScheduleSlots(cloneScheduleSlots(templates.plain));
+          if (staffScheduleBootUser.current !== currentUser.id) {
+            staffScheduleBootUser.current = currentUser.id;
+            setSelectedStaffTemplateId(preferredStaffTemplate(templates));
+          }
           return;
         }
         const mine = await fetchStudentScheduleTemplates(supabase, currentUser.id);
@@ -5131,6 +5219,11 @@ export default function Page() {
     setMySchedules(items);
     void saveStudentScheduleTemplates(supabase, userId, items);
   };
+
+  useEffect(() => {
+    if (!currentUser || !isStaffRole(currentUser.role, currentUser.id, currentUser.email)) return;
+    setScheduleSlots(cloneScheduleSlots(staffTemplates[selectedStaffTemplateId] || []));
+  }, [currentUser?.id, currentUser?.role, currentUser?.email, selectedStaffTemplateId, staffTemplates]);
 
   const handleSelectStaffTemplate = (templateId: StaffScheduleTemplateId) => {
     setSelectedStaffTemplateId(templateId);
