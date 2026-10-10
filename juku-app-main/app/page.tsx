@@ -2164,15 +2164,50 @@ const GLOBAL_TEMPLATE_NAME: Record<string, StaffScheduleTemplateId> = {
   '高校＋部活': 'high_school_club',
 };
 
+function parseGlobalScheduleData(value: unknown): ScheduleSlot[] {
+  const source = unwrapScheduleJson(value);
+  if (!Array.isArray(source)) return [];
+  return source.flatMap((slot) => {
+    if (!slot || typeof slot !== 'object') return [];
+    const row = slot as {
+      id?: unknown;
+      day?: unknown;
+      startHour?: unknown;
+      startMinute?: unknown;
+      endHour?: unknown;
+      endMinute?: unknown;
+      title?: unknown;
+      category?: unknown;
+    };
+    const day = row.day;
+    if (day !== 'mon' && day !== 'tue' && day !== 'wed' && day !== 'thu' && day !== 'fri' && day !== 'sat' && day !== 'sun') return [];
+    if (typeof row.startHour !== 'number' || typeof row.endHour !== 'number') return [];
+    const startMinute = typeof row.startMinute === 'number' ? row.startMinute : 0;
+    const endMinute = typeof row.endMinute === 'number' ? row.endMinute : 0;
+    if (row.endHour * 60 + endMinute <= row.startHour * 60 + startMinute) return [];
+    const category = scheduleCategoryFromInput(row.category);
+    if (!category) return [];
+    return [{
+      id: typeof row.id === 'string' && row.id ? row.id : `slot_${day}_${row.startHour}_${startMinute}`,
+      day,
+      startHour: row.startHour,
+      startMinute,
+      endHour: row.endHour,
+      endMinute,
+      category,
+      title: typeof row.title === 'string' ? row.title : '',
+    }];
+  });
+}
+
 function slotsFromTemplateRows(rows: unknown[]): Record<StaffScheduleTemplateId, ScheduleSlot[]> {
   const next: Record<StaffScheduleTemplateId, ScheduleSlot[]> = { plain: [], high_school: [], high_school_club: [] };
   rows.forEach((item) => {
     try {
-      const row = item as { template_name?: unknown; name?: unknown; description?: unknown; schedule_data?: unknown; slots?: unknown };
-      const label = String(row?.template_name || row?.name || '');
-      const key = GLOBAL_TEMPLATE_NAME[label] || GLOBAL_TEMPLATE_NAME[String(row?.description || '')];
+      const row = item as { template_name?: unknown; description?: unknown; schedule_data?: unknown };
+      const key = GLOBAL_TEMPLATE_NAME[String(row?.template_name || '')] || GLOBAL_TEMPLATE_NAME[String(row?.description || '')];
       if (!key) return;
-      const parsed = parseScheduleSlots(row.schedule_data ?? row.slots);
+      const parsed = parseGlobalScheduleData(row.schedule_data);
       if (parsed.length > 0 || next[key].length === 0) next[key] = parsed;
     } catch (error) {
       console.error(error);
