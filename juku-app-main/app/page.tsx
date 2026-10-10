@@ -2988,6 +2988,43 @@ function slotsForHinaBase(
   return stored[templateId] || [];
 }
 
+function timetableHourValue(hour: unknown, minute: unknown): number | null {
+  if (typeof hour === 'string') {
+    const text = hour.trim();
+    const clock = text.match(/^(\d{1,2}):(\d{2})/);
+    if (clock) return Number(clock[1]) + Number(clock[2]) / 60;
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (typeof hour !== 'number' || !Number.isFinite(hour)) return null;
+  if (!Number.isInteger(hour)) return hour;
+  const extra = typeof minute === 'number' && Number.isFinite(minute) ? minute : 0;
+  return hour + extra / 60;
+}
+
+function timetablePlacement(slot: ScheduleSlot): { start: number; end: number; title: string; color: string; bgColor: string } | null {
+  if (slot.day !== 'mon' && slot.day !== 'tue' && slot.day !== 'wed' && slot.day !== 'thu' && slot.day !== 'fri' && slot.day !== 'sat' && slot.day !== 'sun') return null;
+  const start = timetableHourValue(slot.startHour, slot.startMinute);
+  const end = timetableHourValue(slot.endHour, slot.endMinute);
+  if (start == null || end == null || end <= start) return null;
+  const meta = categoryMeta(slot.category);
+  const title = slot.title.trim() || meta.label;
+  return {
+    start: Math.min(Math.max(start, 0), 24),
+    end: Math.min(Math.max(end, 0), 24),
+    title,
+    color: meta.color,
+    bgColor: meta.bgColor,
+  };
+}
+
+function formatTimetableHour(value: number): string {
+  const total = Math.round(value * 60);
+  const hour = Math.floor(total / 60);
+  const minute = total % 60;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
 function WeeklyTimetable({
   slots,
   onAddAt,
@@ -2997,6 +3034,7 @@ function WeeklyTimetable({
   onAddAt: (day: WeekdayId, startHour: number) => void;
   onEdit: (slot: ScheduleSlot) => void;
 }) {
+  console.log("Rendered Slots:", slots);
   return (
     <div className="overflow-auto max-h-[72vh] border border-slate-200 rounded-2xl">
       <div className="min-w-[920px]">
@@ -3032,30 +3070,30 @@ function WeeklyTimetable({
                   style={{ top: hour * SCHEDULE_HOUR_HEIGHT, height: SCHEDULE_HOUR_HEIGHT }}
                 />
               ))}
-              {slots.filter((slot) => slot.day === day.id).map((slot) => {
-                const meta = categoryMeta(slot.category);
-                const range = slotRangeMinutes(slot);
-                const heading = slotDisplayName(slot);
-                const timeRange = formatScheduleRange(slot);
-                return (
+              {slots.flatMap((slot) => {
+                if (slot.day !== day.id) return [];
+                const placed = timetablePlacement(slot);
+                if (!placed || placed.end <= placed.start) return [];
+                const timeRange = `${formatTimetableHour(placed.start)}〜${formatTimetableHour(placed.end)}`;
+                return [(
                   <button
                     key={slot.id}
                     type="button"
                     onClick={() => onEdit(slot)}
-                    title={`${heading} ${timeRange}`}
+                    title={`${placed.title} ${timeRange}`}
                     className="absolute left-1 right-1 z-10 rounded-md border px-1 py-0.5 text-left overflow-hidden cursor-pointer"
                     style={{
-                      top: (range.start / 60) * SCHEDULE_HOUR_HEIGHT + 1,
-                      height: Math.max(((range.end - range.start) / 60) * SCHEDULE_HOUR_HEIGHT - 2, 16),
-                      backgroundColor: meta.bgColor,
-                      borderColor: meta.color,
-                      color: meta.color,
+                      top: placed.start * SCHEDULE_HOUR_HEIGHT,
+                      height: Math.max((placed.end - placed.start) * SCHEDULE_HOUR_HEIGHT, 16),
+                      backgroundColor: placed.bgColor,
+                      borderColor: placed.color,
+                      color: placed.color,
                     }}
                   >
-                    <div className="text-[10px] font-black truncate">{timeRange} {heading}</div>
-                    <div className="text-[10px] font-mono text-slate-500 truncate">{Math.max(range.end - range.start, 0)}分</div>
+                    <div className="text-[10px] font-black truncate">{timeRange} {placed.title}</div>
+                    <div className="text-[10px] font-mono text-slate-500 truncate">{Math.round((placed.end - placed.start) * 60)}分</div>
                   </button>
-                );
+                )];
               })}
             </div>
           ))}
@@ -3094,30 +3132,30 @@ function DayTimetable({
             </span>
           </button>
         ))}
-        {slots.filter((slot) => slot.day === day).map((slot) => {
-          const meta = categoryMeta(slot.category);
-          const range = slotRangeMinutes(slot);
-          const heading = slotDisplayName(slot);
-          const timeRange = formatScheduleRange(slot);
-          return (
+        {slots.flatMap((slot) => {
+          if (slot.day !== day) return [];
+          const placed = timetablePlacement(slot);
+          if (!placed || placed.end <= placed.start) return [];
+          const timeRange = `${formatTimetableHour(placed.start)}〜${formatTimetableHour(placed.end)}`;
+          return [(
             <button
               key={slot.id}
               type="button"
               onClick={() => onEdit(slot)}
-              title={`${timeRange} ${heading}`}
+              title={`${timeRange} ${placed.title}`}
               className="absolute left-14 right-2 z-10 rounded-xl border px-3 py-1 text-left overflow-hidden cursor-pointer"
               style={{
-                top: (range.start / 60) * hourHeight + 2,
-                height: Math.max(((range.end - range.start) / 60) * hourHeight - 4, 28),
-                backgroundColor: meta.bgColor,
-                borderColor: meta.color,
-                color: meta.color,
+                top: placed.start * hourHeight,
+                height: Math.max((placed.end - placed.start) * hourHeight, 28),
+                backgroundColor: placed.bgColor,
+                borderColor: placed.color,
+                color: placed.color,
               }}
             >
-              <div className="text-sm font-black truncate">{timeRange} {heading}</div>
-              <div className="text-[11px] font-mono text-slate-500 truncate">{Math.max(range.end - range.start, 0)}分</div>
+              <div className="text-sm font-black truncate">{timeRange} {placed.title}</div>
+              <div className="text-[11px] font-mono text-slate-500 truncate">{Math.round((placed.end - placed.start) * 60)}分</div>
             </button>
-          );
+          )];
         })}
       </div>
     </div>
