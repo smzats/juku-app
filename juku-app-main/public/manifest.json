@@ -4,6 +4,7 @@
   "description": "中高生向け・高密度学習スケジューラー＆ログ管理",
   "start_url": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#F8FAFC",
   "theme_color": "#0284C7",
   "icons": [

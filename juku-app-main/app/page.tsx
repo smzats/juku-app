@@ -10079,21 +10079,22 @@ function SkeletonLoader() {
       )}
 
       {editingLog && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4 z-[70]">
-          <div className="bg-white w-full max-w-lg rounded-3xl p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4 pb-[max(2rem,env(safe-area-inset-bottom))] z-[70]">
+          <div className="bg-white w-full max-w-lg rounded-3xl p-5 pb-[max(2rem,env(safe-area-inset-bottom))] shadow-2xl space-y-4 max-h-[90dvh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <h4 className="font-black text-sm">記録を修正</h4>
               <button type="button" onClick={() => setEditingLog(null)} className="w-8 h-8 rounded-full bg-slate-100 font-bold cursor-pointer">✕</button>
             </div>
             <SubjectTextPicker
-              subject={editSubject}
+              fromConfig
+              subject={subjectCodeFromInput(editSubject) || (Object.keys(SUBJECT_CODE_TONE) as SubjectCode[]).find((code) => SUBJECT_CODE_TONE[code] === editSubject) || ''}
               materialId={editMaterialId}
               materials={materials}
               myMaterials={myMaterials}
               favoriteIds={favoriteMaterialIds}
               onSubject={(subject) => {
-                if (!isSubjectType(subject)) return;
-                setEditSubject(subject);
+                if (!isSubjectCode(subject) || !isSubjectType(SUBJECT_CODE_TONE[subject])) return;
+                setEditSubject(SUBJECT_CODE_TONE[subject]);
                 setEditMaterialId('');
               }}
               onMaterial={setEditMaterialId}

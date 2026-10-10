@@ -3,6 +3,9 @@ import type { Metadata, Viewport } from 'next';
 
 export const viewport: Viewport = {
   themeColor: '#0284C7',
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export const metadata: Metadata = {
@@ -18,6 +21,9 @@ export const metadata: Metadata = {
     capable: true,
     title: 'Y Log',
     statusBarStyle: 'default',
+  },
+  other: {
+    'screen-orientation': 'portrait',
   },
 };
 
