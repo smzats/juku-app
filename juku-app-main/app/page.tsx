@@ -41,6 +41,42 @@ async function loadSupabaseSession(client: { auth: { getSession: () => Promise<u
   }
 }
 
+function authEmailForLogin(id: string, email?: string): string {
+  const candidate = String(email || id || '').trim().toLowerCase();
+  const matched = candidate.match(/^([^@\s]+)@([^@\s]+)$/);
+  const local = (matched ? matched[1] : candidate).replace(/[^a-z0-9._+-]/g, '') || 'user';
+  const domain = matched?.[2] || '';
+  const domainOk = domain.includes('.') && !domain.endsWith('.stlog') && (domain.split('.').pop() || '').length >= 2;
+  return domainOk ? `${local}@${domain}` : `${local}@example.com`;
+}
+
+async function ensureSupabaseAuthSession(
+  client: {
+    auth: {
+      signInWithPassword: (credentials: { email: string; password: string }) => Promise<{ data: { session: unknown }; error: { message?: string } | null }>;
+      signUp: (credentials: { email: string; password: string }) => Promise<{ data: { session: unknown }; error: { message?: string } | null }>;
+    };
+  },
+  email: string,
+  password: string,
+) {
+  const address = email.trim();
+  if (!address.includes('@') || !password || !supabaseEnvConfigured()) return;
+  try {
+    const signed = await client.auth.signInWithPassword({ email: address, password });
+    if (!signed.error && signed.data.session) return;
+    const detail = String(signed.error?.message || '').toLowerCase();
+    if (detail.includes('fetch') || detail.includes('network') || detail.includes('failed to fetch')) return;
+    if (detail.includes('not confirmed') || detail.includes('already')) return;
+    const created = await client.auth.signUp({ email: address, password });
+    if (created.error) console.error(created.error);
+    if (created.data.session) return;
+    if (!created.error) await client.auth.signInWithPassword({ email: address, password });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 // =============================================================================
 // プロの仕事とは「簡単で、簡潔で、丁寧で、見やすくて、チェックのしやすい、
 // 一切のミスのない、絶対に誤解を生じないコードで、誰もが感動して涙するような実装を実現すること」
@@ -5141,6 +5177,7 @@ export default function Page() {
         ...emptyStudentProfile(),
       };
       rememberUserRole(BUILTIN_ADMIN_ID, 'admin');
+      await ensureSupabaseAuthSession(supabase, authEmailForLogin(BUILTIN_ADMIN_ID, BUILTIN_ADMIN_ID), inputPassword);
       rememberSignedIn(signedIn);
       setActiveTab('dashboard');
       setStudyComposer(null);
@@ -5155,7 +5192,7 @@ export default function Page() {
     if (supabaseEnvConfigured() && inputIdClean.includes('@')) {
       try {
         const { data, error } = await supabase.auth.signInWithPassword({
-          email: inputIdClean,
+          email: authEmailForLogin(inputIdClean, inputIdClean),
           password: inputPassword,
         });
         if (error) {
@@ -5166,7 +5203,9 @@ export default function Page() {
           }
         } else if (data.session?.user?.email) {
           const email = data.session.user.email;
-          const authMatch = users.find((user) => user.id.toLowerCase() === email.toLowerCase() || (user.email || '').toLowerCase() === email.toLowerCase());
+          const typedKey = inputIdClean.toLowerCase();
+          const sessionEmail = email.toLowerCase();
+          const authMatch = users.find((user) => user.id.toLowerCase() === typedKey || (user.email || '').toLowerCase() === typedKey || user.id.toLowerCase() === sessionEmail || (user.email || '').toLowerCase() === sessionEmail);
           if (authMatch) {
             const role = resolveAppRole(authMatch.role, authMatch.id, authMatch.email || email);
             const signedIn = { ...authMatch, role, password: '' };
@@ -5182,6 +5221,7 @@ export default function Page() {
             return;
           }
           setLoginError('IDまたはパスワードが違います');
+          await supabase.auth.signOut();
           return;
         }
       } catch {
@@ -5209,6 +5249,7 @@ export default function Page() {
         setUsers((prev) => prev.map((user) => (user.id === matched.id ? signedIn : user)));
         void saveUserWithProfile(signedIn);
       }
+      await ensureSupabaseAuthSession(supabase, authEmailForLogin(matched.id, matched.email), inputPassword);
       rememberSignedIn(signedIn);
       setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
       setStudyComposer(null);
