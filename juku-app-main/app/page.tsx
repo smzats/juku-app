@@ -41,40 +41,10 @@ async function loadSupabaseSession(client: { auth: { getSession: () => Promise<u
   }
 }
 
-function authEmailForLogin(id: string, email?: string): string {
-  const candidate = String(email || id || '').trim().toLowerCase();
-  const matched = candidate.match(/^([^@\s]+)@([^@\s]+)$/);
-  const local = (matched ? matched[1] : candidate).replace(/[^a-z0-9._+-]/g, '') || 'user';
-  const domain = matched?.[2] || '';
-  const domainOk = domain.includes('.') && !domain.endsWith('.stlog') && (domain.split('.').pop() || '').length >= 2;
-  return domainOk ? `${local}@${domain}` : `${local}@example.com`;
-}
-
-async function ensureSupabaseAuthSession(
-  client: {
-    auth: {
-      signInWithPassword: (credentials: { email: string; password: string }) => Promise<{ data: { session: unknown }; error: { message?: string } | null }>;
-      signUp: (credentials: { email: string; password: string }) => Promise<{ data: { session: unknown }; error: { message?: string } | null }>;
-    };
-  },
-  email: string,
-  password: string,
-) {
-  const address = email.trim();
-  if (!address.includes('@') || !password || !supabaseEnvConfigured()) return;
-  try {
-    const signed = await client.auth.signInWithPassword({ email: address, password });
-    if (!signed.error && signed.data.session) return;
-    const detail = String(signed.error?.message || '').toLowerCase();
-    if (detail.includes('fetch') || detail.includes('network') || detail.includes('failed to fetch')) return;
-    if (detail.includes('not confirmed') || detail.includes('already')) return;
-    const created = await client.auth.signUp({ email: address, password });
-    if (created.error) console.error(created.error);
-    if (created.data.session) return;
-    if (!created.error) await client.auth.signInWithPassword({ email: address, password });
-  } catch (error) {
-    console.error(error);
-  }
+function authEmailForLogin(id: string): string {
+  const candidate = String(id || '').trim();
+  if (candidate.includes('@')) return candidate;
+  return `${candidate}@juku.app`;
 }
 
 // =============================================================================
@@ -5166,105 +5136,79 @@ export default function Page() {
       return;
     }
 
+    const finishLogin = (signedIn: User, message: string) => {
+      rememberUserRole(signedIn.id, signedIn.role);
+      rememberSignedIn({ ...signedIn, password: '' });
+      setActiveTab(signedIn.role === 'student' ? 'schedule_planner' : 'dashboard');
+      setStudyComposer(null);
+      setEditingLog(null);
+      setOpenHinaSlot(null);
+      setWeekPickerStart(null);
+      setCrownBurst(null);
+      addNotification('success', message);
+    };
+
+    if (supabaseEnvConfigured()) {
+      try {
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: inputIdClean, password: inputPassword }),
+        });
+        const payload = await response.json().catch(() => null) as {
+          error?: string;
+          session?: { access_token?: string; refresh_token?: string };
+          user?: Partial<User>;
+        } | null;
+        if (response.ok && payload?.session?.access_token && payload.session.refresh_token && payload.user?.id) {
+          const { error } = await supabase.auth.setSession({
+            access_token: payload.session.access_token,
+            refresh_token: payload.session.refresh_token,
+          });
+          if (error) {
+            setLoginError('通信エラーが発生しました');
+            return;
+          }
+          const role = resolveAppRole(payload.user.role, payload.user.id, payload.user.email || authEmailForLogin(inputIdClean));
+          const signedIn: User = {
+            ...emptyStudentProfile(),
+            ...payload.user,
+            id: payload.user.id,
+            name: payload.user.name || '名前未設定',
+            role,
+            classroom: payload.user.classroom || '本川越校',
+            password: '',
+            email: payload.user.email || authEmailForLogin(inputIdClean),
+          };
+          finishLogin(signedIn, `${signedIn.name} さん（${role}）としてログインいたしました。`);
+          return;
+        }
+        if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
+          setLoginError(response.status === 401 ? 'IDまたはパスワードが違います' : '通信エラーが発生しました');
+          return;
+        }
+      } catch {
+        if (!isBuiltinAdminLogin(inputIdClean, inputPassword)) {
+          setLoginError('通信エラーが発生しました');
+          return;
+        }
+      }
+    }
+
     if (isBuiltinAdminLogin(inputIdClean, inputPassword)) {
       const signedIn: User = {
         id: BUILTIN_ADMIN_ID,
         name: '管理者',
         role: 'admin',
         classroom: '本川越校',
-        password: BUILTIN_ADMIN_PASSWORD,
+        password: '',
         email: BUILTIN_ADMIN_ID,
         ...emptyStudentProfile(),
       };
-      rememberUserRole(BUILTIN_ADMIN_ID, 'admin');
-      await ensureSupabaseAuthSession(supabase, authEmailForLogin(BUILTIN_ADMIN_ID, BUILTIN_ADMIN_ID), inputPassword);
-      rememberSignedIn(signedIn);
-      setActiveTab('dashboard');
-      setStudyComposer(null);
-      setEditingLog(null);
-      setOpenHinaSlot(null);
-      setWeekPickerStart(null);
-      setCrownBurst(null);
-      addNotification('success', '管理者としてログインいたしました。');
+      finishLogin(signedIn, '管理者としてログインいたしました。');
       return;
     }
 
-    if (supabaseEnvConfigured() && inputIdClean.includes('@')) {
-      try {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: authEmailForLogin(inputIdClean, inputIdClean),
-          password: inputPassword,
-        });
-        if (error) {
-          const detail = `${error.name || ''} ${error.message || ''}`.toLowerCase();
-          if (detail.includes('fetch') || detail.includes('network') || detail.includes('failed to fetch')) {
-            setLoginError('通信エラーが発生しました');
-            return;
-          }
-        } else if (data.session?.user?.email) {
-          const email = data.session.user.email;
-          const typedKey = inputIdClean.toLowerCase();
-          const sessionEmail = email.toLowerCase();
-          const authMatch = users.find((user) => user.id.toLowerCase() === typedKey || (user.email || '').toLowerCase() === typedKey || user.id.toLowerCase() === sessionEmail || (user.email || '').toLowerCase() === sessionEmail);
-          if (authMatch) {
-            const role = resolveAppRole(authMatch.role, authMatch.id, authMatch.email || email);
-            const signedIn = { ...authMatch, role, password: '' };
-            rememberUserRole(authMatch.id, role);
-            rememberSignedIn(signedIn);
-            setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
-            setStudyComposer(null);
-            setEditingLog(null);
-            setOpenHinaSlot(null);
-            setWeekPickerStart(null);
-            setCrownBurst(null);
-            addNotification('success', `${authMatch.name} さん（${role}）としてログインいたしました。`);
-            return;
-          }
-          setLoginError('IDまたはパスワードが違います');
-          await supabase.auth.signOut();
-          return;
-        }
-      } catch {
-        setLoginError('通信エラーが発生しました');
-        return;
-      }
-    }
-
-    const inputKey = inputIdClean.toLowerCase();
-    const matched = users.find((u) => u.id.toLowerCase() === inputKey || (u.email || '').toLowerCase() === inputKey);
-    if (matched) {
-      if (!acceptsLoginPassword(matched.id, matched.password || '', inputPassword)) {
-        setLoginError('IDまたはパスワードが違います');
-        return;
-      }
-      const role = resolveAppRole(matched.role, matched.id, matched.email || inputIdClean);
-      const signedIn = {
-        ...matched,
-        role,
-        password: matched.password?.trim() ? matched.password : inputPassword,
-      };
-      rememberUserRole(matched.id, role);
-      if (!matched.password?.trim()) {
-        saveLocalPassword(matched.id, inputPassword);
-        setUsers((prev) => prev.map((user) => (user.id === matched.id ? signedIn : user)));
-        void saveUserWithProfile(signedIn);
-      }
-      await ensureSupabaseAuthSession(supabase, authEmailForLogin(matched.id, matched.email), inputPassword);
-      rememberSignedIn(signedIn);
-      setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
-      setStudyComposer(null);
-      setEditingLog(null);
-      setOpenHinaSlot(null);
-      setWeekPickerStart(null);
-      setCrownBurst(null);
-      addNotification('success', `${matched.name} さん（${role}）としてログインいたしました。`);
-      return;
-    }
-
-    if (!usersReady) {
-      setLoginError(connectionError || '通信エラーが発生しました');
-      return;
-    }
     setLoginError('IDまたはパスワードが違います');
   };
 
@@ -5290,7 +5234,7 @@ export default function Page() {
       setLoginInputId('');
       setLoginPassword('');
       setLoginPasswordVisible(false);
-      window.location.assign('/');
+      window.location.assign('/login');
     }
   };
 
