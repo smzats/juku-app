@@ -55,7 +55,7 @@ async function findDirectoryUser(client: SupabaseClient, id: string) {
       return {
         id: textCell(teacher.id),
         name: textCell(teacher.name) || '名前未設定',
-        role: storedRole === 'admin' || storedRole === 'teacher' || storedRole === 'student' ? storedRole : (storedRole || 'teacher'),
+        role: storedRole === 'admin' || storedRole === 'teacher' || storedRole === 'student' ? storedRole : 'student',
         classroom: textCell(teacher.branch_id),
       };
     }
@@ -103,6 +103,6 @@ export async function POST(request: Request) {
     },
     user: directoryUser
       ? { ...directoryUser, email }
-      : { id, name: id, role: 'teacher', classroom: '', email },
+      : { id, name: id, role: 'student', classroom: '', email },
   });
 }

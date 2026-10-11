@@ -663,13 +663,13 @@ function readAppSession(): User | null {
     const raw = window.localStorage.getItem(APP_SESSION_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<User>;
-    if (!parsed?.id || !parsed.name || (parsed.role !== 'admin' && parsed.role !== 'teacher' && parsed.role !== 'student')) return null;
+    if (!parsed?.id || !parsed.name) return null;
     return {
       ...emptyStudentProfile(),
       ...parsed,
       id: String(parsed.id),
       name: String(parsed.name),
-      role: parsed.role,
+      role: 'student',
       classroom: parsed.classroom || '本川越校',
       password: '',
     };
@@ -876,12 +876,6 @@ function acceptsLoginPassword(userId: string, storedPassword: string, inputPassw
 
 const USER_ROLE_CACHE_KEY = 'juku_user_roles';
 
-function readCachedUserRole(userId: string): UserRole | null {
-  const cached = readLocalJson<Record<string, string>>(USER_ROLE_CACHE_KEY, {})[userId];
-  if (cached === 'admin' || cached === 'teacher' || cached === 'student') return cached;
-  return null;
-}
-
 const KNOWN_ADMIN_LOGIN_IDS = ['admin@y.stlog'];
 
 function normalizeLoginIdentity(value: unknown): string {
@@ -892,25 +886,13 @@ function isKnownAdminIdentity(...values: unknown[]): boolean {
   return values.some((value) => KNOWN_ADMIN_LOGIN_IDS.includes(normalizeLoginIdentity(value)));
 }
 
-function rememberUserRole(userId: string, role: UserRole) {
-  const id = userId.trim();
-  if (!id) return;
-  const stored: UserRole = isKnownAdminIdentity(id) ? 'admin' : role;
-  const all = readLocalJson<Record<string, string>>(USER_ROLE_CACHE_KEY, {});
-  if (all[id] === stored) return;
-  all[id] = stored;
-  writeLocalJson(USER_ROLE_CACHE_KEY, all);
-}
-
 function resolveAppRole(value: unknown, userId?: string, email?: string): UserRole {
   if (isKnownAdminIdentity(userId, email)) return 'admin';
   const raw = String(value ?? '').replace(/[\s\u3000]/g, '').toLowerCase();
   if (raw === 'admin' || raw === 'administrator' || raw.includes('admin') || raw === '管理者' || raw === '管理') return 'admin';
   if (raw === 'teacher' || raw === 'staff' || raw.includes('teacher') || raw === '講師' || raw === '教師' || raw === '先生') return 'teacher';
   if (raw === 'student' || raw === '生徒') return 'student';
-  const cached = userId ? readCachedUserRole(userId) : null;
-  if (cached === 'student' && isKnownAdminIdentity(userId, email)) return 'admin';
-  return cached || 'student';
+  return 'student';
 }
 
 function isStaffRole(role: unknown, userId?: string, email?: string): boolean {
@@ -4386,7 +4368,6 @@ export default function Page() {
       const id = textCell(row?.id).trim();
       if (!id) return [];
       const role = resolveAppRole(row?.role, id);
-      if (textCell(row?.role).trim() || isKnownAdminIdentity(id)) rememberUserRole(id, role);
       return [{
         ...emptyStudentProfile(),
         id,
@@ -4655,32 +4636,54 @@ export default function Page() {
       setSessionChecked(true);
       return;
     }
-    const saved = readAppSession();
-    if (saved) {
-      setCurrentUser(saved);
-      setActiveTab(saved.role === 'student' ? 'schedule_planner' : 'dashboard');
-      setSessionChecked(true);
-      return;
-    }
     if (!supabaseEnvConfigured()) {
       setSessionChecked(true);
       return;
     }
     let active = true;
-    void supabase.auth.getUser().then(async ({ data, error }) => {
-      if (!active || error || !data.user) return;
-      const email = String(data.user.email || '').trim();
-      const authId = String(data.user.id || '').trim();
-      const directory = await fetchUsers();
-      const restored = directory.find((user) => {
-        const id = user.id.trim().toLowerCase();
-        const userEmail = (user.email || '').trim().toLowerCase();
-        return (authId !== '' && id === authId.toLowerCase())
-          || (email !== '' && (id === email.toLowerCase() || userEmail === email.toLowerCase()));
-      });
-      if (!active || !restored) return;
-      const role = resolveAppRole(restored.role, restored.id, restored.email || email);
-      const signedIn = { ...restored, role, password: '' };
+    void supabase.auth.getSession().then(async ({ data }) => {
+      if (!active) return;
+      const sessionUser = data.session?.user;
+      if (!sessionUser) return;
+      let authUser = sessionUser;
+      try {
+        const verified = await supabase.auth.getUser();
+        if (verified.data.user) authUser = verified.data.user;
+      } catch (verifyError) {
+        console.error(verifyError);
+      }
+      if (!active) return;
+      const email = String(authUser.email || '').trim();
+      const authId = String(authUser.id || '').trim();
+      const localId = email.toLowerCase().endsWith('@juku.app') ? email.slice(0, email.length - '@juku.app'.length) : email;
+      let restored: User | undefined;
+      try {
+        const directory = await fetchUsers();
+        restored = directory.find((user) => {
+          const id = user.id.trim().toLowerCase();
+          const userEmail = (user.email || '').trim().toLowerCase();
+          return (authId !== '' && id === authId.toLowerCase())
+            || (localId !== '' && id === localId.toLowerCase())
+            || (email !== '' && (id === email.toLowerCase() || userEmail === email.toLowerCase()));
+        });
+      } catch (directoryError) {
+        console.error(directoryError);
+      }
+      if (!active) return;
+      const role: UserRole = restored && (restored.role === 'admin' || restored.role === 'teacher' || restored.role === 'student')
+        ? restored.role
+        : 'student';
+      const signedIn: User = restored
+        ? { ...restored, role, password: '', email: email || restored.email }
+        : {
+            ...emptyStudentProfile(),
+            id: localId || authId,
+            name: localId || authId,
+            role: 'student',
+            classroom: '',
+            password: '',
+            email,
+          };
       writeAppSession(signedIn);
       setCurrentUser(signedIn);
       setActiveTab(role === 'student' ? 'schedule_planner' : 'dashboard');
@@ -5265,7 +5268,6 @@ export default function Page() {
     }
 
     const finishLogin = (signedIn: User, message: string) => {
-      rememberUserRole(signedIn.id, signedIn.role);
       rememberSignedIn({ ...signedIn, password: '' });
       setActiveTab(signedIn.role === 'student' ? 'schedule_planner' : 'dashboard');
       setStudyComposer(null);
@@ -5293,7 +5295,7 @@ export default function Page() {
         ...emptyStudentProfile(),
         id: inputIdClean,
         name: inputIdClean,
-        role: 'teacher',
+        role: 'student',
         classroom: '',
         password: '',
         email,
@@ -6063,7 +6065,7 @@ export default function Page() {
   }, [currentUser?.id, currentUser?.role]);
 
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !usersReady || users.length === 0) return;
     const canonical = users.find((user) => {
       const id = user.id.toLowerCase();
       const email = (user.email || '').toLowerCase();
@@ -6071,24 +6073,22 @@ export default function Page() {
       const currentEmail = (currentUser.email || '').toLowerCase();
       return id === currentId || (email !== '' && email === currentId) || (currentEmail !== '' && (id === currentEmail || email === currentEmail));
     });
-    const directoryRole = canonical ? resolveAppRole(canonical.role, canonical.id, canonical.email) : null;
-    const nextRole = directoryRole === 'admin' || directoryRole === 'teacher'
-      ? directoryRole
-      : resolveAppRole(currentUser.role, currentUser.id, currentUser.email);
-    if (nextRole !== 'admin' && nextRole !== 'teacher') return;
+    const nextRole: UserRole = canonical && (canonical.role === 'admin' || canonical.role === 'teacher' || canonical.role === 'student')
+      ? canonical.role
+      : 'student';
+    if (!canonical && currentUser.role === 'student') return;
+    if (canonical && currentUser.role === nextRole && currentUser.id === canonical.id && (currentUser.email || '') === (canonical.email || currentUser.email || '')) return;
     const nextId = canonical?.id || currentUser.id;
     const nextEmail = currentUser.email || canonical?.email;
-    if (currentUser.role === nextRole && currentUser.id === nextId && (currentUser.email || '') === (nextEmail || '')) return;
-    rememberUserRole(nextId, nextRole);
     setCurrentUser({
       ...(canonical || currentUser),
       id: nextId,
       role: nextRole,
-      password: currentUser.password || canonical?.password || '',
+      password: '',
       email: nextEmail,
     });
-    if (currentUser.role !== nextRole) setActiveTab('dashboard');
-  }, [users, currentUser]);
+    if (currentUser.role !== nextRole) setActiveTab(nextRole === 'student' ? 'schedule_planner' : 'dashboard');
+  }, [users, usersReady, currentUser]);
 
   useEffect(() => {
     if (!currentUser || isStaffRole(currentUser.role, currentUser.id, currentUser.email) || resolveAppRole(currentUser.role, currentUser.id, currentUser.email) !== 'student') return;
