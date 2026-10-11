@@ -10184,7 +10184,16 @@ function SkeletonLoader() {
     return (
       <>
         <div className="flex lg:hidden min-h-screen items-center justify-center bg-slate-100 p-6">
-          <p className="max-w-sm text-center text-base font-black leading-relaxed text-slate-800">教員・管理者機能はPCからアクセスしてください</p>
+          <div className="flex max-w-sm flex-col items-center gap-6">
+            <p className="text-center text-base font-black leading-relaxed text-slate-800">教員・管理者機能はPCからアクセスしてください</p>
+            <button
+              type="button"
+              onClick={() => { void handleLogout(); }}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 cursor-pointer"
+            >
+              ログアウト
+            </button>
+          </div>
         </div>
         <div className="hidden lg:contents">
           <RoleScreenContext.Provider value={screens}>
@@ -10198,7 +10207,16 @@ function SkeletonLoader() {
   return (
     <>
       <div className="hidden lg:flex min-h-screen items-center justify-center bg-slate-100 p-6">
-        <p className="max-w-sm text-center text-base font-black leading-relaxed text-slate-800">生徒用機能はスマートフォンまたはタブレットからアクセスしてください</p>
+        <div className="flex max-w-sm flex-col items-center gap-6">
+          <p className="text-center text-base font-black leading-relaxed text-slate-800">生徒用機能はスマートフォンまたはタブレットからアクセスしてください</p>
+          <button
+            type="button"
+            onClick={() => { void handleLogout(); }}
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 cursor-pointer"
+          >
+            ログアウト
+          </button>
+        </div>
       </div>
       <div className="contents lg:hidden">
         <RoleScreenContext.Provider value={screens}>
