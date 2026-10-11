@@ -5858,6 +5858,24 @@ export default function Page() {
     return bySubjectThenOrder(matched);
   }, [materials, subjectFilter, searchQuery]);
 
+  const materialStudyStats = useMemo(() => {
+    const stats = new Map<string, { students: Set<string>; minutes: number }>();
+    logs.forEach((log) => {
+      const materialId = String(log.material_id || '').trim();
+      if (!materialId) return;
+      let entry = stats.get(materialId);
+      if (!entry) {
+        entry = { students: new Set<string>(), minutes: 0 };
+        stats.set(materialId, entry);
+      }
+      const studentId = String(log.user_id || '').trim();
+      if (studentId) entry.students.add(studentId);
+      const minutes = Number(log.time_spent_minutes);
+      if (Number.isFinite(minutes)) entry.minutes += minutes;
+    });
+    return stats;
+  }, [logs]);
+
   const logMaterialChoices = useMemo(() => {
     const code = subjectCodeFromInput(newLogForm.subject);
     if (!code) return [];
@@ -8251,6 +8269,9 @@ function SkeletonLoader() {
                       {filteredMaterials.map((m) => {
                         const siblings = materialsForSubject(materials, m.subject);
                         const siblingIndex = siblings.findIndex((item) => item.id === m.id);
+                        const usage = materialStudyStats.get(m.id);
+                        const studentCount = usage?.students.size ?? 0;
+                        const totalMinutes = Math.round(usage?.minutes ?? 0);
                         return (
                           <tr key={m.id} className="hover:bg-slate-50 align-middle">
                             <td className="p-3">
@@ -8291,7 +8312,14 @@ function SkeletonLoader() {
                               </span>
                             </td>
                             <td className="p-3 font-extrabold text-slate-900">{m.title}</td>
-                            <td className="p-3 text-slate-600">{m.description || ''}</td>
+                            <td className="p-3 text-slate-600">
+                              <div className="flex flex-wrap items-center gap-2">
+                                {m.description ? <span>{m.description}</span> : null}
+                                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-700 whitespace-nowrap">
+                                  👥 {studentCount}名 / ⏱️ {totalMinutes}分
+                                </span>
+                              </div>
+                            </td>
                             <td className="p-3">
                               <div className="flex gap-2">
                                 <button onClick={() => openEditMaterialModal(m)} className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-800 font-bold text-xs rounded-xl border border-slate-200 cursor-pointer">
