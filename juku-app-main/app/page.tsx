@@ -1843,6 +1843,14 @@ function shiftDateKey(key: string, days: number): string {
   return `${nextYear}-${nextMonth}-${nextDay}`;
 }
 
+function studentScheduleEarliestDate(today = todayDateKey()): string {
+  return shiftDateKey(today, -10);
+}
+
+function isStudentScheduleDateOpen(dateKey: string, today = todayDateKey()): boolean {
+  return dateKey >= studentScheduleEarliestDate(today);
+}
+
 function civilWeekday(dateKey: string): number {
   const [year, month, day] = dateKey.split('-').map(Number);
   return new Date(Date.UTC(year, (month || 1) - 1, day || 1)).getUTCDay();
@@ -9651,14 +9659,31 @@ function SkeletonLoader() {
             {/* TAB 2. スケジュール */}
             {activeTab === 'schedule_planner' && (
               <div className="flex-1 min-h-0 flex flex-col">
+                {(() => {
+                  const scheduleToday = todayDateKey();
+                  const scheduleEarliest = studentScheduleEarliestDate(scheduleToday);
+                  const scheduleFocus = focusDateKey < scheduleEarliest ? scheduleEarliest : focusDateKey;
+                  const scheduleDates = [scheduleFocus, shiftDateKey(scheduleFocus, 1)];
+                  return (
+                    <>
                 <div className="shrink-0 flex items-center justify-between gap-2 px-1">
-                  <button type="button" onClick={() => setFocusDateKey((key) => shiftDateKey(key, -1))} className="w-9 h-7 rounded-xl bg-white border border-slate-200 text-sm font-black cursor-pointer">◀</button>
+                  <button
+                    type="button"
+                    onClick={() => setFocusDateKey((key) => {
+                      const next = shiftDateKey(key < scheduleEarliest ? scheduleEarliest : key, -1);
+                      return next < scheduleEarliest ? scheduleEarliest : next;
+                    })}
+                    disabled={scheduleFocus <= scheduleEarliest}
+                    className="w-9 h-7 rounded-xl bg-white border border-slate-200 text-sm font-black cursor-pointer disabled:text-slate-300 disabled:cursor-not-allowed"
+                  >
+                    ◀
+                  </button>
                   <div className="text-[11px] font-black text-slate-900 text-center leading-tight">
-                    {formatFocusDate(focusDateKey)}
+                    {formatFocusDate(scheduleDates[0])}
                     <span className="text-slate-300"> ｜ </span>
-                    {formatFocusDate(shiftDateKey(focusDateKey, 1))}
+                    {formatFocusDate(scheduleDates[1])}
                   </div>
-                  <button type="button" onClick={() => setFocusDateKey((key) => shiftDateKey(key, 1))} className="w-9 h-7 rounded-xl bg-white border border-slate-200 text-sm font-black cursor-pointer">▶</button>
+                  <button type="button" onClick={() => setFocusDateKey(shiftDateKey(scheduleFocus, 1))} className="w-9 h-7 rounded-xl bg-white border border-slate-200 text-sm font-black cursor-pointer">▶</button>
                 </div>
                 {weekPlansResolved && Object.keys(weekPlans).length === 0 && (
                   <button
@@ -9670,16 +9695,17 @@ function SkeletonLoader() {
                   </button>
                 )}
                 <div className="flex-1 min-h-0 grid grid-cols-2 gap-1">
-                  {[focusDateKey, shiftDateKey(focusDateKey, 1)].map((dateKey, columnIndex) => {
-                    const planSlots = planSlotsForDate(weekPlans[weekStartKey(dateKey)], dateKey);
+                  {scheduleDates.map((dateKey, columnIndex) => {
+                    const dateOpen = isStudentScheduleDateOpen(dateKey, scheduleToday);
+                    const planSlots = dateOpen ? planSlotsForDate(weekPlans[weekStartKey(dateKey)], dateKey) : [];
                     const weekday = weekdayIdFromDateKey(dateKey);
                     return (
                       <div key={dateKey} className="min-h-0 flex flex-col rounded-2xl border border-slate-200 bg-white overflow-hidden">
                         <div className="flex-1 min-h-0 flex flex-col">
                           {DAY_VIEW_HOURS.map((hour) => {
-                            const studies = myStudyLogs.flatMap((log) => {
+                            const studies = dateOpen ? myStudyLogs.flatMap((log) => {
                               const placed = studyPlacement(log, logSlots);
-                              if (!placed || placed.date !== dateKey) return [];
+                              if (!placed || placed.date !== dateKey || !isStudentScheduleDateOpen(placed.date, scheduleToday)) return [];
                               const slice = sliceInHour(hour, placed);
                               if (!slice) return [];
                               const material = materials.find((item) => item.id === log.material_id)
@@ -9694,15 +9720,15 @@ function SkeletonLoader() {
                                 slice,
                                 onClick: () => openStudentLogEditor(log),
                               }];
-                            });
+                            }) : [];
                             return (
                               <DayHourLane
                                 key={hour}
                                 hour={hour}
                                 showHourLabel={columnIndex === 0}
-                                planBands={studies.length === 0 ? planBandsForHour(planSlots, weekday, hour) : undefined}
+                                planBands={dateOpen && studies.length === 0 ? planBandsForHour(planSlots, weekday, hour) : undefined}
                                 studies={studies}
-                                onDeleteSlot={(slotId) => {
+                                onDeleteSlot={dateOpen ? (slotId) => {
                                   if (!currentUser) return;
                                   const weekStart = weekStartKey(dateKey);
                                   const plan = weekPlans[weekStart];
@@ -9720,8 +9746,8 @@ function SkeletonLoader() {
                                     next[weekStart] = { ...plan, slots, dateSnapshots: snapshots, is_customized: true };
                                   }
                                   persistWeekPlans(currentUser.id, next);
-                                }}
-                                onEmpty={() => {
+                                } : undefined}
+                                onEmpty={dateOpen ? () => {
                                   const endHour = Math.min(hour + 1, 25);
                                   setComposerDateKey(dateKey);
                                   setComposerMission(false);
@@ -9732,7 +9758,7 @@ function SkeletonLoader() {
                                   setTimerElapsedSec(0);
                                   setNewLogForm((prev) => ({ ...prev, subject: '', material_id: '' }));
                                   setStudyComposer(clampStudyRange({ startHour: hour, startMinute: 0, endHour, endMinute: 0 }));
-                                }}
+                                } : undefined}
                               />
                             );
                           })}
@@ -9742,6 +9768,9 @@ function SkeletonLoader() {
                     );
                   })}
                 </div>
+                    </>
+                  );
+                })()}
               </div>
             )}
 
