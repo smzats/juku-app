@@ -4119,8 +4119,30 @@ function StudentView({ currentUser }: { currentUser: User }) {
   return screens.student(currentUser);
 }
 
+function isHandheldClient(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const touchPoints = navigator.maxTouchPoints || 0;
+  if (/iPhone|iPod|iPad|Android|Mobile|Tablet|Silk|PlayBook/i.test(ua)) return true;
+  if (/Macintosh/i.test(ua) && touchPoints > 1) return true;
+  return false;
+}
+
+function useStudentHandheldViewport(): boolean {
+  const [allowed, setAllowed] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 1023px)');
+    const update = () => setAllowed(isHandheldClient() && media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  return allowed;
+}
+
 export default function Page() {
   const supabase = useMemo(() => createSafeSupabaseClient(), []);
+  const studentOnHandheld = useStudentHandheldViewport();
 
   // ---------------------------------------------------------------------------
   // ログイン / セッション 状態管理 (メール不使用・独自ID認証)
@@ -4677,8 +4699,9 @@ export default function Page() {
   }, [supabase, fetchUsers]);
 
   useEffect(() => {
-    if (currentUser?.role !== 'admin' && newUserForm.role === 'admin') {
-      setNewUserForm((prev) => (prev.role === 'admin' ? { ...prev, role: 'student' } : prev));
+    if (currentUser?.role === 'admin') return;
+    if (newUserForm.role === 'admin' || newUserForm.role === 'teacher') {
+      setNewUserForm((prev) => (prev.role === 'student' ? prev : { ...prev, role: 'student' }));
     }
   }, [currentUser, newUserForm.role]);
 
@@ -4780,6 +4803,10 @@ export default function Page() {
 
     const requestedId = newUserForm.id.trim();
     const existingUser = users.find((u) => u.id.toLowerCase() === requestedId.toLowerCase());
+    if (currentUser?.role !== 'admin' && newUserForm.role !== 'student') {
+      alert('講師は生徒のみ登録できます。');
+      return;
+    }
     if (
       currentUser?.role !== 'admin' &&
       (newUserForm.role === 'admin' || existingUser?.role === 'admin')
@@ -6028,6 +6055,12 @@ export default function Page() {
     }
   }, [currentUser?.id, currentUser?.role, activeTab]);
 
+  useEffect(() => {
+    if (currentUser?.role !== 'teacher') return;
+    if (activeTab === 'teachers') setActiveTab('dashboard');
+    if (isTeacherCsvModalOpen) setIsTeacherCsvModalOpen(false);
+  }, [currentUser, activeTab, isTeacherCsvModalOpen]);
+
   const releaseWakeLock = useCallback(async () => {
     const current = wakeLockRef.current;
     wakeLockRef.current = null;
@@ -6363,11 +6396,8 @@ export default function Page() {
   const executeCsvImport = useCallback(async () => {
     if (csvParsedPreview.length === 0) return;
     if (csvImportKind === 'teacher' && currentUser?.role !== 'admin') {
-      const hasForbiddenAdminWrite = csvParsedPreview.some((row) => row.role === 'admin' || users.some((user) => user.id.toLowerCase() === row.id.toLowerCase() && user.role === 'admin'));
-      if (hasForbiddenAdminWrite) {
-        setCsvStatusMessage({ type: 'error', text: '管理者以外は admin 権限のユーザーを作成・更新できません。' });
-        return;
-      }
+      setCsvStatusMessage({ type: 'error', text: '教師の一括登録は管理者のみ実行できます。' });
+      return;
     }
 
     setCsvUploading(true);
@@ -7393,7 +7423,7 @@ function SkeletonLoader() {
               { id: 'schedule_planner', label: 'スケジュール', icon: '📅' },
               { id: 'students', label: '所属生徒一覧', icon: '🎓' },
               ...(currentUser.role === 'admin' ? [{ id: 'pending_delete', label: 'データを消す生徒', icon: '🗑️' }] : []),
-              { id: 'teachers', label: '所属教師・管理者一覧', icon: '👨‍🏫' },
+              ...(currentUser.role === 'admin' ? [{ id: 'teachers', label: '所属教師・管理者一覧', icon: '👨‍🏫' }] : []),
               { id: 'materials', label: '教材マスタ', icon: '📚' },
               { id: 'progress', label: '教室別・生徒学習進捗', icon: '🏫' },
               { id: 'logs', label: '生徒別 学習ログ詳細', icon: '📊' },
@@ -7437,12 +7467,14 @@ function SkeletonLoader() {
           >
             <span>🎓</span> 生徒専用CSV一括登録
           </button>
+          {currentUser.role === 'admin' && (
           <button
             onClick={() => { setCsvImportKind('teacher'); setCsvParsedPreview([]); setCsvValidationErrors([]); setCsvStatusMessage({ type: null, text: '' }); setIsTeacherCsvModalOpen(true); }}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-sky-700 hover:bg-sky-600 text-white text-xs font-extrabold rounded-2xl transition-all shadow-lg shadow-sky-700/20 active:scale-95 cursor-pointer"
           >
             <span>👨‍🏫</span> 教師専用CSV一括登録
           </button>
+          )}
         </div>
       </aside>
 
@@ -8249,7 +8281,7 @@ function SkeletonLoader() {
             )}
 
             {/* TAB 6. 教師・管理者一覧 */}
-            {activeTab === 'teachers' && (
+            {activeTab === 'teachers' && currentUser.role === 'admin' && (
               <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
                 <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                   <h3 className="text-base font-extrabold text-sky-950">👨‍🏫 所属教師・管理者管理一覧 ({teachersAndAdmins.length}名)</h3>
@@ -8570,7 +8602,9 @@ function SkeletonLoader() {
                   className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none cursor-pointer"
                 >
                   <option value="student">生徒 (student)</option>
-                  <option value="teacher">講師 (teacher)</option>
+                  {currentUser.role === 'admin' && (
+                    <option value="teacher">講師 (teacher)</option>
+                  )}
                   {currentUser.role === 'admin' && (
                     <option value="admin">管理者 (admin)</option>
                   )}
@@ -8940,7 +8974,7 @@ function SkeletonLoader() {
         </div>
       )}
 
-      {isTeacherCsvModalOpen && (
+      {isTeacherCsvModalOpen && currentUser.role === 'admin' && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
           <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-5 bg-sky-950 text-white flex justify-between items-center">
@@ -10178,6 +10212,30 @@ function SkeletonLoader() {
     student: renderStudentScreen,
   };
 
+  if (role === 'student' && !isKnownAdmin) {
+    if (!studentOnHandheld) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
+          <div className="flex max-w-sm flex-col items-center gap-6">
+            <p className="text-center text-base font-black leading-relaxed text-slate-800">生徒用機能はスマートフォンまたはタブレットからアクセスしてください</p>
+            <button
+              type="button"
+              onClick={() => { void handleLogout(); }}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 cursor-pointer"
+            >
+              ログアウト
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <RoleScreenContext.Provider value={screens}>
+        <StudentView currentUser={currentUser} />
+      </RoleScreenContext.Provider>
+    );
+  }
+
   if (isTeacherOrAdmin) {
     const staffRole: UserRole = role === 'teacher' && !isKnownAdmin ? 'teacher' : resolveAppRole(role, currentUser.id, currentUser.email);
     const staffUser = staffRole === 'student' ? { ...currentUser, role: 'admin' as const } : (currentUser.role === staffRole ? currentUser : { ...currentUser, role: staffRole });
@@ -10205,24 +10263,17 @@ function SkeletonLoader() {
   }
 
   return (
-    <>
-      <div className="hidden lg:flex min-h-screen items-center justify-center bg-slate-100 p-6">
-        <div className="flex max-w-sm flex-col items-center gap-6">
-          <p className="text-center text-base font-black leading-relaxed text-slate-800">生徒用機能はスマートフォンまたはタブレットからアクセスしてください</p>
-          <button
-            type="button"
-            onClick={() => { void handleLogout(); }}
-            className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 cursor-pointer"
-          >
-            ログアウト
-          </button>
-        </div>
+    <div className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
+      <div className="flex max-w-sm flex-col items-center gap-6">
+        <p className="text-center text-base font-black leading-relaxed text-slate-800">生徒用機能はスマートフォンまたはタブレットからアクセスしてください</p>
+        <button
+          type="button"
+          onClick={() => { void handleLogout(); }}
+          className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 cursor-pointer"
+        >
+          ログアウト
+        </button>
       </div>
-      <div className="contents lg:hidden">
-        <RoleScreenContext.Provider value={screens}>
-          <StudentView currentUser={currentUser} />
-        </RoleScreenContext.Provider>
-      </div>
-    </>
+    </div>
   );
 }
