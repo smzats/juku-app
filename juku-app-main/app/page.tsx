@@ -3904,11 +3904,12 @@ function MeetingWeekBoard({
                     const materialTitle = material.title === '学習' ? '教材名未登録' : material.title;
                     const subjectName = teacherSubjectLabel(subjectSource);
                     const lane = dayLanes.get(`study:${log.id}`);
+                    const titled = useStoredClock ? [subjectName, materialTitle].filter(Boolean).join(' ') : materialTitle;
                     return [{
                       key: `${log.id}-${hour}`,
                       color: setting.color,
                       bgColor: setting.bgColor,
-                      title: useStoredClock ? [subjectName, materialTitle].filter(Boolean).join(' ') : materialTitle,
+                      title: studyTitleWithAchievements(titled, log.comment),
                       crown: Boolean(log.is_mission_completed),
                       slice,
                       lane: lane?.lane,
@@ -3940,6 +3941,86 @@ function MeetingWeekBoard({
   );
 }
 
+const ACHIEVEMENT_EMOJIS = ['🏆', '🏅', '🚀', '💖', '💦'] as const;
+const ACHIEVEMENT_MARK = '\u2063';
+
+function splitStudyMemo(comment: string | undefined): { emojis: string[]; note: string } {
+  const text = comment || '';
+  if (!text.startsWith(ACHIEVEMENT_MARK)) return { emojis: [], note: text };
+  const end = text.indexOf(ACHIEVEMENT_MARK, ACHIEVEMENT_MARK.length);
+  if (end < 0) return { emojis: [], note: text };
+  const raw = text.slice(ACHIEVEMENT_MARK.length, end);
+  const found = raw.match(/🏆|🏅|🚀|💖|💦/gu) || [];
+  if (found.join('') !== raw || found.length > 3) return { emojis: [], note: text };
+  return { emojis: found, note: text.slice(end + ACHIEVEMENT_MARK.length) };
+}
+
+function joinStudyMemo(emojis: string[], note: string): string {
+  const picked = emojis.filter((emoji) => (ACHIEVEMENT_EMOJIS as readonly string[]).includes(emoji)).slice(0, 3);
+  const body = note.trim();
+  if (picked.length === 0) return body;
+  return `${ACHIEVEMENT_MARK}${picked.join('')}${ACHIEVEMENT_MARK}${body}`;
+}
+
+function studyMemoNote(comment: string | undefined): string {
+  return splitStudyMemo(comment).note.trim();
+}
+
+function studyTitleWithAchievements(title: string, comment: string | undefined): string {
+  const emojis = splitStudyMemo(comment).emojis;
+  return emojis.length > 0 ? `${title} ${emojis.join('')}` : title;
+}
+
+function MaterialAchievementFields({
+  description,
+  emojis,
+  onChange,
+}: {
+  description: string;
+  emojis: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const full = emojis.length >= 3;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
+      {description ? <p className="text-[11px] font-bold leading-relaxed text-slate-600 whitespace-pre-wrap">{description}</p> : null}
+      <p className="text-[11px] font-black text-slate-700">この教材の達成度を追加しますか？</p>
+      {emojis.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {emojis.map((emoji, index) => (
+            <button
+              key={`${emoji}-${index}`}
+              type="button"
+              onClick={() => onChange(emojis.filter((_, itemIndex) => itemIndex !== index))}
+              className="rounded-full border border-amber-200 bg-white px-2 py-1 text-base cursor-pointer"
+              aria-label={`${emoji}を外す`}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1">
+        {ACHIEVEMENT_EMOJIS.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            disabled={full}
+            onClick={() => {
+              if (emojis.length >= 3) return;
+              onChange([...emojis, emoji]);
+            }}
+            className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            aria-label={`${emoji}を追加`}
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SubjectTextPicker({
   subject,
   materialId,
@@ -3951,6 +4032,8 @@ function SubjectTextPicker({
   onToggleFavorite,
   compact = false,
   fromConfig = false,
+  achievements = [],
+  onAchievements,
 }: {
   subject: string;
   materialId: string;
@@ -3962,6 +4045,8 @@ function SubjectTextPicker({
   onToggleFavorite: (materialId: string) => void;
   compact?: boolean;
   fromConfig?: boolean;
+  achievements?: string[];
+  onAchievements?: (next: string[]) => void;
 }) {
   const selectedCode = fromConfig ? subjectCodeFromInput(subject) : null;
   const matchesSelected = (item: { subject: string; subject_code?: string | null; title: string }) => {
@@ -3985,6 +4070,11 @@ function SubjectTextPicker({
     return a.display_order - b.display_order;
   });
   const pad = compact ? 'px-2 py-1.5 text-[11px]' : 'px-3 py-3 text-sm';
+  const achievementFor = (id: string) => {
+    if (!onAchievements || materialId !== id) return null;
+    const description = String(materials.find((item) => item.id === id)?.description || '').trim();
+    return <MaterialAchievementFields description={description} emojis={achievements} onChange={onAchievements} />;
+  };
   return (
     <div className={compact ? 'space-y-1.5' : 'space-y-3'}>
       <div className="text-[11px] font-black text-slate-500">① 科目</div>
@@ -4029,16 +4119,18 @@ function SubjectTextPicker({
             <div className={compact ? 'space-y-1' : 'space-y-2'}>
               <div className="text-[11px] font-black text-orange-600">マイ教材</div>
               {mine.map((item) => (
-                <button
-                  key={`mine-${item.id}`}
-                  type="button"
-                  onClick={() => onMaterial(item.id)}
-                  className={`w-full text-left rounded-xl font-black cursor-pointer border ${pad} ${
-                    materialId === item.id ? 'bg-orange-50 border-orange-300 text-orange-900' : 'bg-white border-slate-200 text-slate-800'
-                  }`}
-                >
-                  {item.title}
-                </button>
+                <div key={`mine-${item.id}`} className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => onMaterial(item.id)}
+                    className={`w-full text-left rounded-xl font-black cursor-pointer border ${pad} ${
+                      materialId === item.id ? 'bg-orange-50 border-orange-300 text-orange-900' : 'bg-white border-slate-200 text-slate-800'
+                    }`}
+                  >
+                    {item.title}
+                  </button>
+                  {achievementFor(item.id)}
+                </div>
               ))}
             </div>
           )}
@@ -4048,24 +4140,27 @@ function SubjectTextPicker({
           ) : catalog.map((material) => {
             const pinned = favoriteIds.includes(material.id);
             return (
-              <div key={material.id} className="flex items-stretch gap-1">
-                <button
-                  type="button"
-                  onClick={() => onMaterial(material.id)}
-                  className={`flex-1 text-left rounded-xl font-black cursor-pointer border ${pad} ${
-                    materialId === material.id ? 'bg-sky-50 border-sky-400 text-sky-900' : 'bg-white border-slate-200 text-slate-800'
-                  }`}
-                >
-                  {material.title}
-                </button>
-                <button
-                  type="button"
-                  aria-label={pinned ? 'お気に入りを外す' : 'お気に入りに追加'}
-                  onClick={() => onToggleFavorite(material.id)}
-                  className={`${compact ? 'w-9' : 'w-12'} rounded-xl border border-slate-200 bg-white text-base cursor-pointer`}
-                >
-                  {pinned ? '⭐' : '☆'}
-                </button>
+              <div key={material.id} className="space-y-1">
+                <div className="flex items-stretch gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onMaterial(material.id)}
+                    className={`flex-1 text-left rounded-xl font-black cursor-pointer border ${pad} ${
+                      materialId === material.id ? 'bg-sky-50 border-sky-400 text-sky-900' : 'bg-white border-slate-200 text-slate-800'
+                    }`}
+                  >
+                    {material.title}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={pinned ? 'お気に入りを外す' : 'お気に入りに追加'}
+                    onClick={() => onToggleFavorite(material.id)}
+                    className={`${compact ? 'w-9' : 'w-12'} rounded-xl border border-slate-200 bg-white text-base cursor-pointer`}
+                  >
+                    {pinned ? '⭐' : '☆'}
+                  </button>
+                </div>
+                {achievementFor(material.id)}
               </div>
             );
           })}
@@ -4199,6 +4294,8 @@ export default function Page() {
   const [editRange, setEditRange] = useState<StudyClockRange>({ startHour: 19, startMinute: 0, endHour: 20, endMinute: 0 });
   const [editComment, setEditComment] = useState('');
   const [editMission, setEditMission] = useState(false);
+  const [composerAchievements, setComposerAchievements] = useState<string[]>([]);
+  const [editAchievements, setEditAchievements] = useState<string[]>([]);
   const countdownSaveLock = useRef(false);
   const measuredStartedIso = useRef<string | null>(null);
   const [focusDateKey, setFocusDateKey] = useState<string>(() => todayDateKey());
@@ -6195,7 +6292,7 @@ export default function Page() {
       finished: countdownFinished,
       subject: String(newLogForm.subject || ''),
       materialId: newLogForm.material_id,
-      comment: newLogForm.comment,
+      comment: joinStudyMemo(composerAchievements, newLogForm.comment),
       mission: composerMission,
       date: composerDateKey,
       composer: studyComposer,
@@ -6212,6 +6309,7 @@ export default function Page() {
     newLogForm.subject,
     newLogForm.material_id,
     newLogForm.comment,
+    composerAchievements,
     composerMission,
     composerDateKey,
   ]);
@@ -6271,16 +6369,18 @@ export default function Page() {
     const saved = readActiveStudyClock();
     if (!saved || saved.userId !== currentUser.id) return;
     const subject = subjectFromInput(saved.subject) || '';
+    const restoredMemo = splitStudyMemo(saved.comment);
     setRecordMode(saved.mode);
     setComposerDateKey(saved.date);
     setStudyComposer(saved.composer);
     setComposerMission(Boolean(saved.mission));
+    setComposerAchievements(restoredMemo.emojis);
     setNewLogForm((prev) => ({
       ...prev,
       user_id: currentUser.id,
       subject,
       material_id: saved.materialId || '',
-      comment: saved.comment || '',
+      comment: restoredMemo.note,
     }));
     if (saved.mode === 'timer' && saved.running) {
       measuredStartedIso.current = new Date(saved.startedAt).toISOString();
@@ -6934,6 +7034,7 @@ export default function Page() {
     setTimerRunning(false);
     setCountdownRunning(false);
     setCountdownFinished(false);
+    setComposerAchievements([]);
     setNewLogForm((prev) => ({ ...prev, comment: '' }));
     return true;
   }, [currentUser, logs, materials, newLogForm.subject, supabase, addNotification]);
@@ -6983,7 +7084,7 @@ export default function Page() {
       max_score: 100,
       time_spent_minutes: minutes,
       is_mission_completed: mission,
-      comment: newLogForm.comment.trim() || undefined,
+      comment: joinStudyMemo(composerAchievements, newLogForm.comment) || undefined,
       created_at: startedIso,
       start_time: range ? `${formatMeetingClock(range.startHour, range.startMinute)}:00` : undefined,
       end_time: range ? `${formatMeetingClock(range.endHour, range.endMinute)}:00` : undefined,
@@ -7046,6 +7147,7 @@ export default function Page() {
     setCountdownRunning(false);
     setCountdownFinished(false);
     setStudyComposer(null);
+    setComposerAchievements([]);
     setNewLogForm((prev) => ({ ...prev, comment: '', time_spent_minutes: minutes }));
     try {
       const total = learningTrailTotalMinutes(nextLogs.filter((log) => log.user_id === currentUser.id), weekCramMinutes);
@@ -7058,7 +7160,7 @@ export default function Page() {
       console.error(error);
     }
     countdownSaveLock.current = false;
-  }, [composerMission, currentUser, logs, materials, newLogForm.comment, newLogForm.material_id, newLogForm.subject, supabase, weekCramMinutes, addNotification]);
+  }, [composerAchievements, composerMission, currentUser, logs, materials, newLogForm.comment, newLogForm.material_id, newLogForm.subject, supabase, weekCramMinutes, addNotification]);
 
   useEffect(() => {
     if (!countdownRunning || countdownRemainingSec !== 0 || !countdownStartedAt) return;
@@ -7192,7 +7294,9 @@ export default function Page() {
       endHour: Math.floor(recordedEnd / 60),
       endMinute: recordedEnd % 60,
     }));
-    setEditComment(log.comment || '');
+    const memo = splitStudyMemo(log.comment);
+    setEditComment(memo.note);
+    setEditAchievements(memo.emojis);
     setEditMission(Boolean(log.is_mission_completed));
   };
 
@@ -7221,7 +7325,7 @@ export default function Page() {
       ...editingLog,
       material_id: editMaterialId,
       time_spent_minutes: studyDurationMinutes(range),
-      comment: editComment.trim() || undefined,
+      comment: joinStudyMemo(editAchievements, editComment) || undefined,
       is_mission_completed: editMission,
     };
     if (placed?.date) {
@@ -7270,7 +7374,7 @@ export default function Page() {
       console.error(err);
       alert('通信エラー: ' + (err?.message || '学習記録の更新に失敗しました'));
     }
-  }, [editingLog, editMaterialId, editRange, editComment, editMission, logs, materials, supabase, addNotification]);
+  }, [editingLog, editMaterialId, editRange, editComment, editAchievements, editMission, logs, materials, supabase, addNotification]);
 
   const deleteStudentLog = useCallback(async (log: StudyLog) => {
     const title = materials.find((item) => item.id === log.material_id)?.title || 'この記録';
@@ -8212,7 +8316,7 @@ function SkeletonLoader() {
                               <span className="text-slate-400">通常</span>
                             )}
                           </td>
-                          <td className="p-3 text-slate-600">{log.comment || '-'}</td>
+                          <td className="p-3 text-slate-600">{studyMemoNote(log.comment) || '-'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -8570,7 +8674,7 @@ function SkeletonLoader() {
                             <div className="text-[11px] font-bold text-slate-400">学習日時</div>
                             <div className="text-base font-black text-slate-900">{formatMeetingWhen(log, logSlots[log.id])}</div>
                             <div className="text-sm font-black text-slate-800">{student?.name || '氏名未登録'} / {log.user_id}</div>
-                            <div className="text-sm font-bold text-slate-900 truncate">{meetingMaterialTitle(log.material_id, log.user_id, materials)}</div>
+                            <div className="text-sm font-bold text-slate-900 truncate">{studyTitleWithAchievements(meetingMaterialTitle(log.material_id, log.user_id, materials), log.comment)}</div>
                             {teacherSubjectLabel(log.subject) ? (
                               <div className="text-xs font-black truncate" style={{ color: subjectSetting(log.subject).color }}>{teacherSubjectLabel(log.subject)}</div>
                             ) : null}
@@ -8582,8 +8686,8 @@ function SkeletonLoader() {
                                 <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 text-xs font-black">通常学習</span>
                               )}
                             </div>
-                            {log.comment ? (
-                              <p className="text-sm font-bold text-slate-700">自己評価・メモ: {log.comment}</p>
+                            {studyMemoNote(log.comment) ? (
+                              <p className="text-sm font-bold text-slate-700">自己評価・メモ: {studyMemoNote(log.comment)}</p>
                             ) : null}
                           </article>
                         );
@@ -9382,11 +9486,11 @@ function SkeletonLoader() {
                         <div className="min-w-0">
                           <div className="text-sm font-black text-slate-900 truncate flex items-center gap-1">
                             {log.is_mission_completed && <span className="text-base"><MissionCrown /></span>}
-                            <span className="truncate">{material?.title || '教材'}</span>
+                            <span className="truncate">{studyTitleWithAchievements(material?.title || '教材', log.comment)}</span>
                           </div>
                           <div className="text-[11px] font-bold text-slate-400">
                             {formatLogStamp(log.created_at)} · <span style={{ color: subjectSetting(material?.subject_code || material?.subject).color }}>{subjectLabel(material?.subject_code || material?.subject)}</span> · {log.time_spent_minutes}分
-                            {log.comment ? ` · ${log.comment}` : ''}
+                            {studyMemoNote(log.comment) ? ` · ${studyMemoNote(log.comment)}` : ''}
                           </div>
                         </div>
                         <div className="flex gap-2 shrink-0">
@@ -9515,7 +9619,7 @@ function SkeletonLoader() {
                                 key: `${log.id}-${hour}`,
                                 color: setting.color,
                                 bgColor: setting.bgColor,
-                                title: material?.title || '学習',
+                                title: studyTitleWithAchievements(material?.title || '学習', log.comment),
                                 crown: Boolean(log.is_mission_completed),
                                 slice,
                                 onClick: () => openStudentLogEditor(log),
@@ -9556,6 +9660,7 @@ function SkeletonLoader() {
                                   setTimerRunning(false);
                                   setCountdownRunning(false);
                                   setTimerElapsedSec(0);
+                                  setComposerAchievements([]);
                                   setNewLogForm((prev) => ({ ...prev, subject: '', material_id: '' }));
                                   setStudyComposer(clampStudyRange({ startHour: hour, startMinute: 0, endHour, endMinute: 0 }));
                                 }}
@@ -9971,7 +10076,7 @@ function SkeletonLoader() {
                           finished: false,
                           subject: String(newLogForm.subject || ''),
                           materialId: newLogForm.material_id,
-                          comment: newLogForm.comment,
+                          comment: joinStudyMemo(composerAchievements, newLogForm.comment),
                           mission: composerMission,
                           date: composerDateKey,
                           composer: studyComposer,
@@ -10012,6 +10117,8 @@ function SkeletonLoader() {
                 onSubject={(subject) => setNewLogForm((prev) => ({ ...prev, subject, material_id: '' }))}
                 onMaterial={(materialId) => setNewLogForm((prev) => ({ ...prev, material_id: materialId }))}
                 onToggleFavorite={toggleFavoriteMaterial}
+                achievements={composerAchievements}
+                onAchievements={setComposerAchievements}
               />
               {recordMode === 'timer' && timerRunning && (
                 <CyberTimer
@@ -10037,7 +10144,7 @@ function SkeletonLoader() {
                         finished: false,
                         subject: String(newLogForm.subject || ''),
                         materialId: newLogForm.material_id,
-                        comment: newLogForm.comment,
+                        comment: joinStudyMemo(composerAchievements, newLogForm.comment),
                         mission: composerMission,
                         date: composerDateKey,
                         composer: studyComposer,
@@ -10086,7 +10193,7 @@ function SkeletonLoader() {
                         finished: false,
                         subject: String(newLogForm.subject || ''),
                         materialId: newLogForm.material_id,
-                        comment: newLogForm.comment,
+                        comment: joinStudyMemo(composerAchievements, newLogForm.comment),
                         mission: composerMission,
                         date: composerDateKey,
                         composer: studyComposer,
@@ -10118,7 +10225,7 @@ function SkeletonLoader() {
                     type="button"
                     onClick={() => {
                       const span = composerContext.current ? studyDurationMinutes(clampStudyRange(composerContext.current)) : 0;
-                      void saveStudentMinutes(span, newLogForm.material_id, newLogForm.comment, composerContext.current);
+                      void saveStudentMinutes(span, newLogForm.material_id, joinStudyMemo(composerAchievements, newLogForm.comment), composerContext.current);
                     }}
                     className="w-full py-3 rounded-2xl bg-slate-200 text-slate-700 font-black cursor-pointer"
                   >
@@ -10162,6 +10269,8 @@ function SkeletonLoader() {
               }}
               onMaterial={setEditMaterialId}
               onToggleFavorite={toggleFavoriteMaterial}
+              achievements={editAchievements}
+              onAchievements={setEditAchievements}
             />
             <StudyTimeRangeFields value={editRange} onChange={setEditRange} />
             <textarea
