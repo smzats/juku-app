@@ -194,7 +194,7 @@ export default function CyberTimeAttack({
       <>
         {createPortal(
           <div
-            className="fixed inset-0 w-screen h-screen z-[9999] bg-[#030811] flex flex-col items-center justify-between p-4 overflow-hidden"
+            className="fixed inset-0 z-[9999] flex h-[100dvh] max-h-[100dvh] w-full flex-col justify-between overflow-hidden bg-[#030811] px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
             style={{
               backgroundImage: 'url(/images/bg-timer.png)',
               backgroundSize: 'contain',
@@ -202,8 +202,8 @@ export default function CyberTimeAttack({
               backgroundRepeat: 'no-repeat',
             }}
           >
-            <div className="flex min-h-0 w-full flex-1 items-center justify-center">
-              <div className="relative h-full max-h-full w-auto max-w-full" style={{ aspectRatio: '1080 / 1920', containerType: 'inline-size' }}>
+            <div className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden">
+              <div className="relative h-full max-h-full min-h-0 w-auto max-w-full" style={{ aspectRatio: '1080 / 1920', containerType: 'inline-size' }}>
                 <svg viewBox="0 0 200 200" className="absolute overflow-visible" style={RING_BOX} aria-hidden="true">
                   <g transform="rotate(-90 100 100)">
                     <circle cx="100" cy="100" r={RING_RADIUS} fill="none" stroke="rgba(0, 212, 255, 0.1)" strokeWidth="6" strokeDasharray="3 8.0" />
@@ -223,7 +223,7 @@ export default function CyberTimeAttack({
                 <div
                   className="time-container pointer-events-none"
                   style={{
-                    position: 'fixed',
+                    position: 'absolute',
                     top: '50%',
                     left: '50%',
                     transform: 'translate(-50%, -50%)',
@@ -265,7 +265,7 @@ export default function CyberTimeAttack({
             <button
               type="button"
               onClick={handleAbort}
-              className={`${orbitron.className} w-full max-w-sm cursor-pointer rounded-2xl bg-rose-600 py-4 text-base font-black tracking-[0.12em] text-white`}
+              className={`${orbitron.className} relative z-10 mt-3 w-full max-w-sm shrink-0 cursor-pointer rounded-2xl bg-rose-600 py-4 text-base font-black tracking-[0.12em] text-white`}
             >
               ABORT（中断）
             </button>
