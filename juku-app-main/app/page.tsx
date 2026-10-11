@@ -4328,6 +4328,8 @@ export default function Page() {
     note?: string;
   } | null>(null);
   const [recordMode, setRecordMode] = useState<'timer' | 'countdown' | 'manual'>('timer');
+  const [clockScrollToken, setClockScrollToken] = useState(0);
+  const studyClockAnchorRef = useRef<HTMLDivElement | null>(null);
   const [manualTimeOpen, setManualTimeOpen] = useState(false);
   const [timeAttackManualOpen, setTimeAttackManualOpen] = useState(false);
   const [timerCelebrate, setTimerCelebrate] = useState<LearningTrailCard[]>([]);
@@ -4342,6 +4344,15 @@ export default function Page() {
   const wakeLockRef = useRef<ScreenWakeLockSentinel | null>(null);
   const timeAttackFinishedRef = useRef(0);
   const clockRestoreUserRef = useRef('');
+  useEffect(() => {
+    if (clockScrollToken === 0) return;
+    const node = studyClockAnchorRef.current;
+    if (!node) return;
+    const frame = window.requestAnimationFrame(() => {
+      node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [clockScrollToken]);
   const [editingLog, setEditingLog] = useState<StudyLog | null>(null);
   const [editSubject, setEditSubject] = useState<SubjectType | ''>('');
   const [editMaterialId, setEditMaterialId] = useState('');
@@ -10115,6 +10126,7 @@ function SkeletonLoader() {
                     type="button"
                     onClick={() => {
                       if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
+                      setClockScrollToken((token) => token + 1);
                       const startedIso = new Date().toISOString();
                       measuredStartedIso.current = startedIso;
                       const startedAt = Date.parse(startedIso);
@@ -10147,7 +10159,7 @@ function SkeletonLoader() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setTimeAttackManualOpen(false); setRecordMode('countdown'); }}
+                    onClick={() => { setTimeAttackManualOpen(false); setRecordMode('countdown'); setClockScrollToken((token) => token + 1); }}
                     className="w-full bg-gradient-to-r from-purple-500 to-pink-600 text-white font-bold rounded-xl shadow-lg hover:shadow-purple-500/50 px-3 py-3 text-left text-sm cursor-pointer"
                   >
                     ⚡ 時間を決めてタイムアタック
@@ -10178,6 +10190,7 @@ function SkeletonLoader() {
                 impressions={materialImpressions}
                 onUpdateImpression={updateMaterialImpression}
               />
+              <div ref={studyClockAnchorRef}>
               {recordMode === 'timer' && timerRunning && (
                 <CyberTimer
                   running={timerRunning}
@@ -10271,6 +10284,7 @@ function SkeletonLoader() {
                   }}
                 />
               )}
+              </div>
             </div>
             <div className="shrink-0 border-t border-slate-200 bg-white px-3 pt-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] space-y-2">
               {manualTimeOpen && (

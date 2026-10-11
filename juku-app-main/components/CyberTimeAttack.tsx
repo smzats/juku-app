@@ -194,78 +194,61 @@ export default function CyberTimeAttack({
       <>
         {createPortal(
           <div
-            className="fixed inset-0 z-[9999] flex h-[100dvh] max-h-[100dvh] w-full flex-col justify-between overflow-hidden bg-[#030811] px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
-            style={{
-              backgroundImage: 'url(/images/bg-timer.png)',
-              backgroundSize: 'contain',
-              backgroundPosition: 'center',
-              backgroundRepeat: 'no-repeat',
-            }}
+            className="fixed inset-0 z-[9999] flex h-[100dvh] max-h-[100dvh] w-full flex-col justify-between overflow-hidden bg-[#030811] px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
           >
             <div className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden">
               <div className="relative h-full max-h-full min-h-0 w-auto max-w-full" style={{ aspectRatio: '1080 / 1920', containerType: 'inline-size' }}>
-                <svg viewBox="0 0 200 200" className="absolute overflow-visible" style={RING_BOX} aria-hidden="true">
-                  <g transform="rotate(-90 100 100)">
-                    <circle cx="100" cy="100" r={RING_RADIUS} fill="none" stroke="rgba(0, 212, 255, 0.1)" strokeWidth="6" strokeDasharray="3 8.0" />
-                    <circle
-                      cx="100"
-                      cy="100"
-                      r={RING_RADIUS}
-                      fill="none"
-                      stroke={stroke}
-                      strokeWidth="6"
-                      strokeDasharray={dash.array}
-                      strokeDashoffset={dash.offset}
-                      style={{ filter: glow }}
-                    />
-                  </g>
-                </svg>
-                <div
-                  className="time-container pointer-events-none"
-                  style={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    margin: 0,
-                    padding: 0,
-                  }}
-                >
-                  <p
-                    className={`${orbitron.className} leading-none tracking-wider`}
-                    style={{
-                      margin: 0,
-                      padding: 0,
-                      fontSize: 'clamp(1.8rem, 9cqi, 3.2rem)',
-                      color: stroke,
-                      textShadow: pinch ? '0 0 8px #ff0055, 0 0 16px #ff0055' : '0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.85)',
-                      animation: pinch ? 'cyber-pinch 0.8s steps(2, end) infinite' : undefined,
-                    }}
-                  >
-                    {formatRemain(shown)}
-                  </p>
-                  <p
-                    className={`${orbitron.className} tracking-[0.18em]`}
-                    style={{
-                      margin: 0,
-                      padding: 0,
-                      fontSize: 'clamp(0.7rem, 3cqi, 1rem)',
-                      color: pinch ? '#ff0055' : 'rgba(0, 229, 255, 0.85)',
-                    }}
-                  >
-                    REMAINING
-                  </p>
+                <img src="/images/bg-timer.png" alt="" className="absolute inset-0 h-full w-full object-fill" />
+                <div className="absolute" style={RING_BOX}>
+                  <svg viewBox="0 0 200 200" className="block h-full w-full overflow-visible" aria-hidden="true">
+                    <g transform="rotate(-90 100 100)">
+                      <circle cx="100" cy="100" r={RING_RADIUS} fill="none" stroke="rgba(0, 212, 255, 0.1)" strokeWidth="6" strokeDasharray="3 8.0" />
+                      <circle
+                        cx="100"
+                        cy="100"
+                        r={RING_RADIUS}
+                        fill="none"
+                        stroke={stroke}
+                        strokeWidth="6"
+                        strokeDasharray={dash.array}
+                        strokeDashoffset={dash.offset}
+                        style={{ filter: glow }}
+                      />
+                    </g>
+                  </svg>
+                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <p
+                      className={`${orbitron.className} w-full leading-none tracking-wider`}
+                      style={{
+                        margin: 0,
+                        padding: 0,
+                        fontSize: 'clamp(1.8rem, 9cqi, 3.2rem)',
+                        color: stroke,
+                        textShadow: pinch ? '0 0 8px #ff0055, 0 0 16px #ff0055' : '0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.85)',
+                        animation: pinch ? 'cyber-pinch 0.8s steps(2, end) infinite' : undefined,
+                      }}
+                    >
+                      {formatRemain(shown)}
+                    </p>
+                    <p
+                      className={`${orbitron.className} w-full leading-none tracking-[0.18em]`}
+                      style={{
+                        margin: '0.3rem 0 0',
+                        padding: 0,
+                        fontSize: 'clamp(0.7rem, 3cqi, 1rem)',
+                        color: pinch ? '#ff0055' : 'rgba(0, 229, 255, 0.85)',
+                      }}
+                    >
+                      REMAINING
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
             <button
               type="button"
               onClick={handleAbort}
-              className={`${orbitron.className} relative z-10 mt-3 w-full max-w-sm shrink-0 cursor-pointer rounded-2xl bg-rose-600 py-4 text-base font-black tracking-[0.12em] text-white`}
+              className={`${orbitron.className} relative z-10 mx-auto mt-2 w-full max-w-sm shrink-0 cursor-pointer rounded-2xl bg-rose-600 py-4 text-base font-black tracking-[0.12em] text-white`}
             >
               ABORT（中断）
             </button>
