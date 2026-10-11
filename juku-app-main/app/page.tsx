@@ -635,7 +635,6 @@ const STUDENT_LIST_COLUMNS = [
   { key: 'classroom', label: '所属校舎' },
   { key: 'role', label: '区分' },
   { key: 'id', label: '独自ID' },
-  { key: 'password', label: 'パスワード' },
   { key: 'english', label: '英語' },
   { key: 'math', label: '数学' },
   { key: 'japanese', label: '国語' },
@@ -4265,8 +4264,6 @@ export default function Page() {
   const [isMaterialCsvModalOpen, setIsMaterialCsvModalOpen] = useState<boolean>(false);
   const [isStudentEditModalOpen, setIsStudentEditModalOpen] = useState<boolean>(false);
   const [isTeacherEditModalOpen, setIsTeacherEditModalOpen] = useState<boolean>(false);
-  const [studentPasswordsVisible, setStudentPasswordsVisible] = useState<boolean>(false);
-  const [teacherPasswordsVisible, setTeacherPasswordsVisible] = useState<boolean>(false);
   const [isNoticeListOpen, setIsNoticeListOpen] = useState<boolean>(false);
   const [activeNotice, setActiveNotice] = useState<StudentMessage | null>(null);
   const [editingMaterialId, setEditingMaterialId] = useState<string | null>(null);
@@ -4282,7 +4279,6 @@ export default function Page() {
     classroom: 'ALL',
     role: 'ALL',
     id: 'ALL',
-    password: 'ALL',
     english: 'ALL',
     math: 'ALL',
     japanese: 'ALL',
@@ -4397,7 +4393,7 @@ export default function Page() {
         name: textCell(row?.name) || '名前未設定',
         role,
         classroom: textCell(row?.branch_id),
-        password: textCell(row?.password),
+        password: '',
       }];
     });
     const studentUsers = (students.data || []).flatMap((row: any) => {
@@ -4409,7 +4405,7 @@ export default function Page() {
         name: textCell(row?.name) || '名前未設定',
         role: 'student' as const,
         classroom: textCell(row?.branch_id),
-        password: textCell(row?.password),
+        password: '',
         grade: textCell(row?.grade),
         highSchool: textCell(row?.high_school),
         english: textCell(row?.english),
@@ -4743,6 +4739,41 @@ export default function Page() {
     };
   }, [currentUser, supabase]);
 
+  const syncAuthPassword = useCallback(async (id: string, password: string, role: UserRole): Promise<string | null> => {
+    const session = await supabase.auth.getSession();
+    const token = session.data.session?.access_token || '';
+    if (!token) return 'ログインし直してからパスワードを設定してください。';
+    const response = await fetch('/api/auth/accounts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ id, password, role }),
+    });
+    if (response.ok) return null;
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 400 && payload?.error === 'invalid_request') return 'パスワードは6文字以上にしてください。';
+    if (response.status === 403) return 'このアカウントのパスワードは変更できません。';
+    return 'パスワードの更新に失敗しました。';
+  }, [supabase]);
+
+  const resetDirectoryPassword = useCallback(async (account: User) => {
+    const entered = window.prompt(`${account.name}（${account.id}）の新しいパスワードを入力してください。6文字以上です。`);
+    if (entered == null) return;
+    const password = entered.trim();
+    if (password.length < 6) {
+      alert('パスワードは6文字以上にしてください。');
+      return;
+    }
+    const authError = await syncAuthPassword(account.id, password, account.role);
+    if (authError) {
+      alert(authError);
+      return;
+    }
+    addNotification('success', `${account.name} のパスワードを再設定しました。`);
+  }, [syncAuthPassword, addNotification]);
+
   const saveUserWithProfile = useCallback(async (user: User): Promise<string | null> => {
     const profile = pickStudentProfile(user);
     const safeRole: UserRole = resolveAppRole(user.role, user.id, user.email);
@@ -4757,6 +4788,7 @@ export default function Page() {
       password: String(user.password || '').trim(),
     };
     if (!normalized.id || !normalized.name) return '独自IDと氏名は必須です。';
+    if (normalized.password && normalized.password.length < 6) return 'パスワードは6文字以上にしてください。';
 
     const studentRow = {
       id: normalized.id,
@@ -4764,7 +4796,7 @@ export default function Page() {
       high_school: normalized.highSchool ?? '',
       grade: normalized.grade ?? '',
       branch_id: normalized.classroom ?? '',
-      password: normalized.password ?? '',
+      password: '',
       math: normalized.math ?? '',
       english: normalized.english ?? '',
       modern_jp: normalized.japanese ?? '',
@@ -4781,17 +4813,18 @@ export default function Page() {
       name: normalized.name,
       branch_id: normalized.classroom ?? '',
       role: normalized.role,
-      password: normalized.password ?? '',
+      password: '',
     };
     try {
       const table = normalized.role === 'student' ? 'students' : 'teachers';
       const result = await supabase.from(table).upsert([normalized.role === 'student' ? studentRow : teacherRow], { onConflict: 'id' });
       if (result.error) return result.error.message || 'データベース保存に失敗しました';
-      return null;
+      if (!normalized.password) return null;
+      return await syncAuthPassword(normalized.id, normalized.password, normalized.role);
     } catch (err: any) {
       return err?.message || '保存処理でエラーが発生しました';
     }
-  }, [supabase]);
+  }, [supabase, syncAuthPassword]);
 
   // 教師・生徒の手動個別追加処理
   const handleCreateUser = useCallback(async (e: React.FormEvent) => {
@@ -4802,7 +4835,16 @@ export default function Page() {
     }
 
     const requestedId = newUserForm.id.trim();
+    const password = newUserForm.password.trim();
     const existingUser = users.find((u) => u.id.toLowerCase() === requestedId.toLowerCase());
+    if (!existingUser && password.length < 6) {
+      alert('新規登録のパスワードは6文字以上にしてください。');
+      return;
+    }
+    if (password && password.length < 6) {
+      alert('パスワードは6文字以上にしてください。');
+      return;
+    }
     if (currentUser?.role !== 'admin' && newUserForm.role !== 'student') {
       alert('講師は生徒のみ登録できます。');
       return;
@@ -4880,7 +4922,7 @@ export default function Page() {
       name: nextName,
       classroom: studentEditForm.classroom,
       role: nextRole,
-      password: studentEditForm.password.trim(),
+      password: '',
     };
     replaceEditedUser(editingStudentOriginalId, saved);
 
@@ -4936,7 +4978,7 @@ export default function Page() {
     }
 
     try {
-      const dbError = await saveUserWithProfile({ ...studentEditForm, id: nextId, role: 'student', password: studentEditForm.password.trim() });
+      const dbError = await saveUserWithProfile({ ...studentEditForm, id: nextId, role: 'student', password: '' });
       if (dbError) {
         console.error(dbError);
         alert('通信エラー: ' + dbError);
@@ -7920,22 +7962,6 @@ function SkeletonLoader() {
                         </th>
                         <th className="p-2 align-bottom font-black whitespace-nowrap">操作</th>
                         {STUDENT_LIST_COLUMNS.map((column) => {
-                          if (column.key === 'password') {
-                            return (
-                              <th key={column.key} className="p-2 align-bottom whitespace-nowrap">
-                                <div className="flex items-center gap-1">
-                                  <span className="font-black">パスワード</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => setStudentPasswordsVisible((visible) => !visible)}
-                                    className="px-1.5 py-0.5 bg-white border border-emerald-200 rounded-md text-[10px] font-extrabold text-slate-700 cursor-pointer"
-                                  >
-                                    {studentPasswordsVisible ? '隠す' : '表示'}
-                                  </button>
-                                </div>
-                              </th>
-                            );
-                          }
                           const options = Array.from(new Set(students.map((student) => String(student[column.key] || '')).filter(Boolean))).sort();
                           return (
                             <th key={column.key} className="p-2 align-bottom whitespace-nowrap">
@@ -7991,6 +8017,13 @@ function SkeletonLoader() {
                                 🗑️ 削除
                               </button>
                               <button
+                                type="button"
+                                onClick={() => { void resetDirectoryPassword(student); }}
+                                className="px-3 py-1.5 bg-white hover:bg-sky-50 text-sky-800 rounded-xl text-xs font-extrabold border border-sky-200 cursor-pointer whitespace-nowrap"
+                              >
+                                パスワード再設定
+                              </button>
+                              <button
                                 onClick={() => {
                                   setSelectedStudentId(student.id);
                                   setActiveTab('student_detail');
@@ -8002,11 +8035,9 @@ function SkeletonLoader() {
                             </div>
                           </td>
                           {STUDENT_LIST_COLUMNS.map((column) => (
-                            <td key={column.key} className={`p-2 ${column.key === 'name' ? 'font-bold text-slate-900' : column.key === 'id' || column.key === 'password' ? 'font-mono font-bold text-slate-700' : 'text-slate-600'}`}>
+                            <td key={column.key} className={`p-2 ${column.key === 'name' ? 'font-bold text-slate-900' : column.key === 'id' ? 'font-mono font-bold text-slate-700' : 'text-slate-600'}`}>
                               {column.key === 'role' ? (
                                 <span className="px-2.5 py-1 text-[10px] rounded-md font-extrabold bg-emerald-100 text-emerald-700">{student.role}</span>
-                              ) : column.key === 'password' ? (
-                                student.password ? (studentPasswordsVisible ? student.password : '••••') : '未設定'
                               ) : (
                                 student[column.key] || '-'
                               )}
@@ -8298,18 +8329,6 @@ function SkeletonLoader() {
                         <th className="p-3.5 font-black">担当校舎</th>
                         <th className="p-3.5 font-black">区分</th>
                         <th className="p-3.5 font-black">独自ID</th>
-                        <th className="p-3.5 font-black">
-                          <div className="flex items-center gap-1">
-                            <span>パスワード</span>
-                            <button
-                              type="button"
-                              onClick={() => setTeacherPasswordsVisible((visible) => !visible)}
-                              className="px-1.5 py-0.5 bg-white border border-sky-200 rounded-md text-[10px] font-extrabold text-slate-700 cursor-pointer"
-                            >
-                              {teacherPasswordsVisible ? '隠す' : '表示'}
-                            </button>
-                          </div>
-                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -8323,6 +8342,13 @@ function SkeletonLoader() {
                                 className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-extrabold border border-slate-200 cursor-pointer whitespace-nowrap"
                               >
                                 ✏️ 編集
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => { void resetDirectoryPassword(teacher); }}
+                                className="px-3 py-1.5 bg-white hover:bg-sky-50 text-sky-800 rounded-xl text-xs font-extrabold border border-sky-200 cursor-pointer whitespace-nowrap"
+                              >
+                                パスワード再設定
                               </button>
                               <button
                                 type="button"
@@ -8341,9 +8367,6 @@ function SkeletonLoader() {
                             </span>
                           </td>
                           <td className="p-3.5 font-mono text-slate-700 font-bold">{teacher.id}</td>
-                          <td className="p-3.5 font-mono text-slate-700 font-bold">
-                            {teacher.password ? (teacherPasswordsVisible ? teacher.password : '••••') : '未設定'}
-                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -8579,7 +8602,7 @@ function SkeletonLoader() {
                   className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
                   placeholder=""
                 />
-                <p className="mt-1 text-[10px] font-bold text-slate-400">未入力の場合は、独自IDまたは1234でログインできます。</p>
+                <p className="mt-1 text-[10px] font-bold text-slate-400">6文字以上。空欄のときは、既存アカウントのパスワードは変更しません。</p>
               </div>
 
               <div>
@@ -8725,17 +8748,6 @@ function SkeletonLoader() {
                   />
                 </div>
               </div>
-              <div>
-                <label className="block text-slate-600 mb-1">パスワード</label>
-                <input
-                  type="text"
-                  value={studentEditForm.password}
-                  onChange={(e) => setStudentEditForm({ ...studentEditForm, password: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder=""
-                />
-                <p className="mt-1 text-[10px] font-bold text-slate-400">空欄のまま保存すると、独自IDまたは1234でログインできます。</p>
-              </div>
               <div className="grid grid-cols-2 gap-3">
                 {STUDENT_PROFILE_FIELDS.filter((field) => field.key !== 'grade' && field.key !== 'highSchool').map((field) => (
                   <div key={field.key}>
@@ -8810,17 +8822,6 @@ function SkeletonLoader() {
                     className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
                   />
                 </div>
-              </div>
-              <div>
-                <label className="block text-slate-600 mb-1">パスワード</label>
-                <input
-                  type="text"
-                  value={studentEditForm.password}
-                  onChange={(e) => setStudentEditForm({ ...studentEditForm, password: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  placeholder=""
-                />
-                <p className="mt-1 text-[10px] font-bold text-slate-400">空欄のまま保存すると、独自IDまたは1234でログインできます。</p>
               </div>
               <div className="pt-2 flex justify-end gap-3">
                 <button type="button" onClick={() => setIsTeacherEditModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl cursor-pointer">キャンセル</button>
@@ -8953,7 +8954,7 @@ function SkeletonLoader() {
                 >
                   📥 生徒用雛形CSVをダウンロード(BOM付きUTF-8)
                 </button>
-                <p>※ role は student です。password が空欄の既存データは維持され、未設定の場合は独自IDまたは1234でログインできます。</p>
+                <p>※ role は student です。password は6文字以上で Auth に保存します。空欄のときは既存のログインパスワードを変更しません。</p>
               </div>
               <div className="border-2 border-dashed border-slate-300 p-6 rounded-2xl text-center bg-slate-50">
                 <input type="file" accept=".csv" onChange={handleCsvFileSelect} disabled={csvUploading} className="block w-full text-xs text-slate-500" />
@@ -8993,7 +8994,7 @@ function SkeletonLoader() {
                     📥 雛形CSVをダウンロード
                   </button>
                 </div>
-                <p>※ role は teacher のみです。管理者以外は admin を登録できません。password が空欄のときは、既存のパスワードを維持します。</p>
+                <p>※ role は teacher のみです。管理者以外は admin を登録できません。password は6文字以上で Auth に保存します。空欄のときは既存のログインパスワードを変更しません。</p>
               </div>
               <div className="border-2 border-dashed border-slate-300 p-6 rounded-2xl text-center bg-slate-50">
                 <input type="file" accept=".csv" onChange={handleCsvFileSelect} disabled={csvUploading} className="block w-full text-xs text-slate-500" />
