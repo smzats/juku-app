@@ -4975,7 +4975,6 @@ export default function Page() {
       high_school: normalized.highSchool ?? '',
       grade: normalized.grade ?? '',
       branch_id: normalized.classroom ?? '',
-      password: '',
       math: normalized.math ?? '',
       english: normalized.english ?? '',
       modern_jp: normalized.japanese ?? '',
@@ -4992,7 +4991,6 @@ export default function Page() {
       name: normalized.name,
       branch_id: normalized.classroom ?? '',
       role: normalized.role,
-      password: '',
     };
     try {
       const table = normalized.role === 'student' ? 'students' : 'teachers';
