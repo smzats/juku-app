@@ -31,11 +31,12 @@ function accountEmail(user: { email?: string | null; identities?: Array<{ email?
 }
 
 function safeAuthMessage(error: unknown, secret: string): string {
-  const raw = error && typeof error === 'object' && 'message' in error
-    ? textCell((error as { message?: unknown }).message)
+  const record = error && typeof error === 'object' ? error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown } : null;
+  const raw = record
+    ? [record.message, record.details, record.hint, record.code].map(textCell).filter(Boolean).join(' / ')
     : textCell(error);
-  const cleaned = secret ? raw.split(secret).join('') : raw;
-  return cleaned.replace(/\s+/g, ' ').trim().slice(0, 180);
+  const cleaned = secret ? raw.split(secret).join('[password]') : raw;
+  return cleaned.replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
 async function findAuthUserId(admin: SupabaseClient, email: string): Promise<string | null> {
@@ -110,7 +111,12 @@ export async function POST(request: Request) {
   const admin = serviceClient(url, serviceKey);
   const callerId = callerEmail.split('@')[0]?.toLowerCase() || '';
   const teachers = await admin.from('teachers').select('id,role');
-  if (teachers.error) return NextResponse.json({ error: 'directory_unavailable' }, { status: 503 });
+  if (teachers.error) {
+    if (intent === 'register') {
+      return NextResponse.json({ error: 'directory_unavailable', message: safeAuthMessage(teachers.error, password) }, { status: 503 });
+    }
+    return NextResponse.json({ error: 'directory_unavailable' }, { status: 503 });
+  }
   const callerRow = (teachers.data || []).find((row) => textCell(row.id).toLowerCase() === callerId);
   const callerRole = textCell(callerRow?.role);
   if (callerRole !== 'admin' && callerRole !== 'teacher') return NextResponse.json({ error: 'forbidden' }, { status: 403 });
@@ -121,53 +127,53 @@ export async function POST(request: Request) {
   }
 
   if (intent === 'register') {
-    const name = textCell(body.name);
-    if (!name) return NextResponse.json({ error: 'invalid_request' }, { status: 400 });
-    const email = authEmailForId(id);
-    const created = await admin.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: { role },
-    });
-    const createdMessage = textCell(created.error?.message).toLowerCase();
-    const authExists = createdMessage.includes('already') || createdMessage.includes('registered') || createdMessage.includes('exists');
-    if (created.error && !authExists) {
-      return NextResponse.json({ error: 'auth_failed', message: safeAuthMessage(created.error, password) }, { status: 400 });
-    }
-
-    const studentRow = {
-      id,
-      name,
-      high_school: textCell(body.highSchool),
-      grade: textCell(body.grade),
-      branch_id: textCell(body.classroom),
-      math: textCell(body.math),
-      english: textCell(body.english),
-      modern_jp: textCell(body.japanese),
-      classic_jp: textCell(body.classicJp),
-      physics: textCell(body.physics),
-      chemistry: textCell(body.chemistry),
-      biology: textCell(body.biology),
-      jp_history: textCell(body.japaneseHistory),
-      world_history: textCell(body.worldHistory),
-      individual: textCell(body.individual),
-    };
-    const teacherRow = {
-      id,
-      name,
-      branch_id: textCell(body.classroom),
-      role,
-    };
-    const table = role === 'student' ? 'students' : 'teachers';
-    const inserted = await admin.from(table).insert([role === 'student' ? studentRow : teacherRow]);
-    if (inserted.error) {
-      const duplicate = inserted.error.code === '23505' || /duplicate key/i.test(inserted.error.message || '');
-      if (!duplicate) {
-        return NextResponse.json({ error: 'save_failed', message: textCell(inserted.error.message).slice(0, 180) }, { status: 400 });
+    try {
+      const name = textCell(body.name);
+      if (!name) return NextResponse.json({ error: 'invalid_request', message: 'name is required' }, { status: 400 });
+      const email = authEmailForId(id);
+      const metadataRole = role === 'student' ? 'student' : 'teacher';
+      const created = await admin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: { role: metadataRole },
+      });
+      if (created.error) {
+        return NextResponse.json({ error: 'auth_failed', message: safeAuthMessage(created.error, password) }, { status: 400 });
       }
+
+      const studentRow = {
+        id,
+        name,
+        high_school: textCell(body.highSchool),
+        grade: textCell(body.grade),
+        branch_id: textCell(body.classroom),
+        math: textCell(body.math),
+        english: textCell(body.english),
+        modern_jp: textCell(body.japanese),
+        classic_jp: textCell(body.classicJp),
+        physics: textCell(body.physics),
+        chemistry: textCell(body.chemistry),
+        biology: textCell(body.biology),
+        jp_history: textCell(body.japaneseHistory),
+        world_history: textCell(body.worldHistory),
+        individual: textCell(body.individual),
+      };
+      const teacherRow = {
+        id,
+        name,
+        branch_id: textCell(body.classroom),
+        role,
+      };
+      const table = role === 'student' ? 'students' : 'teachers';
+      const inserted = await admin.from(table).insert([role === 'student' ? studentRow : teacherRow]);
+      if (inserted.error) {
+        return NextResponse.json({ error: 'save_failed', message: safeAuthMessage(inserted.error, password) }, { status: 400 });
+      }
+      return NextResponse.json({ ok: true });
+    } catch (error) {
+      return NextResponse.json({ error: 'register_failed', message: safeAuthMessage(error, password) }, { status: 500 });
     }
-    return NextResponse.json({ ok: true });
   }
 
   const email = authEmailForId(id);

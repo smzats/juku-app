@@ -4970,13 +4970,19 @@ export default function Page() {
         individual: account.individual,
       }),
     });
+    const raw = await response.text();
     if (response.ok) return null;
-    const payload = await response.json().catch(() => ({}));
-    if (response.status === 401) return 'ログインし直してから登録してください。';
-    if (response.status === 400 && payload?.error === 'invalid_request') return '独自ID、氏名、6文字以上のパスワードは必須です。';
-    if (response.status === 403) return 'このアカウントは登録できません。';
-    const detail = typeof payload?.message === 'string' ? payload.message.trim() : '';
-    return detail ? `登録に失敗しました。${detail}` : '登録に失敗しました。';
+    let payload: { message?: unknown; error?: unknown; details?: unknown; hint?: unknown; code?: unknown } = {};
+    try {
+      payload = raw ? JSON.parse(raw) : {};
+    } catch {
+      payload = { message: raw };
+    }
+    const detail = [payload.message, payload.details, payload.hint, payload.code]
+      .map((value) => (value == null ? '' : String(value).trim()))
+      .filter(Boolean)
+      .join(' / ');
+    return detail || raw.trim() || (payload.error == null ? '' : String(payload.error)) || `HTTP ${response.status}`;
   }, [supabase]);
 
   const resetDirectoryPassword = useCallback(async (account: User) => {
@@ -5084,7 +5090,7 @@ export default function Page() {
       const dbError = await saveUserWithProfile({ ...newUserForm, id: requestedId }, existingUser ? 'update' : 'create');
       if (dbError) {
         console.error(dbError);
-        alert('通信エラー: ' + dbError);
+        alert(dbError);
         return;
       }
       addNotification('success', `新規ユーザー「${newUserForm.name}（${newUserForm.role}）」を追加登録いたしました！`);
@@ -6693,7 +6699,7 @@ export default function Page() {
       }
       if (dbError) {
         console.error(dbError);
-        alert('通信エラー: ' + dbError);
+        alert(dbError);
         setCsvStatusMessage({ type: 'error', text: dbError });
         return;
       }
