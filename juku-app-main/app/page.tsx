@@ -3379,14 +3379,14 @@ function LearningTrailFrame({
     >
       <div className="p-2 sm:p-3" style={{ background: card ? '#2a2114' : '#16130f' }}>
         <div
-          className="relative flex aspect-[3/4] items-center justify-center overflow-hidden"
+          className="relative flex aspect-square items-center justify-center overflow-hidden"
           style={{ background: card ? '#f4efe4' : '#100e0c' }}
         >
           {card ? (
             <img
               src={card.image_url}
               alt="実績"
-              className="w-full h-full object-contain"
+              className="h-full w-full object-cover"
             />
           ) : ready ? (
             <p className="px-6 text-center text-sm font-black leading-relaxed text-stone-300">
