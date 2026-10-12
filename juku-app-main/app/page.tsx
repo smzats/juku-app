@@ -4932,9 +4932,51 @@ export default function Page() {
     });
     if (response.ok) return null;
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401) return 'ログインし直してからパスワードを設定してください。';
     if (response.status === 400 && payload?.error === 'invalid_request') return 'パスワードは6文字以上にしてください。';
     if (response.status === 403) return 'このアカウントのパスワードは変更できません。';
-    return 'パスワードの更新に失敗しました。';
+    const detail = typeof payload?.message === 'string' ? payload.message.trim() : '';
+    return detail ? `パスワードの更新に失敗しました。${detail}` : 'パスワードの更新に失敗しました。';
+  }, [supabase]);
+
+  const registerDirectoryAccount = useCallback(async (account: User): Promise<string | null> => {
+    const session = await supabase.auth.getSession();
+    const token = session.data.session?.access_token || '';
+    if (!token) return 'ログインし直してから登録してください。';
+    const response = await fetch('/api/auth/accounts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        intent: 'register',
+        id: account.id,
+        password: account.password,
+        role: account.role,
+        name: account.name,
+        classroom: account.classroom,
+        grade: account.grade,
+        highSchool: account.highSchool,
+        math: account.math,
+        english: account.english,
+        japanese: account.japanese,
+        classicJp: account.classicJp,
+        physics: account.physics,
+        chemistry: account.chemistry,
+        biology: account.biology,
+        japaneseHistory: account.japaneseHistory,
+        worldHistory: account.worldHistory,
+        individual: account.individual,
+      }),
+    });
+    if (response.ok) return null;
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401) return 'ログインし直してから登録してください。';
+    if (response.status === 400 && payload?.error === 'invalid_request') return '独自ID、氏名、6文字以上のパスワードは必須です。';
+    if (response.status === 403) return 'このアカウントは登録できません。';
+    const detail = typeof payload?.message === 'string' ? payload.message.trim() : '';
+    return detail ? `登録に失敗しました。${detail}` : '登録に失敗しました。';
   }, [supabase]);
 
   const resetDirectoryPassword = useCallback(async (account: User) => {
@@ -4953,7 +4995,7 @@ export default function Page() {
     addNotification('success', `${account.name} のパスワードを再設定しました。`);
   }, [syncAuthPassword, addNotification]);
 
-  const saveUserWithProfile = useCallback(async (user: User): Promise<string | null> => {
+  const saveUserWithProfile = useCallback(async (user: User, mode: 'create' | 'update' = 'update'): Promise<string | null> => {
     const profile = pickStudentProfile(user);
     const safeRole: UserRole = resolveAppRole(user.role, user.id, user.email);
     const normalized: User = {
@@ -4968,6 +5010,10 @@ export default function Page() {
     };
     if (!normalized.id || !normalized.name) return '独自IDと氏名は必須です。';
     if (normalized.password && normalized.password.length < 6) return 'パスワードは6文字以上にしてください。';
+    if (mode === 'create') {
+      if (normalized.password.length < 6) return '新規登録のパスワードは6文字以上にしてください。';
+      return await registerDirectoryAccount(normalized);
+    }
 
     const studentRow = {
       id: normalized.id,
@@ -5001,7 +5047,7 @@ export default function Page() {
     } catch (err: any) {
       return err?.message || '保存処理でエラーが発生しました';
     }
-  }, [supabase, syncAuthPassword]);
+  }, [supabase, syncAuthPassword, registerDirectoryAccount]);
 
   // 教師・生徒の手動個別追加処理
   const handleCreateUser = useCallback(async (e: React.FormEvent) => {
@@ -5035,7 +5081,7 @@ export default function Page() {
     }
 
     try {
-      const dbError = await saveUserWithProfile({ ...newUserForm, id: requestedId });
+      const dbError = await saveUserWithProfile({ ...newUserForm, id: requestedId }, existingUser ? 'update' : 'create');
       if (dbError) {
         console.error(dbError);
         alert('通信エラー: ' + dbError);
@@ -6554,8 +6600,11 @@ export default function Page() {
 
             if (!rawId) errors.push({ rowNumber: rowNum, field: 'id', message: '独自ID (id) が指定されていません。' });
             if (!rawName) errors.push({ rowNumber: rowNum, field: 'name', message: '氏名 (name) が空欄です。' });
-
             const existingUser = users.find((u) => u.id.toLowerCase() === rawId.toLowerCase());
+            if (rawId && rawName && !existingUser && rawPassword.length < 6) {
+              errors.push({ rowNumber: rowNum, field: 'password', message: '新規登録のパスワードは6文字以上にしてください。' });
+            }
+
             if (csvImportKind === 'student') {
               if (rawRole && rawRole !== 'student') {
                 errors.push({ rowNumber: rowNum, field: 'role', message: '生徒専用CSVの role は student のみです。' });
@@ -6638,7 +6687,8 @@ export default function Page() {
     try {
       let dbError: string | null = null;
       for (const row of csvParsedPreview) {
-        const result = await saveUserWithProfile(row);
+        const exists = users.some((user) => user.id.toLowerCase() === row.id.toLowerCase());
+        const result = await saveUserWithProfile(row, exists ? 'update' : 'create');
         if (result) dbError = result;
       }
       if (dbError) {
