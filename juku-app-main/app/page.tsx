@@ -6511,7 +6511,7 @@ export default function Page() {
 
   useEffect(() => {
     if (currentUser?.role !== 'teacher') return;
-    if (activeTab === 'teachers') setActiveTab('dashboard');
+    if (activeTab === 'teachers' || activeTab === 'schedule_planner') setActiveTab('dashboard');
     if (isTeacherCsvModalOpen) setIsTeacherCsvModalOpen(false);
   }, [currentUser, activeTab, isTeacherCsvModalOpen]);
 
@@ -7884,7 +7884,7 @@ function SkeletonLoader() {
           <nav className="flex-1 min-h-0 overflow-y-auto px-5 pb-4 space-y-1.5">
             {[
               { id: 'dashboard', label: 'ダッシュボード', icon: '📊' },
-              { id: 'schedule_planner', label: 'スケジュール', icon: '📅' },
+              ...(currentUser.role === 'admin' ? [{ id: 'schedule_planner', label: '全体スケジュールの設定', icon: '📅' }] : []),
               { id: 'students', label: '所属生徒一覧', icon: '🎓' },
               ...(currentUser.role === 'admin' ? [{ id: 'pending_delete', label: 'データを消す生徒', icon: '🗑️' }] : []),
               ...(currentUser.role === 'admin' ? [{ id: 'teachers', label: '所属教師・管理者一覧', icon: '👨‍🏫' }] : []),
@@ -7948,7 +7948,7 @@ function SkeletonLoader() {
 <div>
             <h2 className="text-xl font-black text-slate-900 tracking-tight">
               {activeTab === 'dashboard' && 'Y Log 統合ダッシュボード'}
-              {activeTab === 'schedule_planner' && 'スケジュール'}
+              {activeTab === 'schedule_planner' && '全体スケジュールの設定'}
               {activeTab === 'teachers' && '所属教師・管理者管理一覧'}
               {activeTab === 'students' && '所属生徒データ一覧'}
               {activeTab === 'pending_delete' && 'データを消す生徒'}
@@ -8092,7 +8092,7 @@ function SkeletonLoader() {
 
             
 
-            {activeTab === 'schedule_planner' && (
+            {activeTab === 'schedule_planner' && currentUser.role === 'admin' && (
               <div className="space-y-4">
                 
                   <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
