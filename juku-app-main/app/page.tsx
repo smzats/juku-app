@@ -1687,6 +1687,43 @@ function dashboardMaterialCode(material: Material): SubjectCode {
   return fromName || subjectCodeFromInput(material.subject) || 'other';
 }
 
+function carteSubjectCode(value: unknown): SubjectCode | null {
+  const raw = canonicalizeSubjectLabel(value);
+  if (!raw) return null;
+  const direct = subjectCodeFromInput(raw);
+  if (direct) return direct;
+  const legacy: Record<string, SubjectCode> = {
+    数学: 'math_prep',
+    古典: 'classic_jp',
+    漢文: 'classic_jp',
+    古文: 'classic_jp',
+    公共: 'civics',
+    物理基礎: 'physics',
+    化学基礎: 'chemistry',
+    生物基礎: 'biology',
+    地学基礎: 'earth_science',
+    その他: 'other',
+  };
+  return legacy[raw] || null;
+}
+
+function logCarteCode(log: StudyLog, catalog: Material[]): SubjectCode {
+  const material = catalog.find((item) => item.id === log.material_id);
+  if (material?.subject_code && isSubjectCode(material.subject_code)) return material.subject_code;
+  return carteSubjectCode(material?.subject) || carteSubjectCode(log.subject) || 'other';
+}
+
+function carteLastStudyText(dateKey: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return '最終学習: 未記録';
+  const today = todayDateKey();
+  const days = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${dateKey}T00:00:00Z`)) / 86400000);
+  if (days <= 0) return '最終学習: 今日';
+  if (days === 1) return '最終学習: 昨日';
+  if (days <= 30) return `最終学習: ${days}日前`;
+  const [, month, day] = dateKey.split('-');
+  return `最終学習: ${Number(month)}/${Number(day)}`;
+}
+
 function formatStudyDuration(minutes: number): string {
   const safe = Math.max(0, Math.round(minutes));
   const hours = Math.floor(safe / 60);
@@ -6209,32 +6246,36 @@ export default function Page() {
   // 生徒一人ひとりの科目別成長集計演算
   const selectedStudentSubjectStats = useMemo(() => {
     if (!selectedStudentId) return [];
-    const studentLogs = logs.filter((l) => l.user_id === selectedStudentId);
-    
-    const stats = Object.fromEntries(
-      SUBJECT_NAMES.map((subj) => [subj, { totalScore: 0, totalMinutes: 0, count: 0, crownCount: 0 }])
-    ) as Record<SubjectType, { totalScore: number; totalMinutes: number; count: number; crownCount: number }>;
-
+    const studentLogs = logs.filter((log) => log.user_id === selectedStudentId);
+    const buckets = new Map<SubjectCode, { minutes: number; lastDate: string; materials: Map<string, { id: string; title: string; minutes: number }> }>();
     studentLogs.forEach((log) => {
-      const mat = materials.find((m) => m.id === log.material_id);
-      const subj = mat ? subjectFromInput(mat.subject) : null;
-      if (subj && stats[subj]) {
-        stats[subj].totalScore += log.score;
-        stats[subj].totalMinutes += log.time_spent_minutes || 0;
-        stats[subj].count += 1;
-        if (log.is_mission_completed) stats[subj].crownCount += 1;
-      }
+      const code = logCarteCode(log, materials);
+      const bucket = buckets.get(code) || { minutes: 0, lastDate: '', materials: new Map() };
+      const minutes = log.time_spent_minutes || 0;
+      bucket.minutes += minutes;
+      const dateKey = String(log.created_at || '').slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateKey) && dateKey > bucket.lastDate) bucket.lastDate = dateKey;
+      const materialId = log.material_id || 'unknown';
+      const title = meetingMaterialTitle(materialId, selectedStudentId, materials);
+      const item = bucket.materials.get(materialId) || { id: materialId, title, minutes: 0 };
+      item.minutes += minutes;
+      if (title && title !== '教材名未登録') item.title = title;
+      bucket.materials.set(materialId, item);
+      buckets.set(code, bucket);
     });
-
-    return SUBJECT_NAMES.map((subj) => {
-      const item = stats[subj];
-      return {
-        subject: subj,
-        avgScore: item.count > 0 ? Math.round(item.totalScore / item.count) : 0,
-        totalHours: Math.round((item.totalMinutes / 60) * 10) / 10,
-        count: item.count,
-        crownCount: item.crownCount,
-      };
+    return (Object.keys(SUBJECT_CONFIG) as SubjectCode[]).flatMap((code) => {
+      const bucket = buckets.get(code);
+      if (!bucket || bucket.minutes <= 0) return [];
+      const setting = SUBJECT_CONFIG[code];
+      return [{
+        code,
+        label: setting.label,
+        color: setting.color,
+        bgColor: setting.bgColor,
+        minutes: bucket.minutes,
+        lastLabel: carteLastStudyText(bucket.lastDate),
+        materials: Array.from(bucket.materials.values()).sort((a, b) => b.minutes - a.minutes || a.title.localeCompare(b.title, 'ja')),
+      }];
     });
   }, [logs, materials, selectedStudentId]);
 
@@ -8522,22 +8563,28 @@ function SkeletonLoader() {
 
                 {/* 生徒一人ひとりの修正教科別成長グラフ・インセンティブカード */}
                 <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
-                  <h4 className="text-sm font-extrabold text-slate-900">📊 修正教科別成長スコア ＆ 👑ミッション達成数</h4>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-                    {selectedStudentSubjectStats.map((st) => {
-                      const setting = subjectSetting(st.subject);
-                      return (
-                        <div key={st.subject} className="p-3.5 rounded-2xl border space-y-1.5" style={{ backgroundColor: setting.bgColor, color: setting.color, borderColor: setting.color }}>
-                          <div className="font-black text-xs">{st.subject}</div>
-                          <div className="text-2xl font-black text-slate-900">{st.avgScore} <span className="text-[10px] font-bold text-slate-400">点</span></div>
-                          <div className="flex justify-between items-center text-[9px] font-bold text-slate-600 pt-1 border-t border-slate-200/60">
-                            <span>学習: {st.totalHours}h</span>
-                            <span className="text-amber-700 font-black">👑 x{st.crownCount}</span>
-                          </div>
+                  <h4 className="text-sm font-extrabold text-slate-900">📊 教科別総学習時間 ＆ 取り組み教材</h4>
+                  {selectedStudentSubjectStats.length === 0 ? (
+                    <p className="text-xs font-bold text-slate-400">まだ学習記録がありません。</p>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                      {selectedStudentSubjectStats.map((st) => (
+                        <div key={st.code} className="p-4 rounded-2xl border space-y-2" style={{ backgroundColor: st.bgColor, borderColor: st.color }}>
+                          <div className="font-black text-sm" style={{ color: st.color }}>{st.label}</div>
+                          <div className="text-2xl font-black text-slate-900">{formatStudyDuration(st.minutes)}</div>
+                          <div className="text-[11px] font-bold text-slate-500">{st.lastLabel}</div>
+                          <ul className="space-y-1 border-t border-slate-200/70 pt-2">
+                            {st.materials.map((material) => (
+                              <li key={material.id} className="flex items-start justify-between gap-2 text-[11px] font-bold text-slate-700">
+                                <span className="min-w-0">{material.title}</span>
+                                <span className="shrink-0 text-slate-900">{formatStudyDuration(material.minutes)}</span>
+                              </li>
+                            ))}
+                          </ul>
                         </div>
-                      );
-                    })}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* ログ履歴 */}
@@ -8547,8 +8594,7 @@ function SkeletonLoader() {
                     <thead>
                       <tr className="bg-slate-100 text-slate-900 border-b border-slate-200">
                         <th className="p-3 font-bold">ログID</th>
-                        <th className="p-3 font-bold">教材ID</th>
-                        <th className="p-3 font-bold">得点</th>
+                        <th className="p-3 font-bold">教材名</th>
                         <th className="p-3 font-bold">時間</th>
                         <th className="p-3 font-bold">ミッション状態</th>
                         <th className="p-3 font-bold">メモ</th>
@@ -8558,8 +8604,10 @@ function SkeletonLoader() {
                       {selectedStudentLogs.map((log) => (
                         <tr key={log.id} className="hover:bg-slate-50">
                           <td className="p-3 font-mono text-slate-500">{log.id}</td>
-                          <td className="p-3 font-mono font-bold text-slate-700">{log.material_id}</td>
-                          <td className="p-3 font-black text-sky-600">{log.score} 点</td>
+                          <td className="p-3">
+                            <div className="font-bold text-slate-800">{meetingMaterialTitle(log.material_id, selectedStudent.id, materials)}</div>
+                            <div className="mt-0.5 font-mono text-[10px] font-bold text-slate-400">{log.material_id}</div>
+                          </td>
                           <td className="p-3 text-slate-600">{log.time_spent_minutes} 分</td>
                           <td className="p-3">
                             {log.is_mission_completed ? (
