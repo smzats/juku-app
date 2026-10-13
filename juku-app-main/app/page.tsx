@@ -1671,6 +1671,22 @@ function studyLogInPeriod(
   return placed.date.slice(0, 7) === today.slice(0, 7);
 }
 
+function dashboardGradeKey(grade: string): 'g1' | 'g2' | 'g3' | 'grad' | null {
+  const text = grade.replace(/[\s\u3000]/g, '').replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xFEE0));
+  if (!text) return null;
+  if (/高卒|既卒|浪人/.test(text)) return 'grad';
+  if (/高3|高校3|高三/.test(text) || text === '3年' || text === '3年生') return 'g3';
+  if (/高2|高校2|高二/.test(text) || text === '2年' || text === '2年生') return 'g2';
+  if (/高1|高校1|高一/.test(text) || text === '1年' || text === '1年生') return 'g1';
+  return null;
+}
+
+function dashboardMaterialCode(material: Material): SubjectCode {
+  if (material.subject_code && isSubjectCode(material.subject_code)) return material.subject_code;
+  const fromName = (Object.keys(SUBJECT_CODE_TONE) as SubjectCode[]).find((code) => SUBJECT_CODE_TONE[code] === material.subject);
+  return fromName || subjectCodeFromInput(material.subject) || 'other';
+}
+
 function formatStudyDuration(minutes: number): string {
   const safe = Math.max(0, Math.round(minutes));
   const hours = Math.floor(safe / 60);
@@ -6030,6 +6046,39 @@ export default function Page() {
     return filteredUsers.filter((u) => u.role === 'student' && u.isPendingDelete !== true);
   }, [filteredUsers]);
 
+  const dashboardGradeRows = useMemo(() => {
+    const enrolled = users.filter((user) => user.role === 'student' && user.isPendingDelete !== true);
+    const known = ['本川越校', '川越校', 'ＥＸ校'];
+    const rooms = Array.from(new Set([...known, ...enrolled.map((user) => user.classroom).filter(Boolean)]));
+    const countFor = (room: string | null) => {
+      const list = room ? enrolled.filter((user) => user.classroom === room) : enrolled;
+      const counts = { g1: 0, g2: 0, g3: 0, grad: 0, total: list.length };
+      list.forEach((user) => {
+        const key = dashboardGradeKey(user.grade);
+        if (key) counts[key] += 1;
+      });
+      return counts;
+    };
+    return [
+      { label: '全校舎総合', ...countFor(null) },
+      ...rooms.map((room) => ({ label: room, ...countFor(room) })),
+    ];
+  }, [users]);
+
+  const dashboardMaterialCounts = useMemo(() => {
+    return (Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((code) => {
+      let master = 0;
+      let personal = 0;
+      materials.forEach((item) => {
+        if (dashboardMaterialCode(item) !== code) return;
+        if (item.is_custom === true) personal += 1;
+        else master += 1;
+      });
+      const setting = SUBJECT_CONFIG[code];
+      return { code, label: setting.label, color: setting.color, bgColor: setting.bgColor, master, personal, total: master + personal };
+    });
+  }, [materials]);
+
   const pendingDeleteStudents = useMemo(() => {
     return filteredUsers.filter((u) => u.role === 'student' && u.isPendingDelete === true);
   }, [filteredUsers]);
@@ -7973,7 +8022,7 @@ function SkeletonLoader() {
 
             {activeTab === 'dashboard' && (
               <>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
                   <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-1">
                     <div className="text-xs text-slate-400 font-bold">総生徒数</div>
                     <div className="text-3xl font-black text-emerald-600">{globalSummaryStats.totalStudents} <span className="text-xs font-bold text-slate-400">名</span></div>
@@ -7986,97 +8035,51 @@ function SkeletonLoader() {
                     <div className="text-xs text-slate-400 font-bold">登録教材数</div>
                     <div className="text-3xl font-black text-purple-600">{globalSummaryStats.totalMaterials} <span className="text-xs font-bold text-slate-400">件</span></div>
                   </div>
-                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-1">
-                    <div className="text-xs text-slate-400 font-bold">全体の平均得点</div>
-                    <div className="text-3xl font-black text-amber-600">{globalSummaryStats.overallAvgScore} <span className="text-xs font-bold text-slate-400">点</span></div>
-                  </div>
                 </div>
 
-                
-
-                {/* 正しい各教科の指定テーマカラーリファレンス表示 */}
-                <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
-                  <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">教科テーマカラー ＆ 正しい修正科目定義</h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-                    {(Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((subjectKey) => {
-                      const setting = SUBJECT_CONFIG[subjectKey] ?? SUBJECT_CONFIG.other;
-                      return (
-                        <div key={subjectKey} className="p-3 rounded-2xl border space-y-1" style={{ backgroundColor: setting.bgColor, color: setting.color, borderColor: setting.color }}>
-                          <div className="font-black text-xs">{setting.label}</div>
-                          <div className="text-[9px] font-mono text-slate-500">HEX: {setting.color}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* 生徒サマリー */}
-                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
-                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                      <h3 className="text-sm font-extrabold text-emerald-950 flex items-center gap-2">
-                        <span>🎓</span> 所属生徒 ({students.length}名)
-                      </h3>
-                      <button onClick={() => setActiveTab('students')} className="text-xs text-emerald-600 font-bold hover:underline cursor-pointer">
-                        すべて表示 ➔
-                      </button>
-                    </div>
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr className="bg-emerald-50 text-emerald-900 border-b border-emerald-100">
-                          <th className="p-3 font-black">氏名</th>
-                          <th className="p-3 font-black">校舎</th>
-                          <th className="p-3 font-black">独自ID</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {students.slice(0, 5).map((s) => (
-                          <tr key={s.id} className="hover:bg-emerald-50/30">
-                            <td className="p-3 font-bold text-slate-900">{s.name}</td>
-                            <td className="p-3 text-slate-600">{s.classroom}</td>
-                            <td className="p-3 font-mono font-bold text-slate-700">{s.id}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* 最新学習評価ログ */}
-                  <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
-                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                      <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                        <span>📝</span> 直近の学習記録 (👑ミッション完了)
-                      </h3>
-                      <button onClick={() => setActiveTab('logs')} className="text-xs text-slate-600 font-bold hover:underline cursor-pointer">
-                        全ログを見る ➔
-                      </button>
-                    </div>
+                <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                  <h3 className="text-sm font-extrabold text-slate-900">校舎別の学年別登録生徒数</h3>
+                  <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
                         <tr className="bg-slate-100 text-slate-900 border-b border-slate-200">
-                          <th className="p-3 font-bold">生徒ID</th>
-                          <th className="p-3 font-bold">得点</th>
-                          <th className="p-3 font-bold">状態</th>
+                          <th className="p-3 font-black">校舎</th>
+                          <th className="p-3 font-black">高１</th>
+                          <th className="p-3 font-black">高２</th>
+                          <th className="p-3 font-black">高３</th>
+                          <th className="p-3 font-black">高卒</th>
+                          <th className="p-3 font-black">合計</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {logs.slice(0, 5).map((log) => (
-                          <tr key={log.id} className="hover:bg-slate-50">
-                            <td className="p-3 font-mono text-sky-800 font-bold">{log.user_id}</td>
-                            <td className="p-3 font-black text-sky-600">{log.score} 点</td>
-                            <td className="p-3 font-bold">
-                              {log.is_mission_completed ? (
-                                <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-md text-[10px] font-black inline-flex items-center gap-1">
-                                  <span>👑</span> ミッション完了
-                                </span>
-                              ) : (
-                                <span className="text-slate-400">通常記録</span>
-                              )}
-                            </td>
+                        {dashboardGradeRows.map((row) => (
+                          <tr key={row.label} className={row.label === '全校舎総合' ? 'bg-emerald-50/70' : 'hover:bg-slate-50'}>
+                            <td className="p-3 font-black text-slate-900">{row.label}</td>
+                            <td className="p-3 font-black text-slate-800">{row.g1}名</td>
+                            <td className="p-3 font-black text-slate-800">{row.g2}名</td>
+                            <td className="p-3 font-black text-slate-800">{row.g3}名</td>
+                            <td className="p-3 font-black text-slate-800">{row.grad}名</td>
+                            <td className="p-3 font-black text-emerald-700">{row.total}名</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                </div>
+
+                <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
+                  <h3 className="text-sm font-extrabold text-slate-900">科目別の登録教材数</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {dashboardMaterialCounts.map((item) => (
+                      <div key={item.code} className="rounded-2xl border p-4" style={{ backgroundColor: item.bgColor, borderColor: item.color }}>
+                        <div className="text-sm font-black" style={{ color: item.color }}>{item.label}</div>
+                        <div className="mt-2 text-2xl font-black text-slate-900">{item.total} <span className="text-xs font-bold text-slate-500">冊</span></div>
+                        <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] font-bold text-slate-700">
+                          <div className="rounded-xl bg-white/80 px-2 py-1.5">全体用 {item.master}冊</div>
+                          <div className="rounded-xl bg-white/80 px-2 py-1.5">生徒個々用 {item.personal}冊</div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </>
