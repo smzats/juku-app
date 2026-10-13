@@ -4278,10 +4278,25 @@ const WELCOME_SPARKS = [
   { className: '-right-3 bottom-20 h-1.5 w-1.5', delay: '0.25s' },
 ] as const;
 
+const WELCOME_LAST_SHOWN_KEY = 'welcome_last_shown';
+const WELCOME_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 function pickWelcomeImage(): { base: string; ur: boolean } {
   const roll = Math.floor(Math.random() * 282);
   if (roll >= 280) return { base: `welcome-ur-0${roll - 279}`, ur: true };
   return { base: `welcome-${String(Math.floor(roll / 10) + 1).padStart(2, '0')}`, ur: false };
+}
+
+function welcomeIntervalElapsed(): boolean {
+  try {
+    const raw = window.localStorage.getItem(WELCOME_LAST_SHOWN_KEY);
+    if (!raw) return true;
+    const last = Number(raw);
+    if (!Number.isFinite(last)) return true;
+    return Date.now() - last >= WELCOME_INTERVAL_MS;
+  } catch {
+    return true;
+  }
 }
 
 function StudentWelcomeModal({ blocked }: { blocked: boolean }) {
@@ -4303,7 +4318,12 @@ function StudentWelcomeModal({ blocked }: { blocked: boolean }) {
   }, []);
 
   const present = useCallback(() => {
-    if (blockedRef.current) return;
+    if (blockedRef.current || !welcomeIntervalElapsed()) return;
+    try {
+      window.localStorage.setItem(WELCOME_LAST_SHOWN_KEY, String(Date.now()));
+    } catch {
+      // 表示間隔だけを覚える。計測データは触らない。
+    }
     showIdRef.current += 1;
     setExtIndex(0);
     setClosing(false);
