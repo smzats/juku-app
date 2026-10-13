@@ -4278,37 +4278,101 @@ const WELCOME_SPARKS = [
   { className: '-right-3 bottom-20 h-1.5 w-1.5', delay: '0.25s' },
 ] as const;
 
+const WELCOME_COOLDOWN_MS = 5 * 60 * 1000;
+const WELCOME_SHOWN_KEY = 'juku_welcome_shown_at';
+
 function pickWelcomeImage(): { base: string; ur: boolean } {
   const roll = Math.floor(Math.random() * 282);
   if (roll >= 280) return { base: `welcome-ur-0${roll - 279}`, ur: true };
   return { base: `welcome-${String(Math.floor(roll / 10) + 1).padStart(2, '0')}`, ur: false };
 }
 
-function StudentWelcomeModal() {
-  const [pick] = useState(pickWelcomeImage);
+function welcomeCooldownElapsed(): boolean {
+  try {
+    const last = Number(window.localStorage.getItem(WELCOME_SHOWN_KEY) || '0');
+    return !Number.isFinite(last) || Date.now() - last >= WELCOME_COOLDOWN_MS;
+  } catch {
+    return true;
+  }
+}
+
+function welcomeClockIsRunning(): boolean {
+  try {
+    const saved = readActiveStudyClock();
+    return Boolean(saved && saved.running && !saved.finished);
+  } catch {
+    return false;
+  }
+}
+
+function StudentWelcomeModal({ blocked }: { blocked: boolean }) {
+  const blockedRef = useRef(blocked);
+  blockedRef.current = blocked;
+  const [pick, setPick] = useState<{ base: string; ur: boolean } | null>(null);
   const [extIndex, setExtIndex] = useState(0);
   const [closing, setClosing] = useState(false);
-  const [gone, setGone] = useState(false);
-  const closedRef = useRef(false);
+  const showIdRef = useRef(0);
 
   const close = useCallback(() => {
-    if (closedRef.current) return;
-    closedRef.current = true;
     setClosing(true);
+    const id = showIdRef.current;
+    window.setTimeout(() => {
+      if (showIdRef.current !== id) return;
+      setPick(null);
+      setClosing(false);
+    }, 400);
+  }, []);
+
+  const present = useCallback(() => {
+    if (blockedRef.current || welcomeClockIsRunning() || !welcomeCooldownElapsed()) return;
+    try {
+      window.localStorage.setItem(WELCOME_SHOWN_KEY, String(Date.now()));
+    } catch {
+      // 表示間隔だけを覚えておく。失敗しても計測データは触らない。
+    }
+    showIdRef.current += 1;
+    setExtIndex(0);
+    setClosing(false);
+    setPick(pickWelcomeImage());
   }, []);
 
   useEffect(() => {
+    if (!pick) return;
     const timer = window.setTimeout(close, 3000);
     return () => window.clearTimeout(timer);
-  }, [close]);
+  }, [pick, close]);
 
   useEffect(() => {
-    if (!closing) return;
-    const timer = window.setTimeout(() => setGone(true), 400);
-    return () => window.clearTimeout(timer);
-  }, [closing]);
+    present();
+    let backgrounded = false;
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        backgrounded = true;
+        return;
+      }
+      if (!backgrounded) return;
+      backgrounded = false;
+      present();
+    };
+    const onBlur = () => {
+      backgrounded = true;
+    };
+    const onFocus = () => {
+      if (document.visibilityState === 'hidden' || !backgrounded) return;
+      backgrounded = false;
+      present();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [present]);
 
-  if (typeof document === 'undefined' || gone || extIndex >= WELCOME_EXTENSIONS.length) return null;
+  if (typeof document === 'undefined' || !pick || extIndex >= WELCOME_EXTENSIONS.length) return null;
   const src = `/welcome/${pick.base}.${WELCOME_EXTENSIONS[extIndex]}`;
 
   return createPortal(
@@ -10606,7 +10670,7 @@ function SkeletonLoader() {
     return (
       <RoleScreenContext.Provider value={screens}>
         <StudentView currentUser={currentUser} />
-        <StudentWelcomeModal />
+        <StudentWelcomeModal blocked={timerRunning || countdownRunning || (studyComposer != null && recordMode === 'countdown')} />
       </RoleScreenContext.Provider>
     );
   }
