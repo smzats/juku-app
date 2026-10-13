@@ -4266,6 +4266,87 @@ function isHandheldClient(): boolean {
   return false;
 }
 
+const WELCOME_EXTENSIONS = ['webp', 'png', 'jpg', 'jpeg'] as const;
+const WELCOME_SPARKS = [
+  { className: '-left-1 top-8 h-2 w-2', delay: '0s' },
+  { className: 'left-6 -top-2 h-1.5 w-1.5', delay: '0.2s' },
+  { className: 'right-8 -top-3 h-2.5 w-2.5', delay: '0.45s' },
+  { className: '-right-2 top-10 h-2 w-2', delay: '0.15s' },
+  { className: '-left-3 bottom-16 h-1.5 w-1.5', delay: '0.6s' },
+  { className: 'left-10 -bottom-2 h-2 w-2', delay: '0.35s' },
+  { className: 'right-4 -bottom-3 h-2.5 w-2.5', delay: '0.7s' },
+  { className: '-right-3 bottom-20 h-1.5 w-1.5', delay: '0.25s' },
+] as const;
+
+function pickWelcomeImage(): { base: string; ur: boolean } {
+  const roll = Math.floor(Math.random() * 282);
+  if (roll >= 280) return { base: `welcome-ur-0${roll - 279}`, ur: true };
+  return { base: `welcome-${String(Math.floor(roll / 10) + 1).padStart(2, '0')}`, ur: false };
+}
+
+function StudentWelcomeModal() {
+  const [pick] = useState(pickWelcomeImage);
+  const [extIndex, setExtIndex] = useState(0);
+  const [closing, setClosing] = useState(false);
+  const [gone, setGone] = useState(false);
+  const closedRef = useRef(false);
+
+  const close = useCallback(() => {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    setClosing(true);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(close, 3000);
+    return () => window.clearTimeout(timer);
+  }, [close]);
+
+  useEffect(() => {
+    if (!closing) return;
+    const timer = window.setTimeout(() => setGone(true), 400);
+    return () => window.clearTimeout(timer);
+  }, [closing]);
+
+  if (typeof document === 'undefined' || gone || extIndex >= WELCOME_EXTENSIONS.length) return null;
+  const src = `/welcome/${pick.base}.${WELCOME_EXTENSIONS[extIndex]}`;
+
+  return createPortal(
+    <div
+      className={`fixed inset-0 z-[120] flex items-center justify-center bg-black/70 px-6 backdrop-blur-sm ${closing ? 'ylog-welcome-out' : ''}`}
+      onClick={close}
+      role="presentation"
+    >
+      <div className={`relative w-full max-w-sm ${closing ? '' : 'ylog-welcome-in'}`}>
+        {WELCOME_SPARKS.map((spark) => (
+          <span
+            key={spark.className}
+            className={`ylog-welcome-twinkle pointer-events-none absolute rounded-full bg-amber-100 shadow-[0_0_10px_#fde68a] ${spark.className}`}
+            style={{ animationDelay: spark.delay }}
+          />
+        ))}
+        <button
+          type="button"
+          onClick={close}
+          aria-label="閉じる"
+          className="absolute -top-11 right-0 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-lg font-black text-slate-800 cursor-pointer"
+        >
+          ✕
+        </button>
+        <div className={`overflow-hidden rounded-[1.6rem] p-1.5 ${pick.ur ? 'ylog-welcome-ur' : 'bg-white shadow-2xl'}`}>
+          <img
+            src={src}
+            alt="応援"
+            className="max-h-[70dvh] w-full object-contain"
+            onError={() => setExtIndex((current) => current + 1)}
+          />
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function useStudentHandheldViewport(): boolean {
   const [allowed, setAllowed] = useState(false);
   useEffect(() => {
@@ -10525,6 +10606,7 @@ function SkeletonLoader() {
     return (
       <RoleScreenContext.Provider value={screens}>
         <StudentView currentUser={currentUser} />
+        <StudentWelcomeModal />
       </RoleScreenContext.Provider>
     );
   }

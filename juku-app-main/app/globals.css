@@ -62,3 +62,38 @@ body {
 .ylog-mission-card {
   animation: ylog-mission-card 0.48s cubic-bezier(0.16, 1.4, 0.3, 1) both;
 }
+
+@keyframes ylog-welcome-in {
+  0% { transform: scale(0.82); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes ylog-welcome-out {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes ylog-welcome-twinkle {
+  0%, 100% { opacity: 0.15; transform: scale(0.45); }
+  50% { opacity: 1; transform: scale(1.35); }
+}
+
+.ylog-welcome-in {
+  animation: ylog-welcome-in 0.45s cubic-bezier(0.16, 1.25, 0.3, 1) both;
+}
+
+.ylog-welcome-out {
+  animation: ylog-welcome-out 0.4s ease-in both;
+}
+
+.ylog-welcome-twinkle {
+  animation: ylog-welcome-twinkle 1.05s ease-in-out infinite;
+}
+
+.ylog-welcome-ur {
+  background: linear-gradient(145deg, #fff8dc 0%, #f6d56a 28%, #fff4cc 52%, #e8b84a 100%);
+  box-shadow:
+    0 0 16px #fde68a,
+    0 0 36px rgba(245, 158, 11, 0.85),
+    0 0 72px rgba(251, 191, 36, 0.45);
+}
