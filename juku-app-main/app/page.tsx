@@ -4278,31 +4278,10 @@ const WELCOME_SPARKS = [
   { className: '-right-3 bottom-20 h-1.5 w-1.5', delay: '0.25s' },
 ] as const;
 
-const WELCOME_COOLDOWN_MS = 5 * 60 * 1000;
-const WELCOME_SHOWN_KEY = 'juku_welcome_shown_at';
-
 function pickWelcomeImage(): { base: string; ur: boolean } {
   const roll = Math.floor(Math.random() * 282);
   if (roll >= 280) return { base: `welcome-ur-0${roll - 279}`, ur: true };
   return { base: `welcome-${String(Math.floor(roll / 10) + 1).padStart(2, '0')}`, ur: false };
-}
-
-function welcomeCooldownElapsed(): boolean {
-  try {
-    const last = Number(window.localStorage.getItem(WELCOME_SHOWN_KEY) || '0');
-    return !Number.isFinite(last) || Date.now() - last >= WELCOME_COOLDOWN_MS;
-  } catch {
-    return true;
-  }
-}
-
-function welcomeClockIsRunning(): boolean {
-  try {
-    const saved = readActiveStudyClock();
-    return Boolean(saved && saved.running && !saved.finished);
-  } catch {
-    return false;
-  }
 }
 
 function StudentWelcomeModal({ blocked }: { blocked: boolean }) {
@@ -4324,12 +4303,7 @@ function StudentWelcomeModal({ blocked }: { blocked: boolean }) {
   }, []);
 
   const present = useCallback(() => {
-    if (blockedRef.current || welcomeClockIsRunning() || !welcomeCooldownElapsed()) return;
-    try {
-      window.localStorage.setItem(WELCOME_SHOWN_KEY, String(Date.now()));
-    } catch {
-      // 表示間隔だけを覚えておく。失敗しても計測データは触らない。
-    }
+    if (blockedRef.current) return;
     showIdRef.current += 1;
     setExtIndex(0);
     setClosing(false);
@@ -4344,32 +4318,12 @@ function StudentWelcomeModal({ blocked }: { blocked: boolean }) {
 
   useEffect(() => {
     present();
-    let backgrounded = false;
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') {
-        backgrounded = true;
-        return;
-      }
-      if (!backgrounded) return;
-      backgrounded = false;
-      present();
-    };
-    const onBlur = () => {
-      backgrounded = true;
-    };
-    const onFocus = () => {
-      if (document.visibilityState === 'hidden' || !backgrounded) return;
-      backgrounded = false;
+      if (document.visibilityState !== 'visible') return;
       present();
     };
     document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('blur', onBlur);
-    window.addEventListener('focus', onFocus);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('blur', onBlur);
-      window.removeEventListener('focus', onFocus);
-    };
+    return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [present]);
 
   if (typeof document === 'undefined' || !pick || extIndex >= WELCOME_EXTENSIONS.length) return null;
@@ -10670,7 +10624,7 @@ function SkeletonLoader() {
     return (
       <RoleScreenContext.Provider value={screens}>
         <StudentView currentUser={currentUser} />
-        <StudentWelcomeModal blocked={timerRunning || countdownRunning || (studyComposer != null && recordMode === 'countdown')} />
+        <StudentWelcomeModal blocked={timerRunning || countdownRunning} />
       </RoleScreenContext.Provider>
     );
   }
