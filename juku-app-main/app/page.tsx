@@ -6106,7 +6106,7 @@ export default function Page() {
           student,
           weekMinutes: weekLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0),
           monthMinutes: monthLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0),
-          weekCrowns: weekLogs.filter((log) => log.is_mission_completed).length,
+          lifetimeMinutes: ownLogs.reduce((sum, log) => sum + (log.time_spent_minutes || 0), 0),
         };
       })
       .sort((a, b) => {
@@ -8803,7 +8803,7 @@ function SkeletonLoader() {
                             今月の総学習時間 {progressSortKey === 'month' ? (progressSortDir === 'desc' ? '↓' : '↑') : ''}
                           </button>
                         </th>
-                        <th className="p-3.5 font-black">今週のミッション達成数</th>
+                        <th className="p-3.5 font-black">今までの総学習時間(塾は含まず)</th>
                         <th className="p-3.5 font-black">操作</th>
                       </tr>
                     </thead>
@@ -8820,7 +8820,7 @@ function SkeletonLoader() {
                           </td>
                           <td className="p-3.5 font-black text-slate-800">{formatStudyDuration(row.weekMinutes)}</td>
                           <td className="p-3.5 font-black text-slate-800">{formatStudyDuration(row.monthMinutes)}</td>
-                          <td className="p-3.5 font-black text-amber-700">👑 {row.weekCrowns}</td>
+                          <td className="p-3.5 font-black text-slate-800">{formatStudyDuration(row.lifetimeMinutes)}</td>
                           <td className="p-3.5">
                             <button
                               type="button"
