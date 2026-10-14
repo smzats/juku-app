@@ -374,7 +374,7 @@ function materialWritePayload(
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     title: saved.title,
-    subject: saved.subject_code || saved.subject,
+    subject: saved.is_custom === true ? 'マイ教材' : (saved.subject_code || saved.subject),
     description: saved.description ?? null,
     is_custom: saved.is_custom === true,
     owner_student_id: saved.owner_student_id ?? null,
@@ -435,7 +435,7 @@ async function insertScannedMaterial(
     title: book.title,
     author: book.author,
     isbn: book.isbn,
-    subject: 'other',
+    subject: 'マイ教材',
     description: book.author || null,
     is_custom: true,
     owner_student_id: ownerId,
@@ -1771,6 +1771,7 @@ function dashboardGradeKey(grade: string): 'g1' | 'g2' | 'g3' | 'grad' | null {
 }
 
 function dashboardMaterialCode(material: Material): SubjectCode {
+  if (material.is_custom === true) return 'other';
   if (material.subject_code && isSubjectCode(material.subject_code)) return material.subject_code;
   const fromName = (Object.keys(SUBJECT_CODE_TONE) as SubjectCode[]).find((code) => SUBJECT_CODE_TONE[code] === material.subject);
   return fromName || subjectCodeFromInput(material.subject) || 'other';
@@ -1798,6 +1799,7 @@ function carteSubjectCode(value: unknown): SubjectCode | null {
 
 function logCarteCode(log: StudyLog, catalog: Material[]): SubjectCode {
   const material = catalog.find((item) => item.id === log.material_id);
+  if (material?.is_custom === true) return 'other';
   if (material?.subject_code && isSubjectCode(material.subject_code)) return material.subject_code;
   return carteSubjectCode(material?.subject) || carteSubjectCode(log.subject) || 'other';
 }
@@ -4238,9 +4240,9 @@ function SubjectTextPicker({
     }
     return isSubjectType(subject) && item.subject === subject;
   };
-  const mine = myMaterials.filter(matchesSelected);
-  const catalog = (selectedCode || isSubjectType(subject)
-    ? materials.filter(matchesSelected)
+  const myMaterialMode = selectedCode === 'other' || subject === 'その他' || subject === 'マイ教材';
+  const catalog = (!myMaterialMode && (selectedCode || isSubjectType(subject))
+    ? materials.filter((item) => item.is_custom !== true && matchesSelected(item))
     : []
   ).slice().sort((a, b) => {
     const fav = Number(favoriteIds.includes(b.id)) - Number(favoriteIds.includes(a.id));
@@ -4317,31 +4319,29 @@ function SubjectTextPicker({
       </div>
       {(selectedCode || isSubjectType(subject)) && (
         <div className={compact ? 'space-y-1' : 'space-y-2'}>
-          {mine.length > 0 && (
-            <div className={compact ? 'space-y-1' : 'space-y-2'}>
-              <div className="text-[11px] font-black text-orange-600">マイ教材</div>
-              {mine.map((item) => (
-                <div key={`mine-${item.id}`} className="space-y-1">
-                  <div className="flex items-stretch gap-1">
-                    <button
-                      type="button"
-                      onClick={() => onMaterial(item.id)}
-                      className={`flex-1 text-left rounded-xl font-black cursor-pointer border ${pad} ${
-                        materialId === item.id ? 'bg-orange-50 border-orange-300 text-orange-900' : 'bg-white border-slate-200 text-slate-800'
-                      }`}
-                    >
-                      {item.title}
-                    </button>
-                    {impressionBadges(item.id)}
-                  </div>
-                  {achievementFor(item.id)}
-                  {materialId === item.id ? afterSelected : null}
-                </div>
-              ))}
-            </div>
-          )}
           <div className="text-[11px] font-black text-slate-500">② テキスト</div>
-          {catalog.length === 0 ? (
+          {myMaterialMode ? (
+            myMaterials.length === 0 ? (
+              <p className="text-[11px] font-bold text-slate-400">この科目の教材はまだありません。</p>
+            ) : myMaterials.map((item) => (
+              <div key={`mine-${item.id}`} className="space-y-1">
+                <div className="flex items-stretch gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onMaterial(item.id)}
+                    className={`flex-1 text-left rounded-xl font-black cursor-pointer border ${pad} ${
+                      materialId === item.id ? 'bg-violet-50 border-violet-300 text-violet-900' : 'bg-white border-slate-200 text-slate-800'
+                    }`}
+                  >
+                    {item.title}
+                  </button>
+                  {impressionBadges(item.id)}
+                </div>
+                {achievementFor(item.id)}
+                {materialId === item.id ? afterSelected : null}
+              </div>
+            ))
+          ) : catalog.length === 0 ? (
             <p className="text-[11px] font-bold text-slate-400">この科目の教材はまだありません。</p>
           ) : catalog.map((material) => {
             const pinned = favoriteIds.includes(material.id);
@@ -4588,7 +4588,6 @@ export default function Page() {
   );
   const [myMaterials, setMyMaterials] = useState<MyMaterialItem[]>([]);
   const [myMaterialTitle, setMyMaterialTitle] = useState('');
-  const [myMaterialSubject, setMyMaterialSubject] = useState<SubjectCode>('english');
   const [barcodeScanOpen, setBarcodeScanOpen] = useState(false);
   const [isbnLookup, setIsbnLookup] = useState(false);
   const [isbnDraft, setIsbnDraft] = useState<ScannedBook | null>(null);
@@ -6582,8 +6581,8 @@ export default function Page() {
   useEffect(() => {
     if (!currentUser || resolveAppRole(currentUser.role, currentUser.id, currentUser.email) !== 'student') return;
     setMyMaterials(materials.flatMap((item) => {
-      if (item.is_custom !== true || item.owner_student_id !== currentUser.id || !isSubjectType(item.subject)) return [];
-      return [{ id: item.id, title: item.title, subject: item.subject, subject_code: item.subject_code, addedAt: '' }];
+      if (item.is_custom !== true || item.owner_student_id !== currentUser.id) return [];
+      return [{ id: item.id, title: item.title, subject: 'その他', subject_code: 'other', addedAt: '' }];
     }));
   }, [materials, currentUser?.id, currentUser?.role, currentUser?.email]);
 
@@ -7750,22 +7749,14 @@ export default function Page() {
     addNotification('success', 'タイムアタック終了！');
   }, [countdownRunning, countdownRemainingSec, countdownStartedAt, addNotification]);
 
-  const appendMyMaterial = async (title: string, subject: SubjectType | SubjectCode) => {
+  const appendMyMaterial = async (title: string) => {
     if (!currentUser || currentUser.role !== 'student') return;
     const trimmed = title.trim();
     if (!trimmed) {
       addNotification('warning', '教材名を入力してください。');
       return;
     }
-    let code: SubjectCode | null = null;
-    let tone: SubjectType;
-    if (isSubjectCode(subject)) {
-      code = subject;
-      tone = SUBJECT_CODE_TONE[subject];
-    } else {
-      tone = subject;
-    }
-    const exists = materials.some((item) => item.is_custom === true && item.owner_student_id === currentUser.id && materialTitleKey(item.title) === materialTitleKey(trimmed) && item.subject === tone);
+    const exists = materials.some((item) => item.is_custom === true && item.owner_student_id === currentUser.id && materialTitleKey(item.title) === materialTitleKey(trimmed));
     if (exists) {
       addNotification('info', `「${trimmed}」はすでにマイ教材にあります。`);
       return;
@@ -7773,14 +7764,14 @@ export default function Page() {
     const saved: Material = {
       id: `mym_${Date.now()}`,
       title: trimmed,
-      subject: tone,
+      subject: 'その他',
+      subject_code: 'other',
       created_by: currentUser.id,
-      color: subjectSetting(code || tone).color,
+      color: subjectSetting('other').color,
       display_order: null,
       is_custom: true,
       owner_student_id: currentUser.id,
     };
-    if (code) saved.subject_code = code;
     try {
       const failure = await writeMaterialRow(supabase, saved.id, materialWritePayload(saved));
       if (failure) throw new Error(failure);
@@ -7793,7 +7784,7 @@ export default function Page() {
 
   const handleManualMyMaterial = (event: React.FormEvent) => {
     event.preventDefault();
-    appendMyMaterial(myMaterialTitle, myMaterialSubject);
+    appendMyMaterial(myMaterialTitle);
     setMyMaterialTitle('');
   };
 
@@ -7811,7 +7802,7 @@ export default function Page() {
 
   const registerScannedBook = async () => {
     if (!currentUser || currentUser.role !== 'student' || !isbnDraft) return;
-    const exists = materials.some((item) => item.is_custom === true && item.owner_student_id === currentUser.id && materialTitleKey(item.title) === materialTitleKey(isbnDraft.title) && item.subject === SUBJECT_CODE_TONE.other);
+    const exists = materials.some((item) => item.is_custom === true && item.owner_student_id === currentUser.id && materialTitleKey(item.title) === materialTitleKey(isbnDraft.title));
     if (exists) {
       addNotification('info', `「${isbnDraft.title}」はすでにマイ教材にあります。`);
       setIsbnDraft(null);
@@ -8958,10 +8949,10 @@ function SkeletonLoader() {
                             </td>
                             <td className="p-3">
                               <span
-                                className="inline-block px-2.5 py-1 rounded-lg text-[10px] font-extrabold border"
-                                style={{ color: subjectSetting(m.subject_code || m.subject).color, backgroundColor: subjectSetting(m.subject_code || m.subject).bgColor, borderColor: subjectSetting(m.subject_code || m.subject).color }}
+                                className={`inline-block px-2.5 py-1 rounded-lg text-[10px] font-extrabold border ${m.is_custom === true ? 'border-violet-300 bg-violet-50 text-violet-700' : ''}`}
+                                style={m.is_custom === true ? undefined : { color: subjectSetting(m.subject_code || m.subject).color, backgroundColor: subjectSetting(m.subject_code || m.subject).bgColor, borderColor: subjectSetting(m.subject_code || m.subject).color }}
                               >
-                                {subjectLabel(m.subject_code || m.subject)}
+                                {m.is_custom === true ? 'マイ教材' : subjectLabel(m.subject_code || m.subject)}
                               </span>
                             </td>
                             <td className="p-3 font-extrabold text-slate-900">{m.title}</td>
@@ -10492,13 +10483,6 @@ function SkeletonLoader() {
               <div className="space-y-4">
                 <h3 className="text-base font-black text-slate-900">📚 マイ教材</h3>
                 <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3">
-                  <button
-                    type="button"
-                    onClick={() => setBarcodeScanOpen(true)}
-                    className="w-full py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer"
-                  >
-                    📷 バーコードで本を追加
-                  </button>
                   <form onSubmit={handleManualMyMaterial} className="space-y-2">
                     <p className="text-xs font-black text-slate-700">リストに載っていない教材の追加</p>
                     <label className="block">
@@ -10511,36 +10495,27 @@ function SkeletonLoader() {
                         className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900"
                       />
                     </label>
-                    <label className="block">
-                      <span className="text-[11px] font-black text-slate-500">科目</span>
-                      <select
-                        value={myMaterialSubject}
-                        onChange={(event) => {
-                          if (isSubjectCode(event.target.value)) setMyMaterialSubject(event.target.value);
-                        }}
-                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900 bg-white"
-                      >
-                        {(Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((subjectKey) => {
-                          const setting = SUBJECT_CONFIG[subjectKey] ?? SUBJECT_CONFIG.other;
-                          return <option key={subjectKey} value={subjectKey}>{setting.label}</option>;
-                        })}
-                      </select>
-                    </label>
                     <button type="submit" className="w-full py-3 rounded-2xl bg-sky-600 text-white text-sm font-black cursor-pointer">
                       マイ教材に追加
                     </button>
                   </form>
+                  <button
+                    type="button"
+                    onClick={() => setBarcodeScanOpen(true)}
+                    className="w-full py-3 rounded-2xl bg-violet-600 text-white text-sm font-black cursor-pointer"
+                  >
+                    📷 バーコードでも本を追加できるよ
+                  </button>
                 </section>
                 <section className="space-y-2">
                   <h4 className="text-sm font-black text-slate-900">追加した教材</h4>
                   {myMaterials.length === 0 ? (
                     <p className="bg-white rounded-3xl border border-slate-200 p-6 text-sm font-bold text-slate-400">追加した教材はまだありません。</p>
                   ) : myMaterials.map((item) => {
-                    const setting = subjectSetting(item.subject_code || item.subject);
                     return (
                       <article key={item.id} className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 flex items-center gap-3">
                         <div className="min-w-0 flex-1">
-                          <span className="inline-block text-[10px] font-black px-2 py-0.5 rounded-full border" style={{ color: setting.color, backgroundColor: setting.bgColor, borderColor: setting.color }}>{subjectLabel(item.subject_code || item.subject)}</span>
+                          <span className="inline-block text-[10px] font-black px-2 py-0.5 rounded-full border border-violet-300 bg-violet-50 text-violet-700">マイ教材</span>
                           <div className="font-black text-slate-900 mt-1 truncate">{item.title}</div>
                         </div>
                         <button
@@ -10571,7 +10546,7 @@ function SkeletonLoader() {
                   {isbnDraft.author ? <p className="text-sm font-bold text-slate-600">{isbnDraft.author}</p> : null}
                   <p className="text-xs font-black text-slate-500">科目: マイ教材</p>
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => { void registerScannedBook(); }} className="flex-1 py-3 rounded-2xl bg-slate-900 text-white text-sm font-black cursor-pointer">この教材をマイ教材に追加</button>
+                    <button type="button" onClick={() => { void registerScannedBook(); }} className="flex-1 py-3 rounded-2xl bg-violet-600 text-white text-sm font-black cursor-pointer">この教材をマイ教材に追加</button>
                     <button type="button" onClick={() => setIsbnDraft(null)} className="flex-1 py-3 rounded-2xl bg-slate-100 text-slate-700 text-sm font-black cursor-pointer">やめる</button>
                   </div>
                 </div>

@@ -299,9 +299,9 @@ function ScannerBody({ onIsbn, onClose }: IsbnBarcodeScannerProps) {
         type="button"
         disabled={reading}
         onClick={() => fileRef.current?.click()}
-        className="w-full cursor-pointer rounded-2xl bg-slate-900 py-3 text-sm font-black text-white disabled:opacity-60"
+        className="w-full cursor-pointer rounded-2xl bg-violet-600 py-3 text-sm font-black text-white disabled:opacity-60"
       >
-        📷 バーコードを撮影して選択
+        📷 バーコードを撮影してね
       </button>
       <label className="block text-[11px] font-black text-slate-500">
         ISBN
@@ -315,7 +315,12 @@ function ScannerBody({ onIsbn, onClose }: IsbnBarcodeScannerProps) {
         />
       </label>
       <p className="text-xs font-bold text-slate-500">{hint}</p>
-      <button type="button" onClick={submit} className="w-full cursor-pointer rounded-2xl bg-sky-600 py-3 text-sm font-black text-white">
+      <button
+        type="button"
+        onClick={submit}
+        disabled={!isbn13(isbnValue)}
+        className={`w-full rounded-2xl py-3 text-sm font-black ${isbn13(isbnValue) ? 'cursor-pointer bg-sky-600 text-white' : 'cursor-not-allowed bg-slate-300 text-slate-500'}`}
+      >
         このISBNで確認
       </button>
     </ScannerFrame>
@@ -363,7 +368,11 @@ function IsbnFallback({ onIsbn }: { onIsbn: (isbn: string) => void }) {
         placeholder="978 または 979 ではじまる13桁"
         className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm font-bold text-slate-900"
       />
-      <button type="submit" className="w-full cursor-pointer rounded-2xl bg-sky-600 py-3 text-sm font-black text-white">
+      <button
+        type="submit"
+        disabled={!isbn13(value)}
+        className={`w-full rounded-2xl py-3 text-sm font-black ${isbn13(value) ? 'cursor-pointer bg-sky-600 text-white' : 'cursor-not-allowed bg-slate-300 text-slate-500'}`}
+      >
         このISBNで確認
       </button>
     </form>
