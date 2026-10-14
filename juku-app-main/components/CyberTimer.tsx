@@ -30,6 +30,7 @@ type CyberTimerProps = {
   startedAt: number | null;
   onStart: () => void;
   onStop: (seconds: number) => void;
+  onCancel?: () => void;
 };
 
 function measuredSeconds(startedAt: number | null, now = Date.now()): number {
@@ -55,7 +56,7 @@ function formatHourClock(totalSeconds: number): string {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
-export default function CyberTimer({ running, startedAt, onStart, onStop }: CyberTimerProps) {
+export default function CyberTimer({ running, startedAt, onStart, onStop, onCancel }: CyberTimerProps) {
   const [displaySec, setDisplaySec] = useState(0);
 
   useEffect(() => {
@@ -157,6 +158,15 @@ export default function CyberTimer({ running, startedAt, onStart, onStop }: Cybe
         }}
       >
         <div className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden">{face}</div>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="absolute left-1/2 top-[max(0.35rem,env(safe-area-inset-top))] z-20 max-w-[92%] -translate-x-1/2 rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] font-bold text-white"
+          >
+            この記録方法を一旦キャンセル
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onStop(Math.floor(measuredSeconds(startedAt)))}

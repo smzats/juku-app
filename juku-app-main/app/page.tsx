@@ -4213,6 +4213,7 @@ function SubjectTextPicker({
   fromConfig = false,
   impressions = {},
   onUpdateImpression,
+  afterSelected,
 }: {
   subject: string;
   materialId: string;
@@ -4226,6 +4227,7 @@ function SubjectTextPicker({
   fromConfig?: boolean;
   impressions?: Record<string, string[]>;
   onUpdateImpression?: (materialId: string, emojis: string[]) => void;
+  afterSelected?: React.ReactNode;
 }) {
   const selectedCode = fromConfig ? subjectCodeFromInput(subject) : null;
   const matchesSelected = (item: { subject: string; subject_code?: string | null; title: string }) => {
@@ -4333,6 +4335,7 @@ function SubjectTextPicker({
                     {impressionBadges(item.id)}
                   </div>
                   {achievementFor(item.id)}
+                  {materialId === item.id ? afterSelected : null}
                 </div>
               ))}
             </div>
@@ -4365,6 +4368,7 @@ function SubjectTextPicker({
                   </button>
                 </div>
                 {achievementFor(material.id)}
+                {materialId === material.id ? afterSelected : null}
               </div>
             );
           })}
@@ -10675,63 +10679,10 @@ function SkeletonLoader() {
             <div className="shrink-0 border-b border-slate-100 px-3 pt-2 pb-2 space-y-2">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <h4 className="font-black text-sm leading-tight">学習の記録方法を選んでね</h4>
+                  <h4 className="font-black text-sm leading-tight">①学習科目 → ②テキスト → ③記録方法の順に選んでね</h4>
                 </div>
                 <button type="button" onClick={() => { dismissStudyClock(); setManualTimeOpen(false); setStudyComposer(null); }} className="w-8 h-8 shrink-0 rounded-full bg-slate-100 font-bold cursor-pointer">✕</button>
               </div>
-              {!timerRunning && !countdownRunning && (
-                <div className="space-y-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
-                      setClockScrollToken((token) => token + 1);
-                      const startedIso = new Date().toISOString();
-                      measuredStartedIso.current = startedIso;
-                      const startedAt = Date.parse(startedIso);
-                      setRecordMode('timer');
-                      setCountdownRunning(false);
-                      setCountdownFinished(false);
-                      setTimerStartedAt(startedAt);
-                      setTimerElapsedSec(0);
-                      setTimerRunning(true);
-                      if (studyComposer) {
-                        writeActiveStudyClock({
-                          userId: currentUser.id,
-                          mode: 'timer',
-                          running: true,
-                          startedAt,
-                          targetSec: 0,
-                          finished: false,
-                          subject: String(newLogForm.subject || ''),
-                          materialId: newLogForm.material_id,
-                          comment: newLogForm.comment,
-                          mission: composerMission,
-                          date: composerDateKey,
-                          composer: studyComposer,
-                        });
-                      }
-                    }}
-                    className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold rounded-xl shadow-lg hover:shadow-cyan-500/50 px-3 py-3 text-left text-sm cursor-pointer"
-                  >
-                    ⏱️ 自分で開始・終了を記録（タイマー）
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setTimeAttackManualOpen(false); setRecordMode('countdown'); setClockScrollToken((token) => token + 1); }}
-                    className="w-full bg-gradient-to-r from-purple-500 to-pink-600 text-white font-bold rounded-xl shadow-lg hover:shadow-purple-500/50 px-3 py-3 text-left text-sm cursor-pointer"
-                  >
-                    ⚡ 時間を決めてタイムアタック
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setRecordMode('manual'); setManualTimeOpen(true); }}
-                    className="w-full bg-slate-800 border-2 border-amber-500/70 text-amber-300 font-bold rounded-xl shadow-md px-3 py-3 text-left text-sm cursor-pointer"
-                  >
-                    ✎ 開始時間・終了時間を直接入力・修正する
-                  </button>
-                </div>
-              )}
               <p className="text-[10px] font-bold text-slate-400">{formatFocusDate(composerDateKey)} {formatMeetingClock(studyComposer.startHour, studyComposer.startMinute)}–{formatMeetingClock(studyComposer.endHour, studyComposer.endMinute)}（{studyDurationMinutes(clampStudyRange(studyComposer))}分）</p>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto px-3 py-1">
@@ -10748,6 +10699,60 @@ function SkeletonLoader() {
                 onToggleFavorite={toggleFavoriteMaterial}
                 impressions={materialImpressions}
                 onUpdateImpression={updateMaterialImpression}
+                afterSelected={!timerRunning && !countdownRunning ? (
+                  <div className="space-y-2 pt-1">
+                    <div className="text-[11px] font-black text-slate-500">③ 記録方法</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!newLogForm.material_id) { alert('テキストを選択してください。'); return; }
+                        setClockScrollToken((token) => token + 1);
+                        const startedIso = new Date().toISOString();
+                        measuredStartedIso.current = startedIso;
+                        const startedAt = Date.parse(startedIso);
+                        setRecordMode('timer');
+                        setCountdownRunning(false);
+                        setCountdownFinished(false);
+                        setTimerStartedAt(startedAt);
+                        setTimerElapsedSec(0);
+                        setTimerRunning(true);
+                        if (studyComposer) {
+                          writeActiveStudyClock({
+                            userId: currentUser.id,
+                            mode: 'timer',
+                            running: true,
+                            startedAt,
+                            targetSec: 0,
+                            finished: false,
+                            subject: String(newLogForm.subject || ''),
+                            materialId: newLogForm.material_id,
+                            comment: newLogForm.comment,
+                            mission: composerMission,
+                            date: composerDateKey,
+                            composer: studyComposer,
+                          });
+                        }
+                      }}
+                      className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold rounded-xl shadow-lg hover:shadow-cyan-500/50 px-3 py-3 text-left text-sm cursor-pointer"
+                    >
+                      ⏱️ 自分で開始・終了を記録（タイマー）
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setTimeAttackManualOpen(false); setRecordMode('countdown'); setClockScrollToken((token) => token + 1); }}
+                      className="w-full bg-gradient-to-r from-purple-500 to-pink-600 text-white font-bold rounded-xl shadow-lg hover:shadow-purple-500/50 px-3 py-3 text-left text-sm cursor-pointer"
+                    >
+                      ⚡ 時間を決めてタイムアタック
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setRecordMode('manual'); setManualTimeOpen(true); }}
+                      className="w-full bg-slate-800 border-2 border-amber-500/70 text-amber-300 font-bold rounded-xl shadow-md px-3 py-3 text-left text-sm cursor-pointer"
+                    >
+                      ✎ 開始時間・終了時間を直接入力・修正する
+                    </button>
+                  </div>
+                ) : null}
               />
               <div ref={studyClockAnchorRef}>
               {recordMode === 'timer' && timerRunning && (
@@ -10782,6 +10787,7 @@ function SkeletonLoader() {
                     }
                   }}
                   onStop={(seconds) => { void saveMeasuredStudy(seconds, timerStartedAt); }}
+                  onCancel={() => { dismissStudyClock(); }}
                 />
               )}
               {recordMode === 'countdown' && (
@@ -10858,9 +10864,9 @@ function SkeletonLoader() {
                       const span = composerContext.current ? studyDurationMinutes(clampStudyRange(composerContext.current)) : 0;
                       void saveStudentMinutes(span, newLogForm.material_id, newLogForm.comment, composerContext.current);
                     }}
-                    className="w-full py-3 rounded-2xl bg-slate-200 text-slate-700 font-black cursor-pointer"
+                    className="w-full py-3 rounded-2xl bg-green-300 text-green-950 font-black cursor-pointer"
                   >
-                    手動で記録保存
+                    この時刻で学習を記録
                   </button>
                 </div>
               )}
