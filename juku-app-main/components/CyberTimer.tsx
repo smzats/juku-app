@@ -88,7 +88,21 @@ export default function CyberTimer({ running, startedAt, onStart, onStop, onCanc
     : 'drop-shadow(0 0 4px #00e5ff) drop-shadow(0 0 10px #00e5ff)';
 
   const face = (
-    <div className="relative h-full max-h-full min-h-0 w-auto max-w-full" style={{ aspectRatio: '1080 / 1920', containerType: 'inline-size' }}>
+    <div
+      className="relative h-full max-h-full min-h-0 w-auto max-w-full"
+      style={{
+        aspectRatio: '1080 / 1920',
+        containerType: 'inline-size',
+        ...(running
+          ? {
+              backgroundImage: 'url(/images/bg-timer.png)',
+              backgroundSize: '100% 100%',
+              backgroundPosition: 'center',
+              backgroundRepeat: 'no-repeat',
+            }
+          : {}),
+      }}
+    >
       <svg viewBox="0 0 200 200" className="absolute overflow-visible" style={RING_BOX} aria-hidden="true">
         <g transform="rotate(-90 100 100)">
           <circle cx="100" cy="100" r={RING_RADIUS} fill="none" stroke="rgba(0, 212, 255, 0.1)" strokeWidth="6" strokeDasharray="3 8.0" />
@@ -148,34 +162,26 @@ export default function CyberTimer({ running, startedAt, onStart, onStop, onCanc
 
   if (running && typeof document !== 'undefined') {
     return createPortal(
-      <div
-        className="fixed inset-0 z-[9999] flex h-[100dvh] max-h-[100dvh] w-full flex-col justify-between overflow-hidden bg-[#030811] px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
-        style={{
-          backgroundImage: 'url(/images/bg-timer.png)',
-          backgroundSize: 'contain',
-          backgroundPosition: 'center',
-          backgroundRepeat: 'no-repeat',
-        }}
-      >
-        <div className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden">{face}</div>
-        <button
-          type="button"
-          onClick={() => onStop(Math.floor(measuredSeconds(startedAt)))}
-          className={`${orbitron.className} relative z-10 mt-3 w-full max-w-sm shrink-0 cursor-pointer rounded-2xl bg-amber-500 py-4 text-base font-black tracking-[0.2em] text-white`}
-          style={onCancel ? { transform: 'translateY(-3.75rem)' } : undefined}
-        >
-          STOP
-        </button>
-        {onCancel && (
+      <div className="fixed inset-0 z-[9999] flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden bg-[#030811] px-4 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden pb-10">{face}</div>
+        <div className="mx-auto flex w-full max-w-sm shrink-0 flex-col gap-2">
           <button
             type="button"
-            onClick={onCancel}
-            className="absolute inset-x-4 z-20 mx-auto max-w-sm rounded-2xl bg-red-600 py-3 text-center text-sm font-black text-white"
-            style={{ bottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+            onClick={() => onStop(Math.floor(measuredSeconds(startedAt)))}
+            className={`${orbitron.className} relative z-10 w-full cursor-pointer rounded-2xl bg-amber-500 py-4 text-base font-black tracking-[0.2em] text-white`}
           >
-            この学習方法を一旦キャンセルする？
+            STOP
           </button>
-        )}
+          {onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="w-full rounded-2xl bg-red-600 py-3 text-center text-sm font-black text-white"
+            >
+              この学習方法を一旦キャンセルする？
+            </button>
+          )}
+        </div>
       </div>,
       document.body,
     );
