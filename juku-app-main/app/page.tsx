@@ -426,8 +426,9 @@ async function lookupIsbnBook(isbn: string): Promise<ScannedBook | null> {
 
 const OWNED_MATERIAL_KEYS = new Set(['id', 'title', 'subject', 'is_custom', 'owner_student_id']);
 
-function isSharedMyMaterialLabel(value: string): boolean {
-  return value.trim() === 'マイ教材';
+function isSharedMyMaterialSubject(value: string): boolean {
+  const raw = value.trim();
+  return raw === 'other' || raw === 'マイ教材' || raw === 'その他';
 }
 
 async function insertStudentOwnedMaterial(
@@ -515,12 +516,7 @@ async function selectMaterialRows(supabase: { from: (table: string) => any }, co
 }
 
 async function selectMaterialMaster(supabase: { from: (table: string) => any }): Promise<{ data: any[]; error: { message?: string } | null }> {
-  const withCategory = await selectMaterialRows(supabase, `${MATERIAL_COLUMNS}, category`);
-  if (!withCategory.error) return withCategory;
-  if (missingMaterialsColumn(withCategory.error.message || '') === 'category') {
-    return selectMaterialRows(supabase, MATERIAL_COLUMNS);
-  }
-  return withCategory;
+  return selectMaterialRows(supabase, MATERIAL_COLUMNS);
 }
 
 async function selectStudentFavoriteIds(supabase: { from: (table: string) => any }, studentId: string): Promise<{ ids: Set<string> | null; error: { message?: string } | null }> {
@@ -4253,14 +4249,16 @@ function SubjectTextPicker({
   const matchesSelected = (item: { subject: string; subject_code?: string | null; title: string }) => {
     if (!item.title.trim()) return false;
     if (selectedCode) {
-      if (item.subject_code) return item.subject_code === selectedCode;
-      return item.subject === SUBJECT_CODE_TONE[selectedCode];
+      if (item.subject_code === selectedCode) return true;
+      const tone = SUBJECT_CODE_TONE[selectedCode];
+      const label = SUBJECT_MAP[selectedCode];
+      return item.subject === tone || item.subject === label || subjectCodeFromInput(item.subject) === selectedCode;
     }
     return isSubjectType(subject) && item.subject === subject;
   };
   const myMaterialMode = selectedCode === 'other' || subject === 'その他' || subject === 'マイ教材';
   const catalog = (!myMaterialMode && (selectedCode || isSubjectType(subject))
-    ? materials.filter((item) => item.is_custom !== true && matchesSelected(item))
+    ? materials.filter((item) => !textCell(item.owner_student_id).trim() && matchesSelected(item))
     : []
   ).slice().sort((a, b) => {
     const fav = Number(favoriteIds.includes(b.id)) - Number(favoriteIds.includes(a.id));
@@ -4899,12 +4897,10 @@ export default function Page() {
         const ownerId = textCell(row?.owner_student_id).trim();
         const custom = row?.is_custom === true;
         const rawSubject = textCell(row?.subject).trim();
-        const rawCategory = textCell(row?.category).trim();
-        const sharedMyMaterial = !ownerId && (isSharedMyMaterialLabel(rawSubject) || isSharedMyMaterialLabel(rawCategory));
+        const sharedMyMaterial = !ownerId && isSharedMyMaterialSubject(rawSubject);
         if (studentView && viewer && ownerId && ownerId !== viewer.id) return;
-        if (studentView && viewer && custom && !ownerId && !sharedMyMaterial) return;
-        const code = isSubjectCode(row?.subject) ? subjectCodeFromInput(row?.subject) : null;
-        const subject = code ? SUBJECT_CODE_TONE[code] : (subjectFromInput(row?.subject) || 'その他');
+        const code = subjectCodeFromInput(rawSubject);
+        const subject = code ? SUBJECT_CODE_TONE[code] : (subjectFromInput(rawSubject) || 'その他');
         list.push({
           id,
           title,
