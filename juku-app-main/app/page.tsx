@@ -1105,6 +1105,7 @@ export interface Material {
   is_custom?: boolean;
   owner_student_id?: string | null;
   subject_code?: string | null;
+  source_subject?: string;
   shared_my_material?: boolean;
 }
 
@@ -4913,6 +4914,7 @@ export default function Page() {
           is_favorite: favoriteIds.has(id),
           is_custom: custom,
           owner_student_id: ownerId || null,
+          source_subject: rawSubject,
           shared_my_material: sharedMyMaterial,
         });
       });
@@ -6223,14 +6225,13 @@ export default function Page() {
   const dashboardMaterialCounts = useMemo(() => {
     return (Object.keys(SUBJECT_CONFIG) as SubjectCode[]).map((code) => {
       let master = 0;
-      let personal = 0;
       materials.forEach((item) => {
+        if (textCell(item.owner_student_id).trim()) return;
         if (dashboardMaterialCode(item) !== code) return;
-        if (item.is_custom === true) personal += 1;
-        else master += 1;
+        master += 1;
       });
       const setting = SUBJECT_CONFIG[code];
-      return { code, label: setting.label, color: setting.color, bgColor: setting.bgColor, master, personal, total: master + personal };
+      return { code, label: setting.label, color: setting.color, bgColor: setting.bgColor, master };
     });
   }, [materials]);
 
@@ -6601,18 +6602,28 @@ export default function Page() {
   useEffect(() => {
     if (!currentUser || resolveAppRole(currentUser.role, currentUser.id, currentUser.email) !== 'student') return;
     const studentId = currentUser.id.trim();
+    setMyMaterials(materials.flatMap((item) => {
+      if (!studentId || item.owner_student_id !== studentId || item.source_subject !== 'マイ教材') return [];
+      return [{ id: item.id, title: item.title, subject: 'その他' as const, subject_code: 'other', addedAt: '', owned: true }];
+    }));
+  }, [materials, currentUser?.id, currentUser?.role, currentUser?.email]);
+
+  const studyMyMaterialChoices = useMemo(() => {
+    const studentId = currentUser && resolveAppRole(currentUser.role, currentUser.id, currentUser.email) === 'student'
+      ? currentUser.id.trim()
+      : '';
     const personal: MyMaterialItem[] = [];
     const shared: MyMaterialItem[] = [];
     materials.forEach((item) => {
-      const owned = Boolean(studentId) && item.owner_student_id === studentId;
-      const sharedRow = !item.owner_student_id && item.shared_my_material === true;
-      if (!owned && !sharedRow) return;
+      const owned = Boolean(studentId) && item.owner_student_id === studentId && item.source_subject === 'マイ教材';
+      const sharedPrint = !textCell(item.owner_student_id).trim() && (item.source_subject === 'other' || item.source_subject === 'マイ教材');
+      if (!owned && !sharedPrint) return;
       const entry: MyMaterialItem = { id: item.id, title: item.title, subject: 'その他', subject_code: 'other', addedAt: '', owned };
       if (owned) personal.push(entry);
       else shared.push(entry);
     });
-    setMyMaterials([...personal, ...shared]);
-  }, [materials, currentUser?.id, currentUser?.role, currentUser?.email]);
+    return [...personal, ...shared];
+  }, [materials, currentUser]);
 
   useEffect(() => {
     const signedIn = currentUser;
@@ -8385,11 +8396,7 @@ function SkeletonLoader() {
                     {dashboardMaterialCounts.map((item) => (
                       <div key={item.code} className="rounded-2xl border p-4" style={{ backgroundColor: item.bgColor, borderColor: item.color }}>
                         <div className="text-sm font-black" style={{ color: item.color }}>{item.label}</div>
-                        <div className="mt-2 text-2xl font-black text-slate-900">{item.total} <span className="text-xs font-bold text-slate-500">冊</span></div>
-                        <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] font-bold text-slate-700">
-                          <div className="rounded-xl bg-white/80 px-2 py-1.5">全体用 {item.master}冊</div>
-                          <div className="rounded-xl bg-white/80 px-2 py-1.5">生徒個々用 {item.personal}冊</div>
-                        </div>
+                        <div className="mt-2 text-2xl font-black text-slate-900">全体用 {item.master} <span className="text-xs font-bold text-slate-500">冊</span></div>
                       </div>
                     ))}
                   </div>
@@ -10702,7 +10709,7 @@ function SkeletonLoader() {
                 subject={newLogForm.subject}
                 materialId={newLogForm.material_id}
                 materials={materials}
-                myMaterials={myMaterials}
+                myMaterials={studyMyMaterialChoices}
                 favoriteIds={favoriteMaterialIds}
                 onSubject={(subject) => setNewLogForm((prev) => ({ ...prev, subject, material_id: '' }))}
                 onMaterial={(materialId) => setNewLogForm((prev) => ({ ...prev, material_id: materialId }))}
@@ -10907,7 +10914,7 @@ function SkeletonLoader() {
               subject={subjectCodeFromInput(editSubject) || (Object.keys(SUBJECT_CODE_TONE) as SubjectCode[]).find((code) => SUBJECT_CODE_TONE[code] === editSubject) || ''}
               materialId={editMaterialId}
               materials={materials}
-              myMaterials={myMaterials}
+              myMaterials={studyMyMaterialChoices}
               favoriteIds={favoriteMaterialIds}
               onSubject={(subject) => {
                 if (!isSubjectCode(subject) || !isSubjectType(SUBJECT_CODE_TONE[subject])) return;
