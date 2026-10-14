@@ -26,7 +26,7 @@ function releaseObjectUrls(urls: string[]) {
   });
 }
 
-const DECODE_WIDTH = 800;
+const DECODE_WIDTH = 1400;
 
 async function loadPhotoSource(file: File): Promise<{ source: CanvasImageSource; width: number; height: number; close: () => void }> {
   try {
@@ -106,26 +106,44 @@ async function textsFromCanvas(canvas: HTMLCanvasElement): Promise<string[]> {
     const zxing = await import('@zxing/library');
     const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context || canvas.width < 1 || canvas.height < 1) return found;
-    const image = context.getImageData(0, 0, canvas.width, canvas.height);
-    const pixels = new Int32Array(canvas.width * canvas.height);
-    for (let offset = 0, index = 0; offset < image.data.length; offset += 4, index += 1) {
-      const red = image.data[offset];
-      const green = image.data[offset + 1];
-      const blue = image.data[offset + 2];
-      pixels[index] = (0xff << 24) | (red << 16) | (green << 8) | blue;
-    }
     const hints = new Map();
     hints.set(zxing.DecodeHintType.POSSIBLE_FORMATS, [zxing.BarcodeFormat.EAN_13]);
     hints.set(zxing.DecodeHintType.TRY_HARDER, true);
-    const source = new zxing.RGBLuminanceSource(pixels, canvas.width, canvas.height);
     const reader = new zxing.MultiFormatReader();
     reader.setHints(hints);
-    for (const Binarizer of [zxing.HybridBinarizer, zxing.GlobalHistogramBinarizer]) {
-      try {
-        const text = reader.decode(new zxing.BinaryBitmap(new Binarizer(source))).getText();
-        if (text) found.push(String(text));
-      } catch { /* この切り出しではバーコードが見つからない */ }
-      try { reader.reset(); } catch { /* 次の二値化へ進む */ }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const image = context.getImageData(0, 0, canvas.width, canvas.height);
+      const pixels = new Int32Array(canvas.width * canvas.height);
+      for (let offset = 0, index = 0; offset < image.data.length; offset += 4, index += 1) {
+        const red = image.data[offset];
+        const green = image.data[offset + 1];
+        const blue = image.data[offset + 2];
+        pixels[index] = (0xff << 24) | (red << 16) | (green << 8) | blue;
+      }
+      const source = new zxing.RGBLuminanceSource(pixels, canvas.width, canvas.height);
+      let text = '';
+      let bandTop = 0;
+      let bandHeight = 0;
+      for (const Binarizer of [zxing.HybridBinarizer, zxing.GlobalHistogramBinarizer]) {
+        try {
+          const result = reader.decodeWithState(new zxing.BinaryBitmap(new Binarizer(source)));
+          text = String(result.getText() || '');
+          const points = result.getResultPoints() || [];
+          const ys = points.map((point) => point.getY()).filter((y) => Number.isFinite(y));
+          const center = ys.length ? ys.reduce((sum, y) => sum + y, 0) / ys.length : canvas.height / 2;
+          const pad = Math.max(12, Math.round(canvas.height * 0.07));
+          bandTop = Math.max(0, Math.floor(center - pad));
+          bandHeight = Math.max(8, Math.min(canvas.height - bandTop, Math.ceil(center + pad) - bandTop));
+          if (text) break;
+        } catch { /* この二値化ではバーコードが見つからない */ }
+        try { reader.reset(); } catch { /* 次の二値化へ進む */ }
+      }
+      if (!text) break;
+      found.push(text);
+      if (isbn13(text)) break;
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, bandTop, canvas.width, bandHeight);
+      try { reader.reset(); } catch { /* 次のバーコードへ進む */ }
     }
   } catch { /* 解析ライブラリの失敗は次の画像へ進む */ }
   return found;
@@ -175,26 +193,47 @@ async function scanStillImage(file: File): Promise<string | null> {
   }
 }
 
+async function textsFromDetector(source: Blob | HTMLCanvasElement): Promise<string[]> {
+  try {
+    const Detector = (window as Window & {
+      BarcodeDetector?: new (options?: { formats?: string[] }) => {
+        detect: (image: Blob | HTMLCanvasElement) => Promise<Array<{ rawValue?: string }>>;
+      };
+    }).BarcodeDetector;
+    if (typeof Detector !== 'function') return [];
+    const detector = new Detector({ formats: ['ean_13'] });
+    const codes = await detector.detect(source);
+    return codes.map((code) => String(code.rawValue || ''));
+  } catch {
+    return [];
+  }
+}
+
 async function readIsbnFromPhoto(file: File): Promise<string | null> {
   let frame: Awaited<ReturnType<typeof loadPhotoSource>> | null = null;
   const canvases: HTMLCanvasElement[] = [];
   try {
     frame = await loadPhotoSource(file);
     if (frame.width < 1 || frame.height < 1) return null;
-    const crops = [0, 0.18, 0.36, 0.54, 0.7].map((start) => ({
-      y: Math.floor(frame.height * start),
-      h: Math.max(1, Math.floor(frame.height * 0.36)),
-    }));
-    crops.push({ y: 0, h: frame.height });
+    const photo = frame;
+    const nativeIsbn = chooseIsbn(await textsFromDetector(file));
+    if (nativeIsbn) return nativeIsbn;
+    const crops = [
+      { y: 0, h: Math.max(1, Math.floor(photo.height * 0.48)) },
+      { y: Math.floor(photo.height * 0.2), h: Math.max(1, Math.floor(photo.height * 0.42)) },
+      { y: 0, h: photo.height },
+      { y: Math.floor(photo.height * 0.42), h: Math.max(1, photo.height - Math.floor(photo.height * 0.42)) },
+    ];
     const collected: string[] = [];
     let fullCanvas: HTMLCanvasElement | null = null;
     for (const crop of crops) {
-      const y = Math.min(frame.height - 1, Math.max(0, crop.y));
-      const height = Math.min(frame.height - y, crop.h);
-      const canvas = scaledCanvas(frame.source, frame.width, frame.height, y, height);
+      const y = Math.min(photo.height - 1, Math.max(0, crop.y));
+      const height = Math.min(photo.height - y, crop.h);
+      const canvas = scaledCanvas(photo.source, photo.width, photo.height, y, height);
       if (!canvas) continue;
       canvases.push(canvas);
-      if (crop.h === frame.height) fullCanvas = canvas;
+      if (crop.h === photo.height) fullCanvas = canvas;
+      collected.push(...await textsFromDetector(canvas));
       collected.push(...await textsFromCanvas(canvas));
       const isbn = chooseIsbn(collected);
       if (isbn) return isbn;
@@ -208,15 +247,10 @@ async function readIsbnFromPhoto(file: File): Promise<string | null> {
         if (isbn) return isbn;
       }
     }
-    for (const canvas of canvases) {
-      try {
-        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-        if (!blob) continue;
-        const piece = new File([blob], 'isbn.jpg', { type: 'image/jpeg' });
-        const found = await scanStillImage(piece).catch(() => null);
-        if (found) return found;
-      } catch { /* 縮小画像の再解析に失敗したら次の切り出しへ */ }
-    }
+    try {
+      const found = await scanStillImage(file);
+      if (found) return found;
+    } catch { /* 元画像の再解析に失敗しても入力は止めない */ }
     return null;
   } catch {
     return null;
@@ -247,7 +281,6 @@ function ScannerBody({ onIsbn, onClose }: IsbnBarcodeScannerProps) {
   const [reading, setReading] = useState(false);
 
   const onPick = async (file: File | undefined) => {
-    if (fileRef.current) fileRef.current.value = '';
     if (!file || typeof window === 'undefined') return;
     setReading(true);
     setHint('写真からISBNを読み取っています。');
@@ -255,9 +288,8 @@ function ScannerBody({ onIsbn, onClose }: IsbnBarcodeScannerProps) {
       const isbn = await readIsbnFromPhoto(file);
       if (isbn) {
         setIsbnValue(isbn);
-        setHint('ISBNを読み取りました。書籍を確認しています。');
+        setHint('ISBNを読み取りました。内容を確認して、このISBNで確認を押してください。');
         try { navigator.vibrate?.(200); } catch { /* 振動できない端末はそのまま進む */ }
-        try { onIsbn(isbn); } catch { setHint('ISBNの確認に失敗しました。もう一度入力してください。'); }
       } else {
         setHint('写真からISBNを読み取れませんでした。13桁を入力してください。');
       }
@@ -265,6 +297,7 @@ function ScannerBody({ onIsbn, onClose }: IsbnBarcodeScannerProps) {
       setHint('写真からISBNを読み取れませんでした。13桁を入力してください。');
     } finally {
       setReading(false);
+      if (fileRef.current) fileRef.current.value = '';
     }
   };
 
@@ -284,25 +317,21 @@ function ScannerBody({ onIsbn, onClose }: IsbnBarcodeScannerProps) {
   return (
     <ScannerFrame onClose={onClose}>
       <div id={REGION_ID} className="pointer-events-none absolute h-px w-px overflow-hidden opacity-0" aria-hidden />
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          void onPick(file);
-        }}
-      />
-      <button
-        type="button"
-        disabled={reading}
-        onClick={() => fileRef.current?.click()}
-        className="w-full cursor-pointer rounded-2xl bg-violet-600 py-3 text-sm font-black text-white disabled:opacity-60"
-      >
+      <label className={`relative block w-full cursor-pointer overflow-hidden rounded-2xl bg-violet-600 py-3 text-center text-sm font-black text-white ${reading ? 'pointer-events-none opacity-60' : ''}`}>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          disabled={reading}
+          className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+          onChange={(event) => {
+            const selected = event.currentTarget.files?.[0];
+            void onPick(selected);
+          }}
+        />
         📷 バーコードを撮影してね
-      </button>
+      </label>
       <label className="block text-[11px] font-black text-slate-500">
         ISBN
         <input
