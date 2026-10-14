@@ -3559,6 +3559,51 @@ function LearningTrailFrame({
   );
 }
 
+const CELEBRATION_SOUND_KEY = 'celebration_sound_enabled';
+
+function readCelebrationSoundEnabled(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    const stored = window.localStorage.getItem(CELEBRATION_SOUND_KEY);
+    if (stored === null) return true;
+    return stored !== '0' && stored !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function writeCelebrationSoundEnabled(enabled: boolean) {
+  try {
+    window.localStorage.setItem(CELEBRATION_SOUND_KEY, enabled ? '1' : '0');
+  } catch {
+    // 保存できない端末では今回の表示だけ切り替える
+  }
+}
+
+async function playCelebrationFanfare(url: string): Promise<{ ctx: AudioContext; source: AudioBufferSourceNode }> {
+  const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioCtx) throw new Error('audio');
+  const ctx = new AudioCtx();
+  try {
+    if (ctx.state === 'suspended') await ctx.resume();
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('audio');
+    const buffer = await ctx.decodeAudioData(await response.arrayBuffer());
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.7;
+    source.buffer = buffer;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    source.onended = () => { void ctx.close().catch(() => {}); };
+    source.start(0);
+    return { ctx, source };
+  } catch (error) {
+    try { await ctx.close(); } catch { /* すでに閉じている */ }
+    throw error;
+  }
+}
+
 function LearningTrailCelebration({
   card,
   hasNext,
@@ -3568,18 +3613,46 @@ function LearningTrailCelebration({
   hasNext: boolean;
   onClose: () => void;
 }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [soundOn, setSoundOn] = useState(readCelebrationSoundEnabled);
+  const soundOnRef = useRef(soundOn);
+  const playbackRef = useRef<{ ctx: AudioContext; source: AudioBufferSourceNode } | null>(null);
+  const startingRef = useRef(false);
   const fanfareStartedRef = useRef(false);
   const keepFanfareAfterCloseRef = useRef(false);
+  soundOnRef.current = soundOn;
+
+  const stopPlayback = () => {
+    const current = playbackRef.current;
+    playbackRef.current = null;
+    if (!current) return;
+    try { current.source.onended = null; } catch { /* 停止済み */ }
+    try { current.source.stop(); } catch { /* 停止済み */ }
+    try { void current.ctx.close(); } catch { /* 閉じ済み */ }
+  };
+
+  const startPlayback = async (cancelled?: () => boolean) => {
+    if (!soundOnRef.current || playbackRef.current || startingRef.current) return;
+    startingRef.current = true;
+    try {
+      const played = await playCelebrationFanfare(card.audio_url);
+      if ((cancelled && cancelled()) || !soundOnRef.current) {
+        try { played.source.onended = null; } catch { /* 停止済み */ }
+        try { played.source.stop(); } catch { /* 停止済み */ }
+        try { await played.ctx.close(); } catch { /* 閉じ済み */ }
+        return;
+      }
+      playbackRef.current = played;
+      fanfareStartedRef.current = true;
+    } catch {
+      // 消音モードや自動再生ブロックでは音だけを飛ばす
+    } finally {
+      startingRef.current = false;
+    }
+  };
 
   useEffect(() => {
-    const audio = new Audio(card.audio_url);
-    audio.volume = 0.7;
-    audioRef.current = audio;
-    audio.addEventListener('playing', () => {
-      fanfareStartedRef.current = true;
-    });
-    void audio.play().catch(() => {});
+    let cancelled = false;
+    if (soundOnRef.current) void startPlayback(() => cancelled);
     const token = card.image_url;
     if (card.show_confetti === true && !learningTrailCelebrated.has(token)) {
       learningTrailCelebrated.add(token);
@@ -3603,22 +3676,39 @@ function LearningTrailCelebration({
       }
     }
     return () => {
-      if (!keepFanfareAfterCloseRef.current) audio.pause();
+      cancelled = true;
+      if (!keepFanfareAfterCloseRef.current) stopPlayback();
     };
   }, [card.audio_url, card.image_url, card.show_confetti]);
 
   const handleClose = () => {
-    const audio = audioRef.current;
-    if (audio && !fanfareStartedRef.current) {
+    if (soundOnRef.current && !fanfareStartedRef.current) {
       keepFanfareAfterCloseRef.current = true;
-      void audio.play().catch(() => {});
+      void startPlayback();
     }
     onClose();
+  };
+
+  const toggleSound = () => {
+    const next = !soundOnRef.current;
+    soundOnRef.current = next;
+    setSoundOn(next);
+    writeCelebrationSoundEnabled(next);
+    if (!next) stopPlayback();
+    else void startPlayback();
   };
 
   if (typeof document === 'undefined') return null;
   return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 px-4">
+      <button
+        type="button"
+        onClick={toggleSound}
+        aria-label={soundOn ? 'お祝いの音を消す' : 'お祝いの音を出す'}
+        className="absolute right-4 top-4 z-10 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full bg-white/15 text-xl leading-none"
+      >
+        {soundOn ? '🔊' : '🔇'}
+      </button>
       <div className="w-full max-w-md text-center">
         <p className="text-xl font-black text-white sm:text-2xl">🎉 新しい画像をゲットしたよ！</p>
         <div className="mx-auto mt-5 aspect-[3/4] w-[min(88vw,380px)] bg-[#f6f1e4] p-3 shadow-2xl">
