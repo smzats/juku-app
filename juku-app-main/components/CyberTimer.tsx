@@ -158,22 +158,24 @@ export default function CyberTimer({ running, startedAt, onStart, onStop, onCanc
         }}
       >
         <div className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden">{face}</div>
-        {onCancel && (
-          <button
-            type="button"
-            onClick={onCancel}
-            className="absolute left-1/2 top-[max(0.35rem,env(safe-area-inset-top))] z-20 max-w-[92%] -translate-x-1/2 rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] font-bold text-white"
-          >
-            この記録方法を一旦キャンセル
-          </button>
-        )}
         <button
           type="button"
           onClick={() => onStop(Math.floor(measuredSeconds(startedAt)))}
           className={`${orbitron.className} relative z-10 mt-3 w-full max-w-sm shrink-0 cursor-pointer rounded-2xl bg-amber-500 py-4 text-base font-black tracking-[0.2em] text-white`}
+          style={onCancel ? { transform: 'translateY(-3.75rem)' } : undefined}
         >
           STOP
         </button>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="absolute inset-x-4 z-20 mx-auto max-w-sm rounded-2xl bg-red-600 py-3 text-center text-sm font-black text-white"
+            style={{ bottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+          >
+            この学習方法を一旦キャンセルする？
+          </button>
+        )}
       </div>,
       document.body,
     );
