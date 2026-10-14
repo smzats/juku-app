@@ -424,28 +424,35 @@ async function lookupIsbnBook(isbn: string): Promise<ScannedBook | null> {
   }
 }
 
-async function insertScannedMaterial(
+const OWNED_MATERIAL_KEYS = new Set(['id', 'title', 'subject', 'is_custom', 'owner_student_id']);
+
+function isSharedMyMaterialLabel(value: string): boolean {
+  return value.trim() === 'マイ教材';
+}
+
+async function insertStudentOwnedMaterial(
   supabase: any,
   id: string,
-  book: ScannedBook,
+  fields: { title: string; description?: string | null; author?: string; isbn?: string },
   ownerId: string,
 ): Promise<string | null> {
+  const owner = ownerId.trim();
+  if (!owner) return 'ログイン中の生徒IDを取得できません。';
   const payload: Record<string, unknown> = {
     id,
-    title: book.title,
-    author: book.author,
-    isbn: book.isbn,
+    title: fields.title,
     subject: 'マイ教材',
-    description: book.author || null,
+    description: fields.description ?? null,
     is_custom: true,
-    owner_student_id: ownerId,
-    student_id: ownerId,
+    owner_student_id: owner,
   };
+  if (fields.author) payload.author = fields.author;
+  if (fields.isbn) payload.isbn = fields.isbn;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const result = await supabase.from('materials').insert([payload]);
     if (!result.error) return null;
     const missing = missingMaterialsColumn(result.error.message || '');
-    if (!missing || !(missing in payload) || missing === 'id' || missing === 'title') {
+    if (!missing || OWNED_MATERIAL_KEYS.has(missing) || !(missing in payload)) {
       return result.error.message || '教材の保存に失敗しました';
     }
     delete payload[missing];
@@ -494,17 +501,26 @@ async function updateMaterialOrder(supabase: any, id: string, order: number): Pr
 
 const MATERIAL_COLUMNS = 'id, title, subject, description, order_index, is_custom, owner_student_id';
 
-async function selectMaterialMaster(supabase: { from: (table: string) => any }): Promise<{ data: any[]; error: { message?: string } | null }> {
+async function selectMaterialRows(supabase: { from: (table: string) => any }, columns: string): Promise<{ data: any[]; error: { message?: string } | null }> {
   const pageSize = 1000;
   const rows: any[] = [];
   for (let from = 0; from < 20000; from += pageSize) {
-    const result = await supabase.from('materials').select(MATERIAL_COLUMNS).order('subject', { ascending: true }).order('order_index', { ascending: true }).range(from, from + pageSize - 1);
+    const result = await supabase.from('materials').select(columns).order('subject', { ascending: true }).order('order_index', { ascending: true }).range(from, from + pageSize - 1);
     if (result.error) return { data: [], error: result.error };
     const chunk = result.data || [];
     rows.push(...chunk);
     if (chunk.length < pageSize) break;
   }
   return { data: rows, error: null };
+}
+
+async function selectMaterialMaster(supabase: { from: (table: string) => any }): Promise<{ data: any[]; error: { message?: string } | null }> {
+  const withCategory = await selectMaterialRows(supabase, `${MATERIAL_COLUMNS}, category`);
+  if (!withCategory.error) return withCategory;
+  if (missingMaterialsColumn(withCategory.error.message || '') === 'category') {
+    return selectMaterialRows(supabase, MATERIAL_COLUMNS);
+  }
+  return withCategory;
 }
 
 async function selectStudentFavoriteIds(supabase: { from: (table: string) => any }, studentId: string): Promise<{ ids: Set<string> | null; error: { message?: string } | null }> {
@@ -1093,6 +1109,7 @@ export interface Material {
   is_custom?: boolean;
   owner_student_id?: string | null;
   subject_code?: string | null;
+  shared_my_material?: boolean;
 }
 
 export interface StudyLog {
@@ -1305,6 +1322,7 @@ interface MyMaterialItem {
   subject: SubjectType;
   subject_code?: string | null;
   addedAt: string;
+  owned?: boolean;
 }
 
 function readMyMaterials(userId: string): MyMaterialItem[] {
@@ -4880,7 +4898,11 @@ export default function Page() {
         if (!id || !title) return;
         const ownerId = textCell(row?.owner_student_id).trim();
         const custom = row?.is_custom === true;
-        if (studentView && viewer && custom && ownerId !== viewer.id) return;
+        const rawSubject = textCell(row?.subject).trim();
+        const rawCategory = textCell(row?.category).trim();
+        const sharedMyMaterial = !ownerId && (isSharedMyMaterialLabel(rawSubject) || isSharedMyMaterialLabel(rawCategory));
+        if (studentView && viewer && ownerId && ownerId !== viewer.id) return;
+        if (studentView && viewer && custom && !ownerId && !sharedMyMaterial) return;
         const code = isSubjectCode(row?.subject) ? subjectCodeFromInput(row?.subject) : null;
         const subject = code ? SUBJECT_CODE_TONE[code] : (subjectFromInput(row?.subject) || 'その他');
         list.push({
@@ -4895,6 +4917,7 @@ export default function Page() {
           is_favorite: favoriteIds.has(id),
           is_custom: custom,
           owner_student_id: ownerId || null,
+          shared_my_material: sharedMyMaterial,
         });
       });
       if (!studentView) return bySubjectThenOrder(list);
@@ -6380,6 +6403,7 @@ export default function Page() {
 
   const filteredMaterials = useMemo(() => {
     const matched = materials.filter((m) => {
+      if (textCell(m.owner_student_id).trim()) return false;
       const filterCode = subjectCodeFromInput(subjectFilter);
       const matchesSubject = !subjectFilter || subjectFilter === 'ALL' || (
         filterCode
@@ -6580,10 +6604,18 @@ export default function Page() {
 
   useEffect(() => {
     if (!currentUser || resolveAppRole(currentUser.role, currentUser.id, currentUser.email) !== 'student') return;
-    setMyMaterials(materials.flatMap((item) => {
-      if (item.is_custom !== true || item.owner_student_id !== currentUser.id) return [];
-      return [{ id: item.id, title: item.title, subject: 'その他', subject_code: 'other', addedAt: '' }];
-    }));
+    const studentId = currentUser.id.trim();
+    const personal: MyMaterialItem[] = [];
+    const shared: MyMaterialItem[] = [];
+    materials.forEach((item) => {
+      const owned = Boolean(studentId) && item.owner_student_id === studentId;
+      const sharedRow = !item.owner_student_id && item.shared_my_material === true;
+      if (!owned && !sharedRow) return;
+      const entry: MyMaterialItem = { id: item.id, title: item.title, subject: 'その他', subject_code: 'other', addedAt: '', owned };
+      if (owned) personal.push(entry);
+      else shared.push(entry);
+    });
+    setMyMaterials([...personal, ...shared]);
   }, [materials, currentUser?.id, currentUser?.role, currentUser?.email]);
 
   useEffect(() => {
@@ -7773,7 +7805,7 @@ export default function Page() {
       owner_student_id: currentUser.id,
     };
     try {
-      const failure = await writeMaterialRow(supabase, saved.id, materialWritePayload(saved));
+      const failure = await insertStudentOwnedMaterial(supabase, saved.id, { title: trimmed }, currentUser.id);
       if (failure) throw new Error(failure);
       await reloadMaterials();
       addNotification('success', `「${trimmed}」をマイ教材に追加しました。`);
@@ -7809,7 +7841,12 @@ export default function Page() {
       return;
     }
     try {
-      const failure = await insertScannedMaterial(supabase, `mym_${Date.now()}`, isbnDraft, currentUser.id);
+      const failure = await insertStudentOwnedMaterial(
+        supabase,
+        `mym_${Date.now()}`,
+        { title: isbnDraft.title, description: isbnDraft.author || null, author: isbnDraft.author, isbn: isbnDraft.isbn },
+        currentUser.id,
+      );
       if (failure) throw new Error(failure);
       const title = isbnDraft.title;
       setIsbnDraft(null);
@@ -10518,13 +10555,15 @@ function SkeletonLoader() {
                           <span className="inline-block text-[10px] font-black px-2 py-0.5 rounded-full border border-violet-300 bg-violet-50 text-violet-700">マイ教材</span>
                           <div className="font-black text-slate-900 mt-1 truncate">{item.title}</div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => removeMyMaterial(item.id)}
-                          className="shrink-0 px-3 py-2 rounded-xl bg-red-50 text-red-700 text-[11px] font-black cursor-pointer"
-                        >
-                          削除
-                        </button>
+                        {item.owned ? (
+                          <button
+                            type="button"
+                            onClick={() => removeMyMaterial(item.id)}
+                            className="shrink-0 px-3 py-2 rounded-xl bg-red-50 text-red-700 text-[11px] font-black cursor-pointer"
+                          >
+                            削除
+                          </button>
+                        ) : null}
                       </article>
                     );
                   })}
