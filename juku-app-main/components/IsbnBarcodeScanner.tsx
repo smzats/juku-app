@@ -26,6 +26,119 @@ function releaseObjectUrls(urls: string[]) {
   });
 }
 
+const DECODE_WIDTH = 800;
+
+async function loadPhotoSource(file: File): Promise<{ source: CanvasImageSource; width: number; height: number; close: () => void }> {
+  try {
+    if (typeof createImageBitmap === 'function') {
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        close: () => { try { bitmap.close(); } catch { /* 解放済み */ } },
+      };
+    }
+  } catch { /* 向き補正つきの読み込みに失敗したら通常の画像読み込みへ */ }
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('image'));
+      img.src = url;
+    });
+    return {
+      source: image,
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      close: () => { try { URL.revokeObjectURL(url); } catch { /* 解放済み */ } },
+    };
+  } catch (error) {
+    try { URL.revokeObjectURL(url); } catch { /* 解放済み */ }
+    throw error;
+  }
+}
+
+function scaledCanvas(source: CanvasImageSource, srcW: number, srcH: number, cropY: number, cropH: number): HTMLCanvasElement | null {
+  try {
+    const targetW = Math.min(DECODE_WIDTH, Math.max(1, srcW));
+    const scale = targetW / srcW;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(srcW * scale));
+    canvas.height = Math.max(1, Math.round(cropH * scale));
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+    context.drawImage(source, 0, cropY, srcW, cropH, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  } catch {
+    return null;
+  }
+}
+
+function releaseCanvas(canvas: HTMLCanvasElement | null) {
+  if (!canvas) return;
+  try {
+    canvas.width = 0;
+    canvas.height = 0;
+  } catch { /* 解放済み */ }
+}
+
+function rotateCanvas(source: HTMLCanvasElement): HTMLCanvasElement | null {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = source.height;
+    canvas.height = source.width;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+    context.translate(canvas.width / 2, canvas.height / 2);
+    context.rotate(Math.PI / 2);
+    context.drawImage(source, -source.width / 2, -source.height / 2);
+    return canvas;
+  } catch {
+    return null;
+  }
+}
+
+async function textsFromCanvas(canvas: HTMLCanvasElement): Promise<string[]> {
+  const found: string[] = [];
+  try {
+    const zxing = await import('@zxing/library');
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context || canvas.width < 1 || canvas.height < 1) return found;
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    const pixels = new Int32Array(canvas.width * canvas.height);
+    for (let offset = 0, index = 0; offset < image.data.length; offset += 4, index += 1) {
+      const red = image.data[offset];
+      const green = image.data[offset + 1];
+      const blue = image.data[offset + 2];
+      pixels[index] = (0xff << 24) | (red << 16) | (green << 8) | blue;
+    }
+    const hints = new Map();
+    hints.set(zxing.DecodeHintType.POSSIBLE_FORMATS, [zxing.BarcodeFormat.EAN_13]);
+    hints.set(zxing.DecodeHintType.TRY_HARDER, true);
+    const source = new zxing.RGBLuminanceSource(pixels, canvas.width, canvas.height);
+    const reader = new zxing.MultiFormatReader();
+    reader.setHints(hints);
+    for (const Binarizer of [zxing.HybridBinarizer, zxing.GlobalHistogramBinarizer]) {
+      try {
+        const text = reader.decode(new zxing.BinaryBitmap(new Binarizer(source))).getText();
+        if (text) found.push(String(text));
+      } catch { /* この切り出しではバーコードが見つからない */ }
+      try { reader.reset(); } catch { /* 次の二値化へ進む */ }
+    }
+  } catch { /* 解析ライブラリの失敗は次の画像へ進む */ }
+  return found;
+}
+
+function chooseIsbn(texts: string[]): string | null {
+  for (const text of texts) {
+    const isbn = isbn13(text);
+    if (isbn) return isbn;
+  }
+  return null;
+}
+
 async function scanStillImage(file: File): Promise<string | null> {
   if (typeof window === 'undefined') return null;
   const host = document.getElementById(REGION_ID);
@@ -63,35 +176,53 @@ async function scanStillImage(file: File): Promise<string | null> {
 }
 
 async function readIsbnFromPhoto(file: File): Promise<string | null> {
-  const direct = await scanStillImage(file).catch(() => null);
-  if (direct) return direct;
-  if (typeof createImageBitmap !== 'function') return null;
-  let bitmap: ImageBitmap | null = null;
+  let frame: Awaited<ReturnType<typeof loadPhotoSource>> | null = null;
+  const canvases: HTMLCanvasElement[] = [];
   try {
-    bitmap = await createImageBitmap(file);
-    const bands = [0, 0.35, 0.6];
-    for (const start of bands) {
-      const canvas = document.createElement('canvas');
-      const height = Math.max(1, Math.floor(bitmap.height * 0.45));
-      const y = Math.min(bitmap.height - height, Math.floor(bitmap.height * start));
-      canvas.width = bitmap.width;
-      canvas.height = height;
-      const context = canvas.getContext('2d');
-      if (!context) continue;
-      context.drawImage(bitmap, 0, y, bitmap.width, height, 0, 0, bitmap.width, height);
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-      canvas.width = 0;
-      canvas.height = 0;
-      if (!blob) continue;
-      const piece = new File([blob], 'band.jpg', { type: 'image/jpeg' });
-      const found = await scanStillImage(piece).catch(() => null);
-      if (found) return found;
+    frame = await loadPhotoSource(file);
+    if (frame.width < 1 || frame.height < 1) return null;
+    const crops = [0, 0.18, 0.36, 0.54, 0.7].map((start) => ({
+      y: Math.floor(frame.height * start),
+      h: Math.max(1, Math.floor(frame.height * 0.36)),
+    }));
+    crops.push({ y: 0, h: frame.height });
+    const collected: string[] = [];
+    let fullCanvas: HTMLCanvasElement | null = null;
+    for (const crop of crops) {
+      const y = Math.min(frame.height - 1, Math.max(0, crop.y));
+      const height = Math.min(frame.height - y, crop.h);
+      const canvas = scaledCanvas(frame.source, frame.width, frame.height, y, height);
+      if (!canvas) continue;
+      canvases.push(canvas);
+      if (crop.h === frame.height) fullCanvas = canvas;
+      collected.push(...await textsFromCanvas(canvas));
+      const isbn = chooseIsbn(collected);
+      if (isbn) return isbn;
+    }
+    if (fullCanvas) {
+      const turned = rotateCanvas(fullCanvas);
+      if (turned) {
+        canvases.push(turned);
+        collected.push(...await textsFromCanvas(turned));
+        const isbn = chooseIsbn(collected);
+        if (isbn) return isbn;
+      }
+    }
+    for (const canvas of canvases) {
+      try {
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+        if (!blob) continue;
+        const piece = new File([blob], 'isbn.jpg', { type: 'image/jpeg' });
+        const found = await scanStillImage(piece).catch(() => null);
+        if (found) return found;
+      } catch { /* 縮小画像の再解析に失敗したら次の切り出しへ */ }
     }
     return null;
   } catch {
     return null;
   } finally {
-    bitmap?.close();
+    canvases.forEach(releaseCanvas);
+    frame?.close();
   }
 }
 
@@ -124,8 +255,9 @@ function ScannerBody({ onIsbn, onClose }: IsbnBarcodeScannerProps) {
       const isbn = await readIsbnFromPhoto(file);
       if (isbn) {
         setIsbnValue(isbn);
-        setHint('読み取った数字を確認して、必要なら修正してください。');
+        setHint('ISBNを読み取りました。書籍を確認しています。');
         try { navigator.vibrate?.(200); } catch { /* 振動できない端末はそのまま進む */ }
+        try { onIsbn(isbn); } catch { setHint('ISBNの確認に失敗しました。もう一度入力してください。'); }
       } else {
         setHint('写真からISBNを読み取れませんでした。13桁を入力してください。');
       }
