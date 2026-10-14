@@ -51,12 +51,12 @@ function studySeconds(startedAt: number | null, now = Date.now()): number {
   return IS_TEST_MODE ? realSeconds * 60 : realSeconds;
 }
 
-function dashForTicks(lit: number, skip: number): { array: string; offset: number } {
+function dashForTicks(lit: number): { array: string; offset: number } {
   if (lit <= 0) return { array: `0 ${RING_CIRCUMFERENCE}`, offset: 0 };
   const marks = Array.from({ length: lit }, () => '3 8.0').join(' ');
   const consumed = lit * 11;
   const rest = Math.max(0, RING_CIRCUMFERENCE - consumed);
-  return { array: `${marks} 0 ${rest}`, offset: skip * 11 };
+  return { array: `${marks} 0 ${rest}`, offset: 0 };
 }
 
 function formatRemain(totalSeconds: number): string {
@@ -128,8 +128,7 @@ export default function CyberTimeAttack({
   const shown = running ? remainSec : targetSec;
   const totalTicks = target / STEP_MINUTES;
   const lit = shown <= 0 ? 0 : Math.min(totalTicks, Math.ceil(shown / TICK_SECONDS));
-  const skip = Math.max(0, totalTicks - lit);
-  const dash = dashForTicks(lit, skip);
+  const dash = dashForTicks(lit);
   const pinch = running && shown > 0 && shown <= PINCH_SECONDS;
   const stroke = pinch ? '#ff0055' : '#00e5ff';
   const glow = pinch
