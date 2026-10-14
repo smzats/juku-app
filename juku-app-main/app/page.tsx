@@ -647,6 +647,95 @@ const STUDENT_LIST_COLUMNS = [
   { key: 'individual', label: '個別' },
 ] as const;
 
+const STUDENT_BULK_UPDATE_HEADERS = [
+  'id',
+  'name',
+  'grade',
+  'branch_id',
+  'high_school',
+  'english',
+  'math',
+  'modern_jp',
+  'classic_jp',
+  'physics',
+  'chemistry',
+  'biology',
+  'jp_history',
+  'world_history',
+  'individual',
+] as const;
+
+function studentBulkCsvCell(value: unknown): string {
+  const text = value == null ? '' : String(value);
+  if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function studentBulkUpdatePayload(row: Record<string, string>) {
+  return {
+    grade: row.grade ?? '',
+    branch_id: row.branch_id ?? '',
+    high_school: row.high_school ?? '',
+    english: row.english ?? '',
+    math: row.math ?? '',
+    modern_jp: row.modern_jp ?? '',
+    classic_jp: row.classic_jp ?? '',
+    physics: row.physics ?? '',
+    chemistry: row.chemistry ?? '',
+    biology: row.biology ?? '',
+    jp_history: row.jp_history ?? '',
+    world_history: row.world_history ?? '',
+    individual: row.individual ?? '',
+  };
+}
+
+function validateStudentBulkUpdateRows(
+  rows: Record<string, string>[],
+  headers: string[],
+  directory: Map<string, string>,
+): { errors: string[]; rows: Record<string, string>[] } {
+  const missing = STUDENT_BULK_UPDATE_HEADERS.filter((header) => !headers.includes(header));
+  if (missing.length > 0) {
+    return { errors: [`エラー: CSVの列が不足しています（${missing.join(', ')}）`], rows: [] };
+  }
+  if (rows.length === 0) {
+    return { errors: ['エラー: 更新する行がありません'], rows: [] };
+  }
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  const accepted: Record<string, string>[] = [];
+  rows.forEach((raw, index) => {
+    const line = index + 2;
+    const id = String(raw.id ?? '').trim();
+    const name = String(raw.name ?? '').trim();
+    if (!id) {
+      errors.push(`エラー: 行${line} の ID が空です`);
+      return;
+    }
+    if (seen.has(id)) {
+      errors.push(`エラー: 行${line} の ID '${id}' はCSV内で重複しています`);
+      return;
+    }
+    seen.add(id);
+    if (!directory.has(id)) {
+      errors.push(`エラー: 行${line} の ID '${id}' は登録されていません`);
+      return;
+    }
+    const dbName = directory.get(id) ?? '';
+    if (name !== dbName.trim()) {
+      errors.push(`エラー: 行${line} の ID '${id}' の氏名がDB（${dbName}）と一致しません`);
+      return;
+    }
+    const next: Record<string, string> = { id, name: dbName };
+    STUDENT_BULK_UPDATE_HEADERS.forEach((header) => {
+      if (header === 'id' || header === 'name') return;
+      next[header] = String(raw[header] ?? '').trim();
+    });
+    accepted.push(next);
+  });
+  return { errors, rows: errors.length === 0 ? accepted : [] };
+}
+
 type StudentProfileKey = (typeof STUDENT_PROFILE_FIELDS)[number]['key'];
 type StudentProfile = Record<StudentProfileKey, string>;
 type StudentListFilterKey = (typeof STUDENT_LIST_COLUMNS)[number]['key'];
@@ -4590,6 +4679,13 @@ export default function Page() {
   const [progressSortKey, setProgressSortKey] = useState<'week' | 'month'>('week');
   const [progressSortDir, setProgressSortDir] = useState<'desc' | 'asc'>('desc');
   const [isStudentCsvModalOpen, setIsStudentCsvModalOpen] = useState<boolean>(false);
+  const [isStudentBulkUpdateOpen, setIsStudentBulkUpdateOpen] = useState<boolean>(false);
+  const [studentBulkBranch, setStudentBulkBranch] = useState<string>('ALL');
+  const [studentBulkRows, setStudentBulkRows] = useState<Record<string, string>[]>([]);
+  const [studentBulkErrors, setStudentBulkErrors] = useState<string[]>([]);
+  const [studentBulkMessage, setStudentBulkMessage] = useState<string>('');
+  const [studentBulkBusy, setStudentBulkBusy] = useState<boolean>(false);
+  const [studentBulkFileKey, setStudentBulkFileKey] = useState<number>(0);
   const [isTeacherCsvModalOpen, setIsTeacherCsvModalOpen] = useState<boolean>(false);
   const [isMaterialCsvModalOpen, setIsMaterialCsvModalOpen] = useState<boolean>(false);
   const [isStudentEditModalOpen, setIsStudentEditModalOpen] = useState<boolean>(false);
@@ -6767,6 +6863,145 @@ export default function Page() {
     URL.revokeObjectURL(url);
   }, []);
 
+  const canBulkUpdateStudents = currentUser?.role === 'admin' || currentUser?.role === 'teacher';
+
+  const openStudentBulkUpdate = useCallback(() => {
+    if (currentUser?.role !== 'admin' && currentUser?.role !== 'teacher') return;
+    setStudentBulkRows([]);
+    setStudentBulkErrors([]);
+    setStudentBulkMessage('');
+    setStudentBulkFileKey((key) => key + 1);
+    setIsStudentBulkUpdateOpen(true);
+  }, [currentUser]);
+
+  const exportStudentBulkCsv = useCallback(async () => {
+    if (currentUser?.role !== 'admin' && currentUser?.role !== 'teacher') return;
+    setStudentBulkBusy(true);
+    setStudentBulkMessage('');
+    try {
+      let query = supabase.from('students').select(STUDENT_BULK_UPDATE_HEADERS.join(','));
+      if (studentBulkBranch !== 'ALL') query = query.eq('branch_id', studentBulkBranch);
+      const result = await query.order('id', { ascending: true });
+      if (result.error) {
+        setStudentBulkMessage(`エラー: ${result.error.message}`);
+        return;
+      }
+      const records = (result.data ?? []) as Record<string, unknown>[];
+      const lines = [
+        STUDENT_BULK_UPDATE_HEADERS.join(','),
+        ...records.map((row) => STUDENT_BULK_UPDATE_HEADERS.map((header) => studentBulkCsvCell(row[header])).join(',')),
+      ];
+      const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      const branchLabel = studentBulkBranch === 'ALL' ? 'all' : studentBulkBranch;
+      link.href = url;
+      link.download = `students_update_${branchLabel}_${stamp}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStudentBulkMessage(`${records.length}件の生徒情報をCSV出力しました`);
+    } catch (err: any) {
+      setStudentBulkMessage(`エラー: ${err?.message || 'CSV出力に失敗しました'}`);
+    } finally {
+      setStudentBulkBusy(false);
+    }
+  }, [currentUser, studentBulkBranch, supabase]);
+
+  const handleStudentBulkFile = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || (currentUser?.role !== 'admin' && currentUser?.role !== 'teacher')) return;
+    setStudentBulkBusy(true);
+    setStudentBulkMessage('');
+    setStudentBulkRows([]);
+    setStudentBulkErrors([]);
+    Papa.parse<Record<string, string>>(file, {
+      header: true,
+      skipEmptyLines: 'greedy',
+      complete: async (parsed) => {
+        try {
+          const headers = (parsed.meta.fields ?? []).map((field) => field.replace(/^\uFEFF/, '').trim());
+          const sourceRows = parsed.data.map((row) => {
+            const cleaned: Record<string, string> = {};
+            Object.entries(row).forEach(([key, value]) => {
+              cleaned[key.replace(/^\uFEFF/, '').trim()] = value == null ? '' : String(value);
+            });
+            return cleaned;
+          });
+          const directoryResult = await supabase.from('students').select('id,name');
+          if (directoryResult.error) {
+            setStudentBulkErrors([`エラー: 生徒一覧の取得に失敗しました（${directoryResult.error.message}）`]);
+            return;
+          }
+          const directory = new Map<string, string>();
+          (directoryResult.data ?? []).forEach((row) => {
+            const id = String(row.id ?? '').trim();
+            if (id) directory.set(id, String(row.name ?? ''));
+          });
+          const checked = validateStudentBulkUpdateRows(sourceRows, headers, directory);
+          setStudentBulkErrors(checked.errors);
+          setStudentBulkRows(checked.rows);
+          if (checked.errors.length === 0) {
+            setStudentBulkMessage(`${checked.rows.length}件を照合しました。更新実行できます。`);
+          }
+        } catch (err: any) {
+          setStudentBulkErrors([`エラー: ${err?.message || 'CSVの読み込みに失敗しました'}`]);
+          setStudentBulkRows([]);
+        } finally {
+          setStudentBulkBusy(false);
+        }
+      },
+      error: (error) => {
+        setStudentBulkErrors([`エラー: ${error.message}`]);
+        setStudentBulkRows([]);
+        setStudentBulkBusy(false);
+      },
+    });
+  }, [currentUser, supabase]);
+
+  const executeStudentBulkUpdate = useCallback(async () => {
+    if (currentUser?.role !== 'admin' && currentUser?.role !== 'teacher') return;
+    if (studentBulkBusy || studentBulkErrors.length > 0 || studentBulkRows.length === 0) return;
+    setStudentBulkBusy(true);
+    setStudentBulkMessage('');
+    try {
+      for (let index = 0; index < studentBulkRows.length; index += 1) {
+        const row = studentBulkRows[index];
+        const result = await supabase
+          .from('students')
+          .update(studentBulkUpdatePayload(row))
+          .eq('id', row.id)
+          .eq('name', row.name)
+          .select('id');
+        const earlier = index > 0 ? 'これより前の行は更新済みです。' : '';
+        if (result.error) {
+          setStudentBulkErrors([`エラー: 行${index + 2} の更新に失敗しました（${result.error.message}）。${earlier}`]);
+          setStudentBulkRows([]);
+          return;
+        }
+        if (!result.data || result.data.length !== 1) {
+          setStudentBulkErrors([`エラー: 行${index + 2} の ID '${row.id}' は氏名の一致を確認できず更新しませんでした。${earlier}`]);
+          setStudentBulkRows([]);
+          return;
+        }
+      }
+      const count = studentBulkRows.length;
+      setStudentBulkRows([]);
+      setStudentBulkErrors([]);
+      setStudentBulkMessage(`${count}件の生徒情報を正常に更新しました`);
+      addNotification('success', `${count}件の生徒情報を正常に更新しました`);
+      await fetchAllData({ silent: true });
+    } catch (err: any) {
+      setStudentBulkErrors([`エラー: ${err?.message || '更新に失敗しました'}`]);
+      setStudentBulkRows([]);
+    } finally {
+      setStudentBulkBusy(false);
+    }
+  }, [addNotification, currentUser, fetchAllData, studentBulkBusy, studentBulkErrors.length, studentBulkRows, supabase]);
+
   const downloadTeacherCsvTemplate = useCallback(() => {
     const csvBody = [
       'id,name,branch_id,role,password',
@@ -7972,6 +8207,14 @@ function SkeletonLoader() {
           >
             <span>🎓</span> 生徒専用CSV一括登録
           </button>
+          {canBulkUpdateStudents && (
+          <button
+            onClick={openStudentBulkUpdate}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-extrabold rounded-2xl transition-all shadow-lg shadow-amber-600/20 active:scale-95 cursor-pointer"
+          >
+            <span>📝</span> 生徒情報一括更新（CSV）
+          </button>
+          )}
           {currentUser.role === 'admin' && (
           <button
             onClick={() => { setCsvImportKind('teacher'); setCsvParsedPreview([]); setCsvValidationErrors([]); setCsvStatusMessage({ type: null, text: '' }); setIsTeacherCsvModalOpen(true); }}
@@ -9404,6 +9647,69 @@ function SkeletonLoader() {
                   登録実行
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isStudentBulkUpdateOpen && canBulkUpdateStudents && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-2xl max-h-[90dvh] overflow-y-auto rounded-3xl shadow-2xl border border-slate-200">
+            <div className="p-5 bg-amber-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">📝 生徒情報一括更新（CSV）</h4>
+              <button type="button" onClick={() => setIsStudentBulkUpdateOpen(false)} className="text-amber-200 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl text-xs text-amber-950 space-y-3">
+                <p className="font-extrabold">学年・校舎・受講教科をCSVで更新します。id と name は照合専用で、更新しません。</p>
+                <label className="block font-bold">
+                  校舎
+                  <select
+                    value={studentBulkBranch}
+                    onChange={(event) => setStudentBulkBranch(event.target.value)}
+                    className="mt-1 w-full bg-white border border-amber-200 rounded-xl px-3 py-2 text-slate-800"
+                  >
+                    <option value="ALL">全校舎</option>
+                    {Array.from(new Set(['本川越校', '川越校', 'ＥＸ校', ...users.filter((user) => user.role === 'student' && user.classroom).map((user) => user.classroom)])).map((branch) => (
+                      <option key={branch} value={branch}>{branch}</option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => { void exportStudentBulkCsv(); }}
+                  disabled={studentBulkBusy}
+                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-extrabold rounded-xl shadow-sm cursor-pointer"
+                >
+                  生徒情報のCSV出力
+                </button>
+                <p className="break-all">列: {STUDENT_BULK_UPDATE_HEADERS.join(', ')}</p>
+              </div>
+              <div className="border-2 border-dashed border-slate-300 p-6 rounded-2xl text-center bg-slate-50">
+                <label className="block text-xs font-bold text-slate-600 mb-2">ファイルの選択（CSV）</label>
+                <input key={studentBulkFileKey} type="file" accept=".csv,text/csv" onChange={handleStudentBulkFile} disabled={studentBulkBusy} className="block w-full text-xs text-slate-500" />
+              </div>
+              {studentBulkErrors.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-2xl p-4 space-y-1">
+                  {studentBulkErrors.map((error) => (
+                    <p key={error} className="text-xs font-bold text-red-700">{error}</p>
+                  ))}
+                </div>
+              )}
+              {studentBulkMessage && (
+                <p className={`text-xs font-bold ${studentBulkMessage.startsWith('エラー') ? 'text-red-700' : 'text-emerald-700'}`}>{studentBulkMessage}</p>
+              )}
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button type="button" onClick={() => setIsStudentBulkUpdateOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer">閉じる</button>
+              <button
+                type="button"
+                onClick={() => { void executeStudentBulkUpdate(); }}
+                disabled={studentBulkBusy || studentBulkErrors.length > 0 || studentBulkRows.length === 0}
+                className="px-5 py-2 bg-amber-600 disabled:bg-slate-300 disabled:text-slate-500 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer"
+              >
+                更新実行
+              </button>
             </div>
           </div>
         </div>
