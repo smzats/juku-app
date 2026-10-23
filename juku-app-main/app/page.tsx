@@ -8567,6 +8567,16 @@ function SkeletonLoader() {
           >
             <span>🎓</span> 生徒専用CSV一括登録
           </button>
+          {currentUser.role === 'admin' && (
+          <button
+            type="button"
+            onClick={() => { void exportStudentAccountCsv(); }}
+            disabled={studentAccountCsvBusy}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-extrabold rounded-2xl transition-all shadow-lg shadow-slate-900/30 active:scale-95 cursor-pointer"
+          >
+            <span>📥</span> 生徒情報一括書き出し (CSV)
+          </button>
+          )}
           {canBulkUpdateStudents && (
           <button
             onClick={openStudentBulkUpdate}
