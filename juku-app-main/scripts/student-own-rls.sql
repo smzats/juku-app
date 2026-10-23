@@ -103,10 +103,45 @@ using (
   or (public.app_is_student() and lower(id) = lower(public.app_login_id()))
 );
 
-create policy ylog_students_write on public.students
-for all to authenticated
-using (public.app_is_staff())
+create policy ylog_students_insert on public.students
+for insert to authenticated
 with check (public.app_is_staff());
+
+create policy ylog_students_update on public.students
+for update to authenticated
+using (
+  public.app_is_admin()
+  or exists (
+    select 1
+    from public.teachers
+    where lower(id) = lower(public.app_login_id())
+      and role = 'teacher'
+      and branch_id is not distinct from students.branch_id
+  )
+)
+with check (
+  public.app_is_admin()
+  or exists (
+    select 1
+    from public.teachers
+    where lower(id) = lower(public.app_login_id())
+      and role = 'teacher'
+      and branch_id is not distinct from students.branch_id
+  )
+);
+
+create policy ylog_students_delete on public.students
+for delete to authenticated
+using (
+  public.app_is_admin()
+  or exists (
+    select 1
+    from public.teachers
+    where lower(id) = lower(public.app_login_id())
+      and role = 'teacher'
+      and branch_id is not distinct from students.branch_id
+  )
+);
 
 create policy ylog_teachers_select on public.teachers
 for select to authenticated

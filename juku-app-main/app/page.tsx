@@ -1128,6 +1128,18 @@ function profileToDbColumns(profile: StudentProfile): Record<string, string> {
   return columns;
 }
 
+function canEditStudentProfile(
+  viewer: { role?: string; classroom?: string } | null | undefined,
+  student: { classroom?: string } | null | undefined,
+): boolean {
+  if (!viewer || !student) return false;
+  if (viewer.role === 'admin') return true;
+  if (viewer.role !== 'teacher') return false;
+  const teacherBranch = String(viewer.classroom || '').trim();
+  const studentBranch = String(student.classroom || '').trim();
+  return teacherBranch !== '' && teacherBranch === studentBranch;
+}
+
 function blankUserForm(role: UserRole = 'student'): User {
   return {
     id: '',
@@ -5458,6 +5470,10 @@ export default function Page() {
   }, [supabase]);
 
   const resetDirectoryPassword = useCallback(async (account: User) => {
+    if (account.role === 'student' && !canEditStudentProfile(currentUser, account)) {
+      alert('他校舎の生徒のため閲覧のみ可能です');
+      return;
+    }
     const entered = window.prompt(`${account.name}（${account.id}）の新しいパスワードを入力してください。6文字以上です。`);
     if (entered == null) return;
     const password = entered.trim();
@@ -5471,7 +5487,7 @@ export default function Page() {
       return;
     }
     addNotification('success', `${account.name} のパスワードを再設定しました。`);
-  }, [syncAuthPassword, addNotification]);
+  }, [syncAuthPassword, addNotification, currentUser]);
 
   const saveUserWithProfile = useCallback(async (user: User, mode: 'create' | 'update' = 'update'): Promise<string | null> => {
     const profile = pickStudentProfile(user);
@@ -5575,11 +5591,12 @@ export default function Page() {
   }, [newUserForm, users, currentUser, saveUserWithProfile, fetchAllData, addNotification]);
 
   const openStudentEditModal = useCallback((student: User) => {
+    if (!canEditStudentProfile(currentUser, student)) return;
     setEditingStudentOriginalId(student.id);
     setStudentEditForm({ ...blankUserForm(student.role), ...student, password: student.password || '' });
     setIsTeacherEditModalOpen(false);
     setIsStudentEditModalOpen(true);
-  }, []);
+  }, [currentUser]);
 
   const openTeacherEditModal = useCallback((teacher: User) => {
     setEditingStudentOriginalId(teacher.id);
@@ -5677,6 +5694,15 @@ export default function Page() {
       alert('その独自IDはすでに使われています。');
       return;
     }
+    const original = users.find((user) => user.id === editingStudentOriginalId);
+    if (!canEditStudentProfile(currentUser, original || { classroom: '' })) {
+      alert('他校舎の生徒のため閲覧のみ可能です');
+      return;
+    }
+    if (currentUser?.role === 'teacher' && studentEditForm.classroom.trim() !== String(currentUser.classroom || '').trim()) {
+      alert('所属校舎以外への変更はできません。');
+      return;
+    }
 
     try {
       const dbError = await saveUserWithProfile({ ...studentEditForm, id: nextId, role: 'student', password: '' });
@@ -5712,11 +5738,15 @@ export default function Page() {
     } catch (err: any) {
       alert(`情報の更新エラー: ${err.message}`);
     }
-  }, [studentEditForm, editingStudentOriginalId, users, saveUserWithProfile, supabase, fetchAllData, addNotification]);
+  }, [studentEditForm, editingStudentOriginalId, users, currentUser, saveUserWithProfile, supabase, fetchAllData, addNotification]);
 
   const handleDeleteStudent = useCallback(async (student: User) => {
     if (currentUser?.role !== 'admin' && currentUser?.role !== 'teacher') {
       alert('生徒の削除は管理者・講師のみ実行できます。');
+      return;
+    }
+    if (!canEditStudentProfile(currentUser, student)) {
+      alert('他校舎の生徒のため閲覧のみ可能です');
       return;
     }
     const confirmed = window.confirm('この生徒のデータを削除待ち一覧へ移動しますか？');
@@ -6459,8 +6489,7 @@ export default function Page() {
 
   const progressBoard = useMemo(() => {
     const viewerRole = currentUser ? resolveAppRole(currentUser.role, currentUser.id, currentUser.email) : 'student';
-    const lockedClassroom = viewerRole === 'teacher' ? (currentUser?.classroom || '') : null;
-    const classroom = lockedClassroom ?? progressClassroom;
+    const classroom = progressClassroom;
     const today = todayDateKey();
     const weekStart = weekStartKey(today);
     const weekEnd = shiftDateKey(weekStart, 6);
@@ -9060,28 +9089,34 @@ function SkeletonLoader() {
                             />
                           </td>
                           <td className="p-2">
-                            <div className="flex flex-wrap gap-2">
-                              <button
-                                type="button"
-                                onClick={() => openStudentEditModal(student)}
-                                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-extrabold border border-slate-200 cursor-pointer whitespace-nowrap"
-                              >
-                                ✏️ 編集
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteStudent(student)}
-                                className="px-3 py-1.5 bg-white hover:bg-red-50 text-red-700 rounded-xl text-xs font-extrabold border border-red-200 cursor-pointer whitespace-nowrap"
-                              >
-                                🗑️ 削除
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => { void resetDirectoryPassword(student); }}
-                                className="px-3 py-1.5 bg-white hover:bg-sky-50 text-sky-800 rounded-xl text-xs font-extrabold border border-sky-200 cursor-pointer whitespace-nowrap"
-                              >
-                                パスワード再設定
-                              </button>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {canEditStudentProfile(currentUser, student) ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => openStudentEditModal(student)}
+                                    className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-extrabold border border-slate-200 cursor-pointer whitespace-nowrap"
+                                  >
+                                    ✏️ 編集
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteStudent(student)}
+                                    className="px-3 py-1.5 bg-white hover:bg-red-50 text-red-700 rounded-xl text-xs font-extrabold border border-red-200 cursor-pointer whitespace-nowrap"
+                                  >
+                                    🗑️ 削除
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { void resetDirectoryPassword(student); }}
+                                    className="px-3 py-1.5 bg-white hover:bg-sky-50 text-sky-800 rounded-xl text-xs font-extrabold border border-sky-200 cursor-pointer whitespace-nowrap"
+                                  >
+                                    パスワード再設定
+                                  </button>
+                                </>
+                              ) : (
+                                <p className="text-[11px] font-bold text-slate-500">他校舎の生徒のため閲覧のみ可能です</p>
+                              )}
                               <button
                                 onClick={() => {
                                   setSelectedStudentId(student.id);
@@ -9197,6 +9232,9 @@ function SkeletonLoader() {
                     <span className="text-xs text-slate-400 font-bold font-mono">独自生徒ID: {selectedStudent.id}</span>
                     <h3 className="text-2xl font-black text-slate-900 mt-0.5">{selectedStudent.name} さんの個人成長カルテ</h3>
                     <p className="text-xs text-slate-500 mt-0.5">所属校舎: {selectedStudent.classroom}</p>
+                    {!canEditStudentProfile(currentUser, selectedStudent) && (
+                      <p className="mt-1 text-[11px] font-bold text-slate-500">他校舎の生徒のため閲覧のみ可能です</p>
+                    )}
                   </div>
                   <button onClick={() => setActiveTab('students')} className="px-4 py-2 bg-slate-200 text-slate-700 font-bold text-xs rounded-xl cursor-pointer">
                     ⬅ 生徒一覧に戻る
@@ -9458,18 +9496,14 @@ function SkeletonLoader() {
                     <label className="block text-xs font-black text-slate-500">校舎・教室選択</label>
                     <select
                       value={progressBoard.classroom}
-                      disabled={progressBoard.viewerRole === 'teacher'}
                       onChange={(event) => setProgressClassroom(event.target.value)}
-                      className="bg-white border border-slate-200 text-sm font-black text-slate-900 rounded-2xl px-4 py-3 cursor-pointer disabled:bg-slate-100 disabled:cursor-default"
+                      className="bg-white border border-slate-200 text-sm font-black text-slate-900 rounded-2xl px-4 py-3 cursor-pointer"
                     >
-                      {progressBoard.viewerRole !== 'teacher' && <option value="ALL">全校舎・全教室</option>}
-                      {(progressBoard.viewerRole === 'teacher' ? [progressBoard.classroom].filter(Boolean) : progressBoard.classrooms).map((room) => (
+                      <option value="ALL">全校舎・全教室</option>
+                      {progressBoard.classrooms.map((room) => (
                         <option key={room} value={room}>{room}</option>
                       ))}
                     </select>
-                    {progressBoard.viewerRole === 'teacher' && (
-                      <p className="text-[11px] font-bold text-slate-400">所属校舎の生徒だけを表示しています。</p>
-                    )}
                   </div>
                   <div className="text-xs font-bold text-slate-400">
                     今週 {progressBoard.weekLabel} / 今月 {progressBoard.monthLabel}
