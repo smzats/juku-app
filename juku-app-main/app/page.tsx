@@ -6385,7 +6385,7 @@ export default function Page() {
 
   const dashboardGradeRows = useMemo(() => {
     const enrolled = users.filter((user) => user.role === 'student' && user.isPendingDelete !== true);
-    const known = ['本川越校', '川越校', 'ＥＸ校'];
+    const known = ['本川越校', '所沢校', 'ＥＸ校'];
     const rooms = Array.from(new Set([...known, ...enrolled.map((user) => user.classroom).filter(Boolean)]));
     const countFor = (room: string | null) => {
       const list = room ? enrolled.filter((user) => user.classroom === room) : enrolled;
@@ -6471,7 +6471,7 @@ export default function Page() {
     const monthLast = new Date(Date.UTC(year, month, 0)).getUTCDate();
     const monthEnd = `${yearText}-${monthText}-${String(monthLast).padStart(2, '0')}`;
     const cappedMonthEnd = monthEnd < weekEnd ? monthEnd : weekEnd;
-    const known = ['本川越校', '川越校', 'ＥＸ校'];
+    const known = ['本川越校', '所沢校', 'ＥＸ校'];
     const discovered = users
       .filter((user) => resolveAppRole(user.role, user.id, user.email) === 'student' && user.classroom)
       .map((user) => user.classroom);
@@ -8659,7 +8659,7 @@ function SkeletonLoader() {
               >
                 <option value="ALL">全校舎表示</option>
                 <option value="本川越校">本川越校</option>
-                <option value="川越校">川越校</option>
+                <option value="所沢校">所沢校</option>
                 <option value="ＥＸ校">ＥＸ校</option>
               </select>
             </div>
@@ -9718,7 +9718,7 @@ function SkeletonLoader() {
                   className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus:outline-none cursor-pointer"
                 >
                   <option value="本川越校">本川越校</option>
-                  <option value="川越校">川越校</option>
+                  <option value="所沢校">所沢校</option>
                   <option value="ＥＸ校">ＥＸ校</option>
                 </select>
               </div>
@@ -9796,7 +9796,7 @@ function SkeletonLoader() {
                   className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl cursor-pointer"
                 >
                   <option value="本川越校">本川越校</option>
-                  <option value="川越校">川越校</option>
+                  <option value="所沢校">所沢校</option>
                   <option value="ＥＸ校">ＥＸ校</option>
                 </select>
               </div>
@@ -9872,7 +9872,7 @@ function SkeletonLoader() {
                   className="w-full bg-slate-50 border border-slate-200 p-2.5 rounded-xl cursor-pointer"
                 >
                   <option value="本川越校">本川越校</option>
-                  <option value="川越校">川越校</option>
+                  <option value="所沢校">所沢校</option>
                   <option value="ＥＸ校">ＥＸ校</option>
                 </select>
               </div>
@@ -10069,7 +10069,7 @@ function SkeletonLoader() {
                     className="mt-1 w-full bg-white border border-amber-200 rounded-xl px-3 py-2 text-slate-800"
                   >
                     <option value="ALL">全校舎</option>
-                    {Array.from(new Set(['本川越校', '川越校', 'ＥＸ校', ...users.filter((user) => user.role === 'student' && user.classroom).map((user) => user.classroom)])).map((branch) => (
+                    {Array.from(new Set(['本川越校', '所沢校', 'ＥＸ校', ...users.filter((user) => user.role === 'student' && user.classroom).map((user) => user.classroom)])).map((branch) => (
                       <option key={branch} value={branch}>{branch}</option>
                     ))}
                   </select>
