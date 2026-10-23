@@ -748,6 +748,66 @@ function validateStudentBulkUpdateRows(
   return { errors, rows: errors.length === 0 ? accepted : [] };
 }
 
+const STUDENT_ACCOUNT_CSV_HEADERS = ['student_id', 'name', 'grade', 'branch', 'password'] as const;
+
+type StudentAccountCsvRow = {
+  student_id: string;
+  name: string;
+  grade: string;
+  branch: string;
+  password: string;
+  exists: boolean;
+};
+
+function validateStudentAccountCsvRows(
+  rows: Record<string, string>[],
+  headers: string[],
+  existingIds: Set<string>,
+): { errors: string[]; rows: StudentAccountCsvRow[] } {
+  const missing = STUDENT_ACCOUNT_CSV_HEADERS.filter((header) => !headers.includes(header));
+  if (missing.length > 0) {
+    return { errors: [`エラー: CSVの列が不足しています（${missing.join(', ')}）`], rows: [] };
+  }
+  if (rows.length === 0) {
+    return { errors: ['エラー: 取り込む行がありません'], rows: [] };
+  }
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  const accepted: StudentAccountCsvRow[] = [];
+  rows.forEach((raw, index) => {
+    const line = index + 2;
+    const studentId = String(raw.student_id ?? '').trim();
+    const name = String(raw.name ?? '').trim();
+    const grade = String(raw.grade ?? '').trim();
+    const branch = String(raw.branch ?? '').trim();
+    const password = String(raw.password ?? '').trim();
+    if (!studentId) {
+      errors.push(`エラー: 行${line} の student_id が空です`);
+      return;
+    }
+    if (seen.has(studentId)) {
+      errors.push(`エラー: 行${line} の student_id '${studentId}' はCSV内で重複しています`);
+      return;
+    }
+    seen.add(studentId);
+    if (!name) {
+      errors.push(`エラー: 行${line} の氏名が空です`);
+      return;
+    }
+    const exists = existingIds.has(studentId);
+    if (!exists && password.length < 6) {
+      errors.push(`エラー: 行${line} の新規生徒 '${studentId}' のパスワードは6文字以上にしてください`);
+      return;
+    }
+    if (exists && password && password.length < 6) {
+      errors.push(`エラー: 行${line} の ID '${studentId}' のパスワードは6文字以上にしてください`);
+      return;
+    }
+    accepted.push({ student_id: studentId, name, grade, branch, password, exists });
+  });
+  return { errors, rows: errors.length === 0 ? accepted : [] };
+}
+
 type StudentProfileKey = (typeof STUDENT_PROFILE_FIELDS)[number]['key'];
 type StudentProfile = Record<StudentProfileKey, string>;
 type StudentListFilterKey = (typeof STUDENT_LIST_COLUMNS)[number]['key'];
@@ -4790,6 +4850,12 @@ export default function Page() {
   const [progressSortDir, setProgressSortDir] = useState<'desc' | 'asc'>('desc');
   const [isStudentCsvModalOpen, setIsStudentCsvModalOpen] = useState<boolean>(false);
   const [isStudentBulkUpdateOpen, setIsStudentBulkUpdateOpen] = useState<boolean>(false);
+  const [isStudentAccountCsvOpen, setIsStudentAccountCsvOpen] = useState<boolean>(false);
+  const [studentAccountCsvRows, setStudentAccountCsvRows] = useState<StudentAccountCsvRow[]>([]);
+  const [studentAccountCsvErrors, setStudentAccountCsvErrors] = useState<string[]>([]);
+  const [studentAccountCsvMessage, setStudentAccountCsvMessage] = useState<string>('');
+  const [studentAccountCsvBusy, setStudentAccountCsvBusy] = useState<boolean>(false);
+  const [studentAccountCsvFileKey, setStudentAccountCsvFileKey] = useState<number>(0);
   const [studentBulkBranch, setStudentBulkBranch] = useState<string>('ALL');
   const [studentBulkRows, setStudentBulkRows] = useState<Record<string, string>[]>([]);
   const [studentBulkErrors, setStudentBulkErrors] = useState<string[]>([]);
@@ -7134,6 +7200,171 @@ export default function Page() {
     }
   }, [addNotification, currentUser, fetchAllData, studentBulkBusy, studentBulkErrors.length, studentBulkRows, supabase]);
 
+  const isAdminUser = currentUser?.role === 'admin';
+
+  const exportStudentAccountCsv = useCallback(async () => {
+    if (currentUser?.role !== 'admin') return;
+    setStudentAccountCsvBusy(true);
+    setStudentAccountCsvMessage('');
+    try {
+      const result = await supabase.from('students').select('id,name,grade,branch_id').order('id', { ascending: true });
+      if (result.error) {
+        addNotification('error', `CSV出力に失敗しました。${result.error.message}`);
+        return;
+      }
+      const records = (result.data ?? []) as Record<string, unknown>[];
+      const lines = [
+        STUDENT_ACCOUNT_CSV_HEADERS.join(','),
+        ...records.map((row) => [
+          studentBulkCsvCell(row.id),
+          studentBulkCsvCell(row.name),
+          studentBulkCsvCell(row.grade),
+          studentBulkCsvCell(row.branch_id),
+          '',
+        ].join(',')),
+      ];
+      const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `students_account_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      addNotification('success', `${records.length}件の生徒情報をCSV出力しました`);
+    } catch (err: any) {
+      addNotification('error', err?.message || 'CSV出力に失敗しました');
+    } finally {
+      setStudentAccountCsvBusy(false);
+    }
+  }, [addNotification, currentUser, supabase]);
+
+  const openStudentAccountCsv = useCallback(() => {
+    if (currentUser?.role !== 'admin') return;
+    setStudentAccountCsvRows([]);
+    setStudentAccountCsvErrors([]);
+    setStudentAccountCsvMessage('');
+    setStudentAccountCsvFileKey((key) => key + 1);
+    setIsStudentAccountCsvOpen(true);
+  }, [currentUser]);
+
+  const handleStudentAccountCsvFile = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || currentUser?.role !== 'admin') return;
+    setStudentAccountCsvBusy(true);
+    setStudentAccountCsvMessage('');
+    setStudentAccountCsvRows([]);
+    setStudentAccountCsvErrors([]);
+    Papa.parse<Record<string, string>>(file, {
+      header: true,
+      skipEmptyLines: 'greedy',
+      complete: async (parsed) => {
+        try {
+          const headers = (parsed.meta.fields ?? []).map((field) => field.replace(/^\uFEFF/, '').trim());
+          const sourceRows = parsed.data.map((row) => {
+            const cleaned: Record<string, string> = {};
+            Object.entries(row).forEach(([key, value]) => {
+              cleaned[key.replace(/^\uFEFF/, '').trim()] = value == null ? '' : String(value);
+            });
+            return cleaned;
+          });
+          const directoryResult = await supabase.from('students').select('id');
+          if (directoryResult.error) {
+            setStudentAccountCsvErrors([`エラー: 生徒一覧の取得に失敗しました（${directoryResult.error.message}）`]);
+            return;
+          }
+          const existingIds = new Set<string>();
+          (directoryResult.data ?? []).forEach((row) => {
+            const id = String(row.id ?? '').trim();
+            if (id) existingIds.add(id);
+          });
+          const checked = validateStudentAccountCsvRows(sourceRows, headers, existingIds);
+          setStudentAccountCsvErrors(checked.errors);
+          setStudentAccountCsvRows(checked.rows);
+          if (checked.errors.length === 0) {
+            const created = checked.rows.filter((row) => !row.exists).length;
+            const updated = checked.rows.length - created;
+            const passwords = checked.rows.filter((row) => row.exists && row.password).length;
+            setStudentAccountCsvMessage(`新規 ${created}件、更新 ${updated}件（うちパスワード変更 ${passwords}件）を実行できます`);
+          }
+        } catch (err: any) {
+          setStudentAccountCsvErrors([`エラー: ${err?.message || 'CSVの読み取りに失敗しました'}`]);
+        } finally {
+          setStudentAccountCsvBusy(false);
+        }
+      },
+      error: (err) => {
+        setStudentAccountCsvErrors([`エラー: ${err.message}`]);
+        setStudentAccountCsvBusy(false);
+      },
+    });
+  }, [currentUser, supabase]);
+
+  const executeStudentAccountCsv = useCallback(async () => {
+    if (currentUser?.role !== 'admin' || studentAccountCsvBusy || studentAccountCsvErrors.length > 0 || studentAccountCsvRows.length === 0) return;
+    setStudentAccountCsvBusy(true);
+    setStudentAccountCsvMessage('');
+    try {
+      for (let index = 0; index < studentAccountCsvRows.length; index += 1) {
+        const row = studentAccountCsvRows[index];
+        const earlier = index > 0 ? 'これより前の行は反映済みです。' : '';
+        if (!row.exists) {
+          const failure = await registerDirectoryAccount({
+            ...blankUserForm('student'),
+            id: row.student_id,
+            name: row.name,
+            grade: row.grade,
+            classroom: row.branch,
+            role: 'student',
+            password: row.password,
+          });
+          if (failure) {
+            setStudentAccountCsvErrors([`エラー: 行${index + 2} の新規登録に失敗しました（${failure}）。${earlier}`]);
+            setStudentAccountCsvRows([]);
+            return;
+          }
+          continue;
+        }
+        const updated = await supabase
+          .from('students')
+          .update({ name: row.name, grade: row.grade, branch_id: row.branch })
+          .eq('id', row.student_id)
+          .select('id');
+        if (updated.error) {
+          setStudentAccountCsvErrors([`エラー: 行${index + 2} の更新に失敗しました（${updated.error.message}）。${earlier}`]);
+          setStudentAccountCsvRows([]);
+          return;
+        }
+        if (!updated.data || updated.data.length !== 1) {
+          setStudentAccountCsvErrors([`エラー: 行${index + 2} の ID '${row.student_id}' を更新できませんでした。${earlier}`]);
+          setStudentAccountCsvRows([]);
+          return;
+        }
+        if (row.password) {
+          const authError = await syncAuthPassword(row.student_id, row.password, 'student');
+          if (authError) {
+            setStudentAccountCsvErrors([`エラー: 行${index + 2} のパスワード更新に失敗しました（${authError}）。${earlier}`]);
+            setStudentAccountCsvRows([]);
+            return;
+          }
+        }
+      }
+      const count = studentAccountCsvRows.length;
+      setStudentAccountCsvRows([]);
+      setStudentAccountCsvErrors([]);
+      setStudentAccountCsvMessage(`${count}件の生徒情報を登録・更新しました`);
+      addNotification('success', `${count}件の生徒情報を登録・更新しました`);
+      await fetchAllData({ silent: true });
+    } catch (err: any) {
+      setStudentAccountCsvErrors([`エラー: ${err?.message || '登録・更新に失敗しました'}`]);
+      setStudentAccountCsvRows([]);
+    } finally {
+      setStudentAccountCsvBusy(false);
+    }
+  }, [addNotification, currentUser, fetchAllData, registerDirectoryAccount, studentAccountCsvBusy, studentAccountCsvErrors.length, studentAccountCsvRows, supabase, syncAuthPassword]);
+
   const downloadTeacherCsvTemplate = useCallback(() => {
     const csvBody = [
       'id,name,branch_id,role,password',
@@ -8697,9 +8928,21 @@ function SkeletonLoader() {
               <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
                 <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3">
                   <h3 className="text-base font-extrabold text-emerald-950">🎓 所属生徒管理一覧 ({visibleStudents.length}名)</h3>
-                  <button onClick={() => { setNewUserForm(blankUserForm('student')); setIsUserModalOpen(true); }} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer">
-                    ＋ 新規生徒を個別登録
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    {isAdminUser && (
+                      <>
+                        <button type="button" onClick={() => { void exportStudentAccountCsv(); }} disabled={studentAccountCsvBusy} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer">
+                          生徒情報一括書き出し（CSV）
+                        </button>
+                        <button type="button" onClick={openStudentAccountCsv} className="px-4 py-2 bg-sky-700 hover:bg-sky-600 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer">
+                          生徒情報一括登録・差分更新（CSV）
+                        </button>
+                      </>
+                    )}
+                    <button onClick={() => { setNewUserForm(blankUserForm('student')); setIsUserModalOpen(true); }} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-extrabold shadow-md cursor-pointer">
+                      ＋ 新規生徒を個別登録
+                    </button>
+                  </div>
                 </div>
 
                 <form className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 space-y-3 shadow-md" onSubmit={(e) => e.preventDefault()}>
@@ -9834,6 +10077,47 @@ function SkeletonLoader() {
                 className="px-5 py-2 bg-amber-600 disabled:bg-slate-300 disabled:text-slate-500 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer"
               >
                 更新実行
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isStudentAccountCsvOpen && isAdminUser && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-2xl max-h-[90dvh] overflow-y-auto rounded-3xl shadow-2xl border border-slate-200">
+            <div className="p-5 bg-sky-950 text-white flex justify-between items-center">
+              <h4 className="font-extrabold text-sm">生徒情報一括登録・差分更新（CSV）</h4>
+              <button type="button" onClick={() => setIsStudentAccountCsvOpen(false)} className="text-sky-200 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-sky-50 border border-sky-200 p-4 rounded-2xl text-xs text-sky-950 space-y-2">
+                <p className="font-extrabold break-all">列: {STUDENT_ACCOUNT_CSV_HEADERS.join(', ')}</p>
+                <p>student_id がない生徒は新規登録します。パスワードは6文字以上です。</p>
+                <p>すでにある student_id は氏名・学年・校舎を更新します。password が空欄の行はログインパスワードを変えません。</p>
+              </div>
+              <div className="border-2 border-dashed border-slate-300 p-6 rounded-2xl text-center bg-slate-50">
+                <label className="block text-xs font-bold text-slate-600 mb-2">ファイルの選択（CSV）</label>
+                <input key={studentAccountCsvFileKey} type="file" accept=".csv,text/csv" onChange={handleStudentAccountCsvFile} disabled={studentAccountCsvBusy} className="block w-full text-xs text-slate-500" />
+              </div>
+              {studentAccountCsvErrors.length > 0 && (
+                <ul className="space-y-1 text-xs font-bold text-red-600">
+                  {studentAccountCsvErrors.map((error) => <li key={error}>{error}</li>)}
+                </ul>
+              )}
+              {studentAccountCsvMessage && (
+                <p className={`text-xs font-bold ${studentAccountCsvMessage.startsWith('エラー') ? 'text-red-600' : 'text-sky-700'}`}>{studentAccountCsvMessage}</p>
+              )}
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button type="button" onClick={() => setIsStudentAccountCsvOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer">閉じる</button>
+              <button
+                type="button"
+                onClick={() => { void executeStudentAccountCsv(); }}
+                disabled={studentAccountCsvBusy || studentAccountCsvErrors.length > 0 || studentAccountCsvRows.length === 0}
+                className="px-5 py-2 bg-sky-600 disabled:bg-slate-300 disabled:text-slate-500 text-white text-xs font-extrabold rounded-xl shadow-md cursor-pointer"
+              >
+                登録・更新を実行
               </button>
             </div>
           </div>
