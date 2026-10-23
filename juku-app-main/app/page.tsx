@@ -750,6 +750,30 @@ function validateStudentBulkUpdateRows(
 
 const STUDENT_ACCOUNT_CSV_HEADERS = ['student_id', 'name', 'grade', 'branch', 'password'] as const;
 
+const STUDENT_ACCOUNT_EXPORT_HEADERS = [
+  'id',
+  'name',
+  'high_school',
+  'grade',
+  'branch_id',
+  'password',
+  'math',
+  'english',
+  'modern_jp',
+  'classic_jp',
+  'physics',
+  'chemistry',
+  'biology',
+  'jp_history',
+  'world_history',
+  'geography',
+  'politics_economy',
+  'ethics',
+  'public',
+  'information',
+  'individual',
+] as const;
+
 type StudentAccountCsvRow = {
   student_id: string;
   name: string;
@@ -7207,21 +7231,18 @@ export default function Page() {
     setStudentAccountCsvBusy(true);
     setStudentAccountCsvMessage('');
     try {
-      const result = await supabase.from('students').select('id,name,grade,branch_id').order('id', { ascending: true });
+      const result = await supabase.from('students').select('*').order('id', { ascending: true });
       if (result.error) {
         addNotification('error', `CSV出力に失敗しました。${result.error.message}`);
         return;
       }
       const records = (result.data ?? []) as Record<string, unknown>[];
       const lines = [
-        STUDENT_ACCOUNT_CSV_HEADERS.join(','),
-        ...records.map((row) => [
-          studentBulkCsvCell(row.id),
-          studentBulkCsvCell(row.name),
-          studentBulkCsvCell(row.grade),
-          studentBulkCsvCell(row.branch_id),
-          '',
-        ].join(',')),
+        STUDENT_ACCOUNT_EXPORT_HEADERS.join(','),
+        ...records.map((row) => STUDENT_ACCOUNT_EXPORT_HEADERS.map((header) => {
+          if (header === 'password') return '';
+          return studentBulkCsvCell(row[header]);
+        }).join(',')),
       ];
       const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
